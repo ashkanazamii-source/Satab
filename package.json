@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "@nestjs/typeorm": "^11.0.0",
+    "pg": "^8.16.3",
+    "react-router-dom": "^7.7.1",
+    "typeorm": "^0.3.25"
+  }
+}

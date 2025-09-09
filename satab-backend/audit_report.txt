@@ -1,0 +1,595 @@
+﻿=== FILE LIST ===
+D:\Satab-Project\satab-backend\src\acl\acl.decorator.ts
+D:\Satab-Project\satab-backend\src\acl\acl.guard.ts
+D:\Satab-Project\satab-backend\src\acl\acl.module.ts
+D:\Satab-Project\satab-backend\src\app.controller.spec.ts
+D:\Satab-Project\satab-backend\src\app.controller.ts
+D:\Satab-Project\satab-backend\src\app.module.ts
+D:\Satab-Project\satab-backend\src\app.service.ts
+D:\Satab-Project\satab-backend\src\assets\assets.controller.ts
+D:\Satab-Project\satab-backend\src\assets\assets.service.ts
+D:\Satab-Project\satab-backend\src\audit\audit.controller.ts
+D:\Satab-Project\satab-backend\src\audit\audit.decorator.ts
+D:\Satab-Project\satab-backend\src\audit\audit.interceptor.ts
+D:\Satab-Project\satab-backend\src\audit\audit.module.ts
+D:\Satab-Project\satab-backend\src\audit\audit.service.ts
+D:\Satab-Project\satab-backend\src\audit\audit.subscriber.ts
+D:\Satab-Project\satab-backend\src\audit\audit-log.entity.ts
+D:\Satab-Project\satab-backend\src\audit\audit-topics.ts
+D:\Satab-Project\satab-backend\src\audit\global-exception.filter.ts
+D:\Satab-Project\satab-backend\src\audit\http-audit.interceptor.ts
+D:\Satab-Project\satab-backend\src\audit\index.ts
+D:\Satab-Project\satab-backend\src\auth\auth.controller.ts
+D:\Satab-Project\satab-backend\src\auth\auth.module.ts
+D:\Satab-Project\satab-backend\src\auth\auth.service.ts
+D:\Satab-Project\satab-backend\src\auth\current-user.decorator.ts
+D:\Satab-Project\satab-backend\src\auth\jwt.strategy.ts
+D:\Satab-Project\satab-backend\src\auth\jwt-auth.guard.ts
+D:\Satab-Project\satab-backend\src\auth\jwt-payload.interface.ts
+D:\Satab-Project\satab-backend\src\common\context.middleware.ts
+D:\Satab-Project\satab-backend\src\common\http-audit.interceptor.ts
+D:\Satab-Project\satab-backend\src\common\request-context.ts
+D:\Satab-Project\satab-backend\src\consumables\consumable.entity.ts
+D:\Satab-Project\satab-backend\src\consumables\consumables.controller.ts
+D:\Satab-Project\satab-backend\src\consumables\consumables.module.ts
+D:\Satab-Project\satab-backend\src\consumables\consumables.service.ts
+D:\Satab-Project\satab-backend\src\country-policies\allowed-countries.controller.ts
+D:\Satab-Project\satab-backend\src\country-policies\allowed-countries.module.ts
+D:\Satab-Project\satab-backend\src\country-policies\allowed-countries.service.ts
+D:\Satab-Project\satab-backend\src\country-policies\allowed-country.entity.ts
+D:\Satab-Project\satab-backend\src\dashboard\dashboard.controller.ts
+D:\Satab-Project\satab-backend\src\dashboard\dashboard.module.ts
+D:\Satab-Project\satab-backend\src\dashboard\dashboard.service.ts
+D:\Satab-Project\satab-backend\src\drivers\driver-route.controller.ts
+D:\Satab-Project\satab-backend\src\drivers\driver-route.entity.ts
+D:\Satab-Project\satab-backend\src\drivers\driver-route.gateway.ts
+D:\Satab-Project\satab-backend\src\drivers\driver-route.module.ts
+D:\Satab-Project\satab-backend\src\drivers\driver-route.service.ts
+D:\Satab-Project\satab-backend\src\drivers\driver-routes.ingest.controller.ts
+D:\Satab-Project\satab-backend\src\driver-vehicle-assignment\driver-vehicle-assignment.controller.ts
+D:\Satab-Project\satab-backend\src\driver-vehicle-assignment\driver-vehicle-assignment.entity.ts
+D:\Satab-Project\satab-backend\src\driver-vehicle-assignment\driver-vehicle-assignment.module.ts
+D:\Satab-Project\satab-backend\src\driver-vehicle-assignment\driver-vehicle-assignment.service.ts
+D:\Satab-Project\satab-backend\src\dto\assign.dto.ts
+D:\Satab-Project\satab-backend\src\dto\consumables.dto.ts
+D:\Satab-Project\satab-backend\src\dto\create-geofence.dto.ts
+D:\Satab-Project\satab-backend\src\dto\create-user.dto.ts
+D:\Satab-Project\satab-backend\src\dto\create-vehicle.dto.ts
+D:\Satab-Project\satab-backend\src\dto\log-query.dto.ts
+D:\Satab-Project\satab-backend\src\dto\update-allowed-countries.dto.ts
+D:\Satab-Project\satab-backend\src\dto\update-vehicle-policies.dto.ts
+D:\Satab-Project\satab-backend\src\entities\device.entity.ts
+D:\Satab-Project\satab-backend\src\entities\role.entity.ts
+D:\Satab-Project\satab-backend\src\geofence\geo.util.ts
+D:\Satab-Project\satab-backend\src\geofence\geofence.controller.ts
+D:\Satab-Project\satab-backend\src\geofence\geofence.entity.ts
+D:\Satab-Project\satab-backend\src\geofence\geofence.module.ts
+D:\Satab-Project\satab-backend\src\geofence\geofence.service.ts
+D:\Satab-Project\satab-backend\src\licenses\license.entity.ts
+D:\Satab-Project\satab-backend\src\licenses\license.guard.ts
+D:\Satab-Project\satab-backend\src\licenses\license.module.ts
+D:\Satab-Project\satab-backend\src\licenses\license.service.ts
+D:\Satab-Project\satab-backend\src\main.ts
+D:\Satab-Project\satab-backend\src\permissions\role-permission.controller.ts
+D:\Satab-Project\satab-backend\src\permissions\role-permission.entity.ts
+D:\Satab-Project\satab-backend\src\permissions\role-permission.module.ts
+D:\Satab-Project\satab-backend\src\permissions\role-permission.service.ts
+D:\Satab-Project\satab-backend\src\tracks\tracks.controller.ts
+D:\Satab-Project\satab-backend\src\tracks\tracks.module.ts
+D:\Satab-Project\satab-backend\src\tracks\tracks.service.ts
+D:\Satab-Project\satab-backend\src\users\users.controller.ts
+D:\Satab-Project\satab-backend\src\users\users.entity.ts
+D:\Satab-Project\satab-backend\src\users\users.module.ts
+D:\Satab-Project\satab-backend\src\users\users.service.ts
+D:\Satab-Project\satab-backend\src\vehicle-policies\vehicle-policies.controller.ts
+D:\Satab-Project\satab-backend\src\vehicle-policies\vehicle-policies.module.ts
+D:\Satab-Project\satab-backend\src\vehicle-policies\vehicle-policies.service.ts
+D:\Satab-Project\satab-backend\src\vehicle-policies\vehicle-policy.entity.ts
+D:\Satab-Project\satab-backend\src\vehicles\route.controller.ts
+D:\Satab-Project\satab-backend\src\vehicles\route.entity.ts
+D:\Satab-Project\satab-backend\src\vehicles\route-station.entity.ts
+D:\Satab-Project\satab-backend\src\vehicles\vehicle.entity.ts
+D:\Satab-Project\satab-backend\src\vehicles\vehicles.controller.ts
+D:\Satab-Project\satab-backend\src\vehicles\vehicles.gateway.ts
+D:\Satab-Project\satab-backend\src\vehicles\vehicles.ingest.controller.ts
+D:\Satab-Project\satab-backend\src\vehicles\vehicles.module.ts
+D:\Satab-Project\satab-backend\src\vehicles\vehicles.service.ts
+D:\Satab-Project\satab-backend\src\vehicles\vehicle-station.entity.ts
+D:\Satab-Project\satab-backend\src\vehicles\vehicle-track.entity.ts
+D:\Satab-Project\satab-backend\test\app.e2e-spec.ts
+
+=== AUDIT-RELATED HITS (±2 lines) ===
+
+  src\audit\audit-log.entity.ts:4:} from 'typeorm';
+  src\audit\audit-log.entity.ts:5:import { Users } from '../users/users.entity';
+> src\audit\audit-log.entity.ts:6:import { AuditTopic } from './audit-topics';
+  src\audit\audit-log.entity.ts:7:
+> src\audit\audit-log.entity.ts:8:@Entity('audit_logs')
+  src\audit\audit-log.entity.ts:9:@Index(['created_at'])
+  src\audit\audit-log.entity.ts:10:@Index(['topic'])
+  src\audit\audit-log.entity.ts:11:@Index(['actor_id'])
+  src\audit\audit-log.entity.ts:12:@Index(['target_user_id'])
+> src\audit\audit-log.entity.ts:13:export class AuditLog {
+  src\audit\audit-log.entity.ts:14:    @PrimaryGeneratedColumn()
+  src\audit\audit-log.entity.ts:15:    id: number;
+  src\audit\audit-log.entity.ts:19:    @Column({ type: 'text', nullable: true })
+  src\audit\audit-log.entity.ts:20:    message?: string;
+> src\audit\audit-log.entity.ts:21:    @Column({ type: 'enum', enum: AuditTopic })
+> src\audit\audit-log.entity.ts:22:    topic: AuditTopic;
+  src\audit\audit-log.entity.ts:23:    @Column({ type: 'jsonb', nullable: true })
+  src\audit\audit-log.entity.ts:24:    metadata?: Record<string, any>;
+> src\audit\audit-topics.ts:1:// audit-topics.ts
+> src\audit\audit-topics.ts:2:export enum AuditTopic {
+  src\audit\audit-topics.ts:3:    LOGIN = 'LOGIN',
+  src\audit\audit-topics.ts:4:    LOGOUT = 'LOGOUT',
+  src\audit\audit.controller.ts:1:import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+> src\audit\audit.controller.ts:2:import { AuditService } from './audit.service';
+  src\audit\audit.controller.ts:3:import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+  src\audit\audit.controller.ts:4:import { AclGuard } from '../acl/acl.guard';
+  src\audit\audit.controller.ts:10:@Controller('logs')
+  src\audit\audit.controller.ts:11:@UseGuards(JwtAuthGuard, AclGuard)
+> src\audit\audit.controller.ts:12:export class AuditController {
+> src\audit\audit.controller.ts:13:  constructor(private readonly audit: AuditService) {}
+  src\audit\audit.controller.ts:14:
+  src\audit\audit.controller.ts:15:  // نقش‌های ۱ تا ۵ اجازه دارند
+  src\audit\audit.controller.ts:17:  @ACL({ roles: [1, 2, 3, 4, 5] /*, permissions: ['view_logs']*/ })
+  src\audit\audit.controller.ts:18:  async getLogs(@CurrentUser() me: Users, @Query() query: LogQueryDto) {
+> src\audit\audit.controller.ts:19:    return this.audit.findAll(me, query);
+  src\audit\audit.controller.ts:20:  }
+  src\audit\audit.controller.ts:21:}
+> src\audit\audit.decorator.ts:1:// src/audit/audit.decorator.ts
+  src\audit\audit.decorator.ts:2:import { SetMetadata, applyDecorators, UseInterceptors } from '@nestjs/common';
+> src\audit\audit.decorator.ts:3:import { AuditTopic } from './audit-topics';
+> src\audit\audit.decorator.ts:4:import { AuditInterceptor } from './audit.interceptor';
+  src\audit\audit.decorator.ts:5:
+> src\audit\audit.decorator.ts:6:export const AUDIT_META = 'AUDIT_META';
+  src\audit\audit.decorator.ts:7:
+> src\audit\audit.decorator.ts:8:export type AuditMeta = {
+  src\audit\audit.decorator.ts:9:  /**
+  src\audit\audit.decorator.ts:10:   * موضوع/تاپیک لاگ (مثل: 'USER_UPDATE', 'VEHICLE_CREATE', ...)
+  src\audit\audit.decorator.ts:11:   */
+> src\audit\audit.decorator.ts:12:  topic: AuditTopic;
+  src\audit\audit.decorator.ts:13:
+  src\audit\audit.decorator.ts:14:  /**
+  src\audit\audit.decorator.ts:31:
+  src\audit\audit.decorator.ts:32:/**
+> src\audit\audit.decorator.ts:33: * اگر AuditInterceptor را به صورت APP_INTERCEPTOR در ماژول ثبت کرده‌اید
+  src\audit\audit.decorator.ts:34: * همین دکوراتور کافی است (فقط متادیتا را ست می‌کند).
+  src\audit\audit.decorator.ts:35: */
+> src\audit\audit.decorator.ts:36:export const Audit = (meta: AuditMeta) => SetMetadata(AUDIT_META, meta);
+  src\audit\audit.decorator.ts:37:
+  src\audit\audit.decorator.ts:38:/**
+  src\audit\audit.decorator.ts:40: * از این دکوراتور لوکال استفاده کنید تا هم متادیتا ست شود و هم اینترسپتور اعمال 
+گردد.
+  src\audit\audit.decorator.ts:41: */
+> src\audit\audit.decorator.ts:42:export const AuditLocal = (meta: AuditMeta) =>
+> src\audit\audit.decorator.ts:43:  applyDecorators(SetMetadata(AUDIT_META, meta), UseInterceptors(AuditInterceptor));
+  src\audit\audit.interceptor.ts:4:import { Reflector } from '@nestjs/core';
+  src\audit\audit.interceptor.ts:5:import { Observable, tap, catchError, throwError } from 'rxjs';
+> src\audit\audit.interceptor.ts:6:import { AUDIT_META, AuditMeta } from './audit.decorator';
+> src\audit\audit.interceptor.ts:7:import { AuditService } from './audit.service';
+  src\audit\audit.interceptor.ts:8:
+  src\audit\audit.interceptor.ts:9:function getByPath(obj: any, path?: string) {
+  src\audit\audit.interceptor.ts:13:
+  src\audit\audit.interceptor.ts:14:@Injectable()
+> src\audit\audit.interceptor.ts:15:export class AuditInterceptor implements NestInterceptor {
+  src\audit\audit.interceptor.ts:16:  constructor(
+  src\audit\audit.interceptor.ts:17:    private readonly reflector: Reflector,
+> src\audit\audit.interceptor.ts:18:    private readonly audit: AuditService,
+  src\audit\audit.interceptor.ts:19:  ) {}
+  src\audit\audit.interceptor.ts:20:
+  src\audit\audit.interceptor.ts:21:  intercept(ctx: ExecutionContext, next: CallHandler): Observable<any> {
+> src\audit\audit.interceptor.ts:22:    const meta = this.reflector.get<AuditMeta | undefined>(AUDIT_META, 
+ctx.getHandler());
+  src\audit\audit.interceptor.ts:23:    if (!meta) return next.handle();
+  src\audit\audit.interceptor.ts:24:
+  src\audit\audit.interceptor.ts:39:    if (successOnly) {
+  src\audit\audit.interceptor.ts:40:      return next.handle().pipe(
+> src\audit\audit.interceptor.ts:41:        tap(() => { if (actor) this.audit.log(base as any); }),
+  src\audit\audit.interceptor.ts:42:      );
+  src\audit\audit.interceptor.ts:43:    }
+  src\audit\audit.interceptor.ts:45:    // لاگ در همه حال (موفق/ناموفق)
+  src\audit\audit.interceptor.ts:46:    return next.handle().pipe(
+> src\audit\audit.interceptor.ts:47:      tap(() => { if (actor) this.audit.log(base as any); }),
+  src\audit\audit.interceptor.ts:48:      catchError(err => {
+  src\audit\audit.interceptor.ts:49:        if (actor) {
+> src\audit\audit.interceptor.ts:50:          this.audit.log({
+  src\audit\audit.interceptor.ts:51:            ...base,
+  src\audit\audit.interceptor.ts:52:            metadata: { error: { name: err?.name, message: err?.message } },
+  src\audit\audit.module.ts:1:import { Global, Module } from '@nestjs/common';
+  src\audit\audit.module.ts:2:import { TypeOrmModule } from '@nestjs/typeorm';
+> src\audit\audit.module.ts:3:import { APP_INTERCEPTOR, Reflector } from '@nestjs/core';
+> src\audit\audit.module.ts:4:import { AuditLog } from './audit-log.entity';
+> src\audit\audit.module.ts:5:import { AuditService } from './audit.service';
+> src\audit\audit.module.ts:6:import { AuditController } from './audit.controller';
+> src\audit\audit.module.ts:7:import { AuditInterceptor } from './audit.interceptor';
+  src\audit\audit.module.ts:8:import { Users } from '../users/users.entity';
+  src\audit\audit.module.ts:9:
+  src\audit\audit.module.ts:10:@Global()
+  src\audit\audit.module.ts:11:@Module({
+> src\audit\audit.module.ts:12:  imports: [TypeOrmModule.forFeature([AuditLog, Users])],
+  src\audit\audit.module.ts:13:  providers: [
+> src\audit\audit.module.ts:14:    AuditService,
+  src\audit\audit.module.ts:15:    Reflector,
+  src\audit\audit.module.ts:16:    // اگر می‌خواهی اینترسپتور سراسری باشد، فعالش کن؛
+> src\audit\audit.module.ts:17:    // اگر نمی‌خواهی، این provider را حذف کن و فقط هرجا نیاز بود 
+@UseInterceptors(AuditInterceptor) بزن.
+> src\audit\audit.module.ts:18:    { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
+  src\audit\audit.module.ts:19:  ],
+> src\audit\audit.module.ts:20:  controllers: [AuditController],
+> src\audit\audit.module.ts:21:  exports: [AuditService], // ← تا در کل پروژه inject شود
+  src\audit\audit.module.ts:22:})
+> src\audit\audit.module.ts:23:export class AuditModule {}
+  src\audit\audit.service.ts:2:import { InjectRepository } from '@nestjs/typeorm';
+  src\audit\audit.service.ts:3:import { Repository, In, DeepPartial } from 'typeorm';
+> src\audit\audit.service.ts:4:import { AuditLog } from './audit-log.entity';
+  src\audit\audit.service.ts:5:import { Users } from '../users/users.entity';
+  src\audit\audit.service.ts:6:import { LogQueryDto } from '../dto/log-query.dto';
+> src\audit\audit.service.ts:7:import { AuditTopic } from './audit-topics';
+  src\audit\audit.service.ts:8:
+  src\audit\audit.service.ts:9:@Injectable()
+> src\audit\audit.service.ts:10:export class AuditService {
+  src\audit\audit.service.ts:11:    constructor(
+> src\audit\audit.service.ts:12:        @InjectRepository(AuditLog) private readonly logRepo: Repository<AuditLog>,
+  src\audit\audit.service.ts:13:        @InjectRepository(Users) private readonly userRepo: Repository<Users>,
+  src\audit\audit.service.ts:14:    ) { }
+  src\audit\audit.service.ts:97:    // ثبت لاگ — از هرجای پروژه قابل فراخوانی
+  src\audit\audit.service.ts:98:    async log(params: {
+> src\audit\audit.service.ts:99:        topic: AuditTopic;
+  src\audit\audit.service.ts:100:        actor_id: number;
+  src\audit\audit.service.ts:101:        target_user_id?: number | null;
+  src\audit\audit.service.ts:105:        user_agent?: string | null;
+  src\audit\audit.service.ts:106:    }) {
+> src\audit\audit.service.ts:107:        const payload: DeepPartial<AuditLog> = {
+  src\audit\audit.service.ts:108:            topic: params.topic,
+  src\audit\audit.service.ts:109:            actor_id: params.actor_id,
+  src\audit\audit.subscriber.ts:4:  EventSubscriber, InsertEvent, UpdateEvent, RemoveEvent
+  src\audit\audit.subscriber.ts:5:} from 'typeorm';
+> src\audit\audit.subscriber.ts:6:import { AuditService } from './audit.service';
+> src\audit\audit.subscriber.ts:7:import { AuditTopic } from './audit-topics';
+> src\audit\audit.subscriber.ts:8:import { RequestContext } from '../common/request-context';
+  src\audit\audit.subscriber.ts:9:
+  src\audit\audit.subscriber.ts:10:@Injectable()
+  src\audit\audit.subscriber.ts:11:@EventSubscriber()
+> src\audit\audit.subscriber.ts:12:export class AuditSubscriber implements EntitySubscriberInterface {
+> src\audit\audit.subscriber.ts:13:  constructor(private dataSource: DataSource, private audit: AuditService) {
+  src\audit\audit.subscriber.ts:14:    this.dataSource.subscribers.push(this);
+  src\audit\audit.subscriber.ts:15:  }
+  src\audit\audit.subscriber.ts:17:
+  src\audit\audit.subscriber.ts:18:  async afterInsert(event: InsertEvent<any>) {
+> src\audit\audit.subscriber.ts:19:    const { userId, ip, userAgent } = RequestContext.get();
+  src\audit\audit.subscriber.ts:20:    const entity = event.metadata.name;
+  src\audit\audit.subscriber.ts:21:    const id = (event.entity && (event.entity.id ?? event.entity.uuid)) ?? 
+undefined;
+  src\audit\audit.subscriber.ts:22:
+  src\audit\audit.subscriber.ts:23:    try {
+> src\audit\audit.subscriber.ts:24:      await this.audit.log({
+> src\audit\audit.subscriber.ts:25:        topic: AuditTopic.ENTITY_INSERT,
+  src\audit\audit.subscriber.ts:26:        actor_id: userId ?? 0,
+  src\audit\audit.subscriber.ts:27:        message: `INSERT ${entity}${id ? `#${id}` : ''}`,
+  src\audit\audit.subscriber.ts:33:
+  src\audit\audit.subscriber.ts:34:  async afterUpdate(event: UpdateEvent<any>) {
+> src\audit\audit.subscriber.ts:35:    const { userId, ip, userAgent } = RequestContext.get();
+  src\audit\audit.subscriber.ts:36:    const entity = event.metadata.name;
+  src\audit\audit.subscriber.ts:37:    const id = (event.databaseEntity && (event.databaseEntity.id ?? 
+event.databaseEntity.uuid)) ?? undefined;
+  src\audit\audit.subscriber.ts:47:
+  src\audit\audit.subscriber.ts:48:    try {
+> src\audit\audit.subscriber.ts:49:      await this.audit.log({
+> src\audit\audit.subscriber.ts:50:        topic: AuditTopic.ENTITY_UPDATE,
+  src\audit\audit.subscriber.ts:51:        actor_id: userId ?? 0,
+  src\audit\audit.subscriber.ts:52:        message: `UPDATE ${entity}${id ? `#${id}` : ''}`,
+  src\audit\audit.subscriber.ts:58:
+  src\audit\audit.subscriber.ts:59:  async afterRemove(event: RemoveEvent<any>) {
+> src\audit\audit.subscriber.ts:60:    const { userId, ip, userAgent } = RequestContext.get();
+  src\audit\audit.subscriber.ts:61:    const entity = event.metadata.name;
+  src\audit\audit.subscriber.ts:62:    const id = (event.entityId as any)?.id ?? (event.entity as any)?.id ?? 
+undefined;
+  src\audit\audit.subscriber.ts:63:
+  src\audit\audit.subscriber.ts:64:    try {
+> src\audit\audit.subscriber.ts:65:      await this.audit.log({
+> src\audit\audit.subscriber.ts:66:        topic: AuditTopic.ENTITY_REMOVE,
+  src\audit\audit.subscriber.ts:67:        actor_id: userId ?? 0,
+  src\audit\audit.subscriber.ts:68:        message: `DELETE ${entity}${id ? `#${id}` : ''}`,
+  src\audit\global-exception.filter.ts:3:} from '@nestjs/common';
+  src\audit\global-exception.filter.ts:4:import { Request } from 'express';
+> src\audit\global-exception.filter.ts:5:import { AuditService } from './audit.service';
+> src\audit\global-exception.filter.ts:6:import { AuditTopic } from './audit-topics';
+> src\audit\global-exception.filter.ts:7:import { RequestContext } from '../common/request-context';
+  src\audit\global-exception.filter.ts:8:
+  src\audit\global-exception.filter.ts:9:@Catch()
+> src\audit\global-exception.filter.ts:10:export class GlobalExceptionFilter implements ExceptionFilter {
+> src\audit\global-exception.filter.ts:11:  constructor(private readonly audit: AuditService) {}
+  src\audit\global-exception.filter.ts:12:
+  src\audit\global-exception.filter.ts:13:  async catch(exception: unknown, host: ArgumentsHost) {
+  src\audit\global-exception.filter.ts:14:    const ctx = host.switchToHttp();
+  src\audit\global-exception.filter.ts:15:    const req = ctx.getRequest<Request>();
+> src\audit\global-exception.filter.ts:16:    const { userId, ip, userAgent } = RequestContext.get();
+  src\audit\global-exception.filter.ts:17:
+  src\audit\global-exception.filter.ts:18:    const status = exception instanceof HttpException ? 
+exception.getStatus() : 500;
+  src\audit\global-exception.filter.ts:22:
+  src\audit\global-exception.filter.ts:23:    try {
+> src\audit\global-exception.filter.ts:24:      await this.audit.log({
+> src\audit\global-exception.filter.ts:25:        topic: AuditTopic.EXCEPTION,
+  src\audit\global-exception.filter.ts:26:        actor_id: userId ?? 0,
+  src\audit\global-exception.filter.ts:27:        message: `${req.method} ${req.originalUrl} -> ${status} ERROR: 
+${Array.isArray(msg) ? msg.join(', ') : msg}`,
+  src\audit\http-audit.interceptor.ts:2:import { Observable } from 'rxjs';
+  src\audit\http-audit.interceptor.ts:3:import { tap } from 'rxjs/operators';
+> src\audit\http-audit.interceptor.ts:4:import { AuditService } from './audit.service';
+> src\audit\http-audit.interceptor.ts:5:import { AuditTopic } from './audit-topics';
+> src\audit\http-audit.interceptor.ts:6:import { RequestContext } from '../common/request-context';
+  src\audit\http-audit.interceptor.ts:7:
+  src\audit\http-audit.interceptor.ts:8:function mask(obj: any, keys: string[] = 
+['password','authorization','token','secret']) {
+  src\audit\http-audit.interceptor.ts:22:
+  src\audit\http-audit.interceptor.ts:23:@Injectable()
+> src\audit\http-audit.interceptor.ts:24:export class HttpAuditInterceptor implements NestInterceptor {
+> src\audit\http-audit.interceptor.ts:25:  constructor(private readonly audit: AuditService) {}
+  src\audit\http-audit.interceptor.ts:26:
+  src\audit\http-audit.interceptor.ts:27:  intercept(ctx: ExecutionContext, next: CallHandler): Observable<any> {
+  src\audit\http-audit.interceptor.ts:37:        // موفقیتِ پاسخ
+  src\audit\http-audit.interceptor.ts:38:        const duration = Date.now() - started;
+> src\audit\http-audit.interceptor.ts:39:        const { userId, ip, userAgent } = RequestContext.get();
+  src\audit\http-audit.interceptor.ts:40:        // لاگ جمع‌وجور؛ بدنه و کوئری ماسک‌شده
+  src\audit\http-audit.interceptor.ts:41:        try {
+> src\audit\http-audit.interceptor.ts:42:          await this.audit.log({
+> src\audit\http-audit.interceptor.ts:43:            topic: AuditTopic.HTTP_REQUEST,
+  src\audit\http-audit.interceptor.ts:44:            actor_id: userId ?? 0,
+  src\audit\http-audit.interceptor.ts:45:            message: `${method} ${url} -> 200 (${duration}ms)`,
+> src\audit\index.ts:1:export * from './audit.module';
+> src\audit\index.ts:2:export * from './audit.service';
+> src\audit\index.ts:3:export * from './audit.decorator';
+> src\audit\index.ts:4:export * from './audit-topics';
+> src\audit\index.ts:5:export * from './audit-log.entity';
+  src\common\context.middleware.ts:1:import { Injectable, NestMiddleware } from '@nestjs/common';
+  src\common\context.middleware.ts:2:import { Request, Response, NextFunction } from 'express';
+> src\common\context.middleware.ts:3:import { RequestContext } from './request-context';
+  src\common\context.middleware.ts:4:
+  src\common\context.middleware.ts:5:@Injectable()
+> src\common\context.middleware.ts:6:export class ContextMiddleware implements NestMiddleware {
+  src\common\context.middleware.ts:7:  use(req: Request & { user?: any }, _res: Response, next: NextFunction) {
+  src\common\context.middleware.ts:8:    const userId = req.user?.id;
+  src\common\context.middleware.ts:9:    const ip = (req.headers['x-forwarded-for'] as string) || req.ip;
+  src\common\context.middleware.ts:10:    const userAgent = (req.headers['user-agent'] as string) || undefined;
+> src\common\context.middleware.ts:11:    RequestContext.run({ userId, ip, userAgent }, () => next());
+  src\common\context.middleware.ts:12:  }
+  src\common\context.middleware.ts:13:}
+  src\common\request-context.ts:2:
+  src\common\request-context.ts:3:type Ctx = { userId?: number; ip?: string; userAgent?: string };
+> src\common\request-context.ts:4:export class RequestContext {
+  src\common\request-context.ts:5:  private static als = new AsyncLocalStorage<Ctx>();
+  src\common\request-context.ts:6:  static run(ctx: Ctx, fn: () => void) { this.als.run(ctx, fn); }
+  src\app.module.ts:3:import { TypeOrmModule } from '@nestjs/typeorm';
+  src\app.module.ts:4:import { ConfigModule, ConfigService } from '@nestjs/config';
+> src\app.module.ts:5:import { APP_INTERCEPTOR, APP_FILTER } from '@nestjs/core';
+  src\app.module.ts:6:
+  src\app.module.ts:7:import { AuthModule } from './auth/auth.module';
+  src\app.module.ts:19:import { GeofenceModule } from './geofence/geofence.module';
+  src\app.module.ts:20:
+> src\app.module.ts:21:import { AuditModule } from './audit/audit.module';
+> src\app.module.ts:22:import { HttpAuditInterceptor } from './audit/http-audit.interceptor';
+> src\app.module.ts:23:import { GlobalExceptionFilter } from './audit/global-exception.filter';
+  src\app.module.ts:24:
+> src\app.module.ts:25:import { ContextMiddleware } from './common/context.middleware';
+  src\app.module.ts:26:
+  src\app.module.ts:27:@Module({
+  src\app.module.ts:61:    GeofenceModule,
+  src\app.module.ts:62:
+> src\app.module.ts:63:    // Audit (Global providers inside)
+> src\app.module.ts:64:    AuditModule,
+  src\app.module.ts:65:  ],
+  src\app.module.ts:66:  providers: [
+  src\app.module.ts:67:    // لاگ همهٔ درخواست‌های HTTP
+> src\app.module.ts:68:    { provide: APP_INTERCEPTOR, useClass: HttpAuditInterceptor },
+  src\app.module.ts:69:    // ثبت همهٔ خطاها
+> src\app.module.ts:70:    { provide: APP_FILTER, useClass: GlobalExceptionFilter },
+  src\app.module.ts:71:  ],
+  src\app.module.ts:72:})
+  src\app.module.ts:74:  configure(consumer: MiddlewareConsumer) {
+  src\app.module.ts:75:    // ست‌کردن userId / ip / userAgent برای هر درخواست (برای لاگ‌های خودکار)
+> src\app.module.ts:76:    consumer.apply(ContextMiddleware).forRoutes('*');
+  src\app.module.ts:77:  }
+  src\app.module.ts:78:}
+
+
+
+=== package.json (deps) ===
+{
+  "name": "satab-backend",
+  "version": "0.0.1",
+  "description": "",
+  "author": "",
+  "private": true,
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "nest build",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "start:debug": "nest start --debug --watch",
+    "start:prod": "node dist/main",
+    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:cov": "jest --coverage",
+    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
+    "test:e2e": "jest --config ./test/jest-e2e.json"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.0.1",
+    "@nestjs/config": "^4.0.2",
+    "@nestjs/core": "^11.0.1",
+    "@nestjs/jwt": "^11.0.0",
+    "@nestjs/mapped-types": "^2.1.0",
+    "@nestjs/passport": "^11.0.5",
+    "@nestjs/platform-express": "^11.0.1",
+    "@nestjs/platform-socket.io": "^11.1.5",
+    "@nestjs/typeorm": "^11.0.0",
+    "@nestjs/websockets": "^11.1.5",
+    "bcrypt": "^6.0.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.2",
+    "geolib": "^3.3.4",
+    "passport": "^0.7.0",
+    "passport-jwt": "^4.0.1",
+    "pg": "^8.16.3",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
+    "typeorm": "^0.3.25"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.2.0",
+    "@eslint/js": "^9.18.0",
+    "@nestjs/cli": "^11.0.0",
+    "@nestjs/schematics": "^11.0.0",
+    "@nestjs/testing": "^11.0.1",
+    "@swc/cli": "^0.6.0",
+    "@swc/core": "^1.10.7",
+    "@types/bcrypt": "^6.0.0",
+    "@types/express": "^5.0.0",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.10.7",
+    "@types/passport-jwt": "^4.0.1",
+    "@types/socket.io": "^3.0.1",
+    "@types/supertest": "^6.0.2",
+    "eslint": "^9.18.0",
+    "eslint-config-prettier": "^10.0.1",
+    "eslint-plugin-prettier": "^5.2.2",
+    "globals": "^16.0.0",
+    "jest": "^29.7.0",
+    "prettier": "^3.4.2",
+    "source-map-support": "^0.5.21",
+    "supertest": "^7.0.0",
+    "ts-jest": "^29.2.5",
+    "ts-loader": "^9.5.2",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.20.0"
+  },
+  "jest": {
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "transform": {
+      "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "collectCoverageFrom": [
+      "**/*.(t|j)s"
+    ],
+    "coverageDirectory": "../coverage",
+    "testEnvironment": "node"
+  }
+}
+
+=== Nest main.ts/app.module.ts excerpts ===
+---- D:\Satab-Project\satab-backend\src\app.module.ts ----
+// src/app.module.ts
+import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { APP_INTERCEPTOR, APP_FILTER } from '@nestjs/core';
+
+import { AuthModule } from './auth/auth.module';
+import { LicenseModule } from './licenses/license.module';
+import { DashboardModule } from './dashboard/dashboard.module';
+import { UserModule } from './users/users.module';
+import { VehiclesModule } from './vehicles/vehicles.module';
+import { DriverRouteModule } from './drivers/driver-route.module';
+import { RolePermissionModule } from './permissions/role-permission.module';
+import { VehiclePoliciesModule } from './vehicle-policies/vehicle-policies.module';
+import { AllowedCountriesModule } from './country-policies/allowed-countries.module';
+import { TracksModule } from './tracks/tracks.module';
+import { ConsumablesModule } from './consumables/consumables.module';
+import { DriverVehicleAssignmentModule } from './driver-vehicle-assignment/driver-vehicle-assignment.module';
+import { GeofenceModule } from './geofence/geofence.module';
+
+import { AuditModule } from './audit/audit.module';
+import { HttpAuditInterceptor } from './audit/http-audit.interceptor';
+import { GlobalExceptionFilter } from './audit/global-exception.filter';
+
+import { ContextMiddleware } from './common/context.middleware';
+
+@Module({
+  imports: [
+    // ENV
+    ConfigModule.forRoot({ isGlobal: true }),
+
+    // Database
+    TypeOrmModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        type: 'postgres',
+        host: config.get<string>('DB_HOST'),
+        port: parseInt(config.get<string>('DB_PORT') ?? '5432', 10),
+        username: config.get<string>('DB_USERNAME'),
+        password: config.get<string>('DB_PASSWORD'),
+        database: config.get<string>('DB_NAME'),
+        autoLoadEntities: true,   // entityÙ‡Ø§ Ø®ÙˆØ¯Ú©Ø§Ø±
+        synchronize: true,        // ÙÙ‚Ø· ØªÙˆØ³Ø¹Ù‡Ø› Ù¾Ø±ÙˆØ¯Ø§Ú©Ø´Ù† false
+      }),
+    }),
+
+    // Feature modules
+    TracksModule,
+    AllowedCountriesModule,
+    VehiclePoliciesModule,
+    UserModule,
+    AuthModule,
+    LicenseModule,
+    DashboardModule,
+    VehiclesModule,
+    DriverRouteModule,
+    RolePermissionModule,
+    ConsumablesModule,
+    DriverVehicleAssignmentModule,
+    GeofenceModule,
+
+    // Audit (Global providers inside)
+    AuditModule,
+  ],
+  providers: [
+    // Ù„Ø§Ú¯ Ù‡Ù…Ù‡Ù” Ø¯Ø±Ø®ÙˆØ§Ø³Øªâ€ŒÙ‡Ø§ÛŒ HTTP
+    { provide: APP_INTERCEPTOR, useClass: HttpAuditInterceptor },
+    // Ø«Ø¨Øª Ù‡Ù…Ù‡Ù” Ø®Ø·Ø§Ù‡Ø§
+    { provide: APP_FILTER, useClass: GlobalExceptionFilter },
+  ],
+})
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    // Ø³Øªâ€ŒÚ©Ø±Ø¯Ù† userId / ip / userAgent Ø¨Ø±Ø§ÛŒ Ù‡Ø± Ø¯Ø±Ø®ÙˆØ§Ø³Øª (Ø¨Ø±Ø§ÛŒ Ù„Ø§Ú¯â€ŒÙ‡Ø§ÛŒ Ø®ÙˆØ¯Ú©Ø§Ø±)
+    consumer.apply(ContextMiddleware).forRoutes('*');
+  }
+}
+---- D:\Satab-Project\satab-backend\src\main.ts ----
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+import { DataSource } from 'typeorm';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+
+  app.enableCors(); // âœ… ÙØ¹Ø§Ù„â€ŒØ³Ø§Ø²ÛŒ CORS
+
+  await app.listen(process.env.PORT ?? 3000);
+
+  console.log('ðŸ“¡ Connected to DB:', (await app.get(DataSource)).isInitialized);
+
+  console.log({
+    DB_HOST: process.env.DB_HOST,
+    DB_PORT: process.env.DB_PORT,
+    DB_USERNAME: process.env.DB_USERNAME,
+    DB_PASSWORD: process.env.DB_PASSWORD,
+    DB_NAME: process.env.DB_NAME,
+  });
+}
+bootstrap();

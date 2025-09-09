@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    /* Target & Module */
+    "target": "ES2020",
+    "module": "ESNext",
+
+    /* React JSX Support */
+    "jsx": "react-jsx",
+
+    /* Libraries */
+    "lib": ["ES2020", "DOM"],
+
+    /* Bundler mode (Vite) */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+
+    /* Output */
+    "noEmit": true,
+
+    /* Strictness */
+    "strict": true,
+    "skipLibCheck": true,
+
+    /* Linting */
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true
+  },
+  "include": ["src", "vite.config.ts"]
+}

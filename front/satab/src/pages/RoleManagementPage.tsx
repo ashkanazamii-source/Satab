@@ -1,0 +1,2941 @@
+import { useEffect, useState, useMemo } from 'react';
+import api from '../services/api';
+import {
+  Dialog, DialogTitle, DialogContent, DialogActions,
+  TextField, Checkbox, FormGroup, FormControlLabel, Grid,
+  IconButton, Button, Collapse, List, ListItem, ListItemText, Box
+} from '@mui/material';
+import EditIcon from '@mui/icons-material/Edit';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
+import DirectionsBusIcon from '@mui/icons-material/DirectionsBus';
+import { Stack } from '@mui/material';
+import { Chip } from '@mui/material';
+import DeleteIcon from '@mui/icons-material/Delete';
+import PublicIcon from '@mui/icons-material/Public';
+import { alpha, keyframes } from '@mui/material/styles';
+import { Paper, Typography, Avatar, Tooltip } from '@mui/material';
+// ثوابت یکجا
+export const NODE_W = 200;   // عرض ثابت کارت
+export const NODE_H = 76;    // ارتفاع ثابت کارت
+function UserCard({
+  u,
+  isRoot = false,
+  onEdit, onDelete, onEditVehiclePolicy, onGrantMonitors,
+  currentUserId, currentUserRoleLevel, canDelete,
+}: any) {
+  const roleColor =
+    u.role_level === 2 ? royal.c2 :
+      u.role_level === 1 ? '#60A5FA' : royal.c1;
+
+  return (
+    <Paper
+      elevation={0}
+      sx={(t) => ({
+        ...fancyBorderRoyal(t),
+        // ⬇️ ابعاد ثابت
+        width: NODE_W,
+        height: NODE_H,
+        px: 1,
+        py: 0.75,
+        display: 'flex',
+        alignItems: 'center',
+        overflow: 'hidden', // متن یا دکمه‌ها کارت را بزرگ نکنند
+        position: 'relative',
+        transition: 'transform .18s ease, box-shadow .18s ease',
+        '&:hover': {
+          transform: 'translateY(-2px)',
+          boxShadow: `0 16px 28px ${alpha(royal.c2, .18)}`,
+        },
+      })}
+    >
+      <Stack direction="row" alignItems="center" spacing={1.25} sx={{ width: '100%', minWidth: 0 }}>
+        <Avatar
+          sx={{
+            width: 34, height: 34,
+            background: `linear-gradient(135deg, ${royal.c1}, ${royal.c2})`,
+            border: '2px solid #fff',
+            animation: isRoot ? `${glow} 1.8s ease-in-out infinite` : 'none',
+            flexShrink: 0,
+          }}
+        >
+          {String(u.full_name || '?').slice(0, 1)}
+        </Avatar>
+
+        <Box sx={{ minWidth: 0, flex: 1 }}>
+          <Typography noWrap fontWeight={700} sx={{ lineHeight: 1.1, maxWidth: '100%' }}>
+            {u.full_name}
+          </Typography>
+          <Typography noWrap variant="caption" sx={{ color: roleColor, lineHeight: 1.1, maxWidth: '100%' }}>
+            ({roleNameFa(u.role_level)})
+          </Typography>
+        </Box>
+
+        <Stack
+          direction="row"
+          gap={0.5}
+          sx={{
+            ml: 'auto',
+            flexShrink: 0,
+            '& .MuiIconButton-root': { width: 28, height: 28, p: 0.25 }, // دکمه‌ها کوچک و فشرده
+          }}
+        >
+          {/* مدیرکل ← سیاست/سهمیه خودرو برای SA */}
+          {onEditVehiclePolicy && currentUserRoleLevel === 1 && u.role_level === 2 && (
+            <Tooltip title="سهمیه و مجوز ماشین‌ها">
+              <IconButton
+                size="small"
+                onClick={(e) => { e.stopPropagation(); onEditVehiclePolicy(u); }}
+                sx={{ bgcolor: alpha(royal.c2, .08), '&:hover': { bgcolor: alpha(royal.c2, .16) } }}
+              >
+                <DirectionsBusIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          )}
+
+          {/* حذف */}
+          {onDelete && u.id !== currentUserId && (
+            ((currentUserRoleLevel === 1 && u.role_level > 1) ||
+              (currentUserRoleLevel === 2 && canDelete && u.role_level > 2)) && (
+              <Tooltip title="حذف کاربر">
+                <IconButton
+                  size="small"
+                  color="error"
+                  onClick={(e) => { e.stopPropagation(); onDelete(u); }}
+                  sx={{ bgcolor: alpha('#ef4444', .08), '&:hover': { bgcolor: alpha('#ef4444', .16) } }}
+                >
+                  <DeleteIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            )
+          )}
+
+          {/* مانیتورینگ برای زیرمجموعه‌های SA */}
+          {onGrantMonitors && currentUserRoleLevel === 2 && u.role_level > 2 && (
+            <Tooltip title="واگذاری پرمیشن‌های مانیتورینگ">
+              <IconButton
+                size="small"
+                onClick={(e) => { e.stopPropagation(); onGrantMonitors(u); }}
+                sx={{ bgcolor: alpha(royal.c1, .08), '&:hover': { bgcolor: alpha(royal.c1, .16) } }}
+              >
+                <DirectionsBusIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          )}
+
+          {/* ویرایش */}
+          {((currentUserRoleLevel === 2 && u.role_level > 2 && u.id !== currentUserId) ||
+            (currentUserRoleLevel === 1 && u.role_level === 2)) && (
+              <Tooltip title="ویرایش کاربر">
+                <IconButton
+                  size="small"
+                  onClick={(e) => { e.stopPropagation(); onEdit?.(u); }}
+                  sx={{ bgcolor: alpha(royal.c2, .08), '&:hover': { bgcolor: alpha(royal.c2, .16) } }}
+                >
+                  <EditIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            )}
+        </Stack>
+      </Stack>
+    </Paper>
+  );
+}
+const shimmerRoyal = keyframes`
+  0% { background-position: 0% 50% }
+  50% { background-position: 100% 50% }
+  100% { background-position: 0% 50% }
+`;
+const glow = keyframes`
+  0% { box-shadow: 0 0 0 0 rgba(37,99,235,.35) }
+  70% { box-shadow: 0 0 0 10px rgba(37,99,235,0) }
+  100% { box-shadow: 0 0 0 0 rgba(37,99,235,0) }
+`;
+
+// قاب گرادیانی بدون شبه‌عنصر (بدون مشکل هلال گوشه‌ها)
+const fancyBorderRoyal = (t: any) => ({
+  border: '1px solid transparent',
+  borderRadius: 12,
+  background: `
+    linear-gradient(${alpha(t.palette.background.paper, 0.96)}, ${alpha(t.palette.background.paper, 0.96)}) padding-box,
+    linear-gradient(135deg, ${royal.c1}, ${royal.c2}) border-box
+  `,
+  backgroundClip: 'padding-box, border-box',
+  backgroundOrigin: 'border-box',
+  backgroundSize: '200% 200%, 200% 200%',
+  animation: `${shimmerRoyal} 10s ease infinite`,
+});
+const royal = {
+  c1: '#0EA5B7',   // teal
+  c2: '#2563EB',   // royal blue
+  bg: '#0F172A',   // تیره شیک
+};
+// ---------- INTERFACE ----------
+interface User {
+  id: number;
+  full_name: string;
+  role_level: number;
+  parent_id?: number | null;
+}
+
+
+
+// ——— کارت هر نود (مربعِ گوشه‌گرد)
+function NodeCard({
+  u,
+  isRoot = false,
+  onEdit, onDelete, onEditVehiclePolicy, onGrantMonitors,
+  currentUserId, currentUserRoleLevel, canDelete,
+}: {
+  u: UserNode;
+  isRoot?: boolean;
+  onEdit?: (u: UserNode) => void;
+  onDelete?: (u: UserNode) => void;
+  onEditVehiclePolicy?: (u: UserNode) => void;
+  onGrantMonitors?: (u: UserNode) => void;
+  currentUserId?: number;
+  currentUserRoleLevel?: number;
+  canDelete?: boolean;
+}) {
+  const roleColor =
+    u.role_level === 2 ? royal.c2 :
+      u.role_level === 1 ? '#60A5FA' : royal.c1;
+
+  return (
+    <Paper
+      elevation={0}
+      sx={{
+        // ⬇️ ابعاد ثابت
+        width: NODE_W,
+        height: NODE_H,
+        borderRadius: 12,
+        px: 1,
+        py: 0.75,
+        display: 'flex',
+        alignItems: 'center',
+        overflow: 'hidden',
+        bgcolor: 'background.paper',
+        background: `linear-gradient(135deg, ${royal.c1}22, ${royal.c2}22)`,
+        border: `1px solid ${royal.c2}44`,
+        boxShadow: `0 12px 24px ${royal.c2}1f`,
+        transition: 'transform .18s ease, box-shadow .18s ease',
+        '&:hover': { transform: 'translateY(-2px)', boxShadow: `0 16px 32px ${royal.c2}2a` },
+      }}
+    >
+      <Stack direction="row" alignItems="center" spacing={1.25} sx={{ width: '100%', minWidth: 0 }}>
+        <Avatar
+          sx={{
+            width: 34, height: 34,
+            background: `linear-gradient(135deg, ${royal.c1}, ${royal.c2})`,
+            color: '#fff', fontWeight: 700,
+            border: '2px solid #fff',
+            flexShrink: 0,
+          }}
+        >
+          {String(u.full_name || '?').slice(0, 1)}
+        </Avatar>
+
+        <Box sx={{ minWidth: 0, flex: 1 }}>
+          <Typography noWrap fontWeight={700} sx={{ lineHeight: 1.1, maxWidth: '100%' }}>
+            {u.full_name}
+          </Typography>
+          <Typography noWrap variant="caption" sx={{ color: roleColor, lineHeight: 1.1, maxWidth: '100%' }}>
+            ({roleNameFa(u.role_level)})
+          </Typography>
+        </Box>
+
+        <Stack
+          direction="row"
+          gap={0.5}
+          sx={{
+            ml: 'auto',
+            flexShrink: 0,
+            '& .MuiIconButton-root': { width: 28, height: 28, p: 0.25 },
+          }}
+        >
+          {/* مدیرکل → سیاست/سهمیه خودرو برای SA */}
+          {onEditVehiclePolicy && currentUserRoleLevel === 1 && u.role_level === 2 && (
+            <Tooltip title="سهمیه و مجوز ماشین‌ها">
+              <IconButton size="small" onClick={(e) => { e.stopPropagation(); onEditVehiclePolicy(u); }}>
+                <DirectionsBusIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          )}
+
+          {/* حذف */}
+          {onDelete && u.id !== currentUserId && (
+            ((currentUserRoleLevel === 1 && u.role_level > 1) ||
+              (currentUserRoleLevel === 2 && canDelete && u.role_level > 2)) && (
+              <Tooltip title="حذف کاربر">
+                <IconButton size="small" color="error" onClick={(e) => { e.stopPropagation(); onDelete(u); }}>
+                  <DeleteIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            )
+          )}
+
+          {/* مانیتورینگ برای زیرمجموعه‌های SA */}
+          {onGrantMonitors && currentUserRoleLevel === 2 && u.role_level > 2 && (
+            <Tooltip title="واگذاری پرمیشن‌های مانیتورینگ">
+              <IconButton size="small" onClick={(e) => { e.stopPropagation(); onGrantMonitors(u); }}>
+                <DirectionsBusIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          )}
+
+          {/* ویرایش */}
+          {onEdit &&
+            ((currentUserRoleLevel === 2 && u.role_level > 2 && u.id !== currentUserId) ||
+              (currentUserRoleLevel === 1 && u.role_level === 2)) && (
+              <Tooltip title="ویرایش کاربر">
+                <IconButton size="small" onClick={(e) => { e.stopPropagation(); onEdit(u); }}>
+                  <EditIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            )}
+        </Stack>
+      </Stack>
+    </Paper>
+  );
+}
+// ——— استایل درخت با خطوط اتصال (بدون کتابخانه)
+const orgTreeSx = {
+  // تنظیمات
+  '--gx': '10px',                      // فاصله افقی بین نودها
+  '--gy': '18px',                      // فاصله عمودی بین سطوح
+  '--lw': '2px',                       // ضخامت خط
+  '--lc': alpha(royal.c2, .4),         // رنگ خط
+  '--cr': '6px',                       // انحنای گوشه‌ی خطوط
+
+  direction: 'ltr',
+  textAlign: 'center',
+
+  '& ul': {
+    position: 'relative',
+    paddingLeft: 0,
+    margin: 0,
+    display: 'inline-block',
+    paddingTop: 'var(--gy)',           // فاصله تا نوار افقیِ خواهر/برادرها
+  },
+
+  '& li': {
+    listStyle: 'none',
+    display: 'inline-block',
+    verticalAlign: 'top',
+    position: 'relative',
+    padding: 'var(--gy) var(--gx) 0 var(--gx)', // بالا = فاصله تا نوار افقی
+  },
+
+  // نیمه‌های نوار افقی بین خواهر/برادرها
+  '& li::before, & li::after': {
+    content: '""',
+    position: 'absolute',
+    top: 0,
+    width: '50%',
+    height: 'var(--gy)',
+    borderTop: `var(--lw) solid var(--lc)`,
+  },
+  '& li::before': { right: '50%' },
+  '& li::after': { left: '50%' },
+
+  // تک‌فرزندی: خط افقی لازم نیست
+  '& li:only-child::before, & li:only-child::after': { display: 'none' },
+  '& li:only-child': { paddingTop: 0 },
+
+  // ابتدا/انتهای خواهر/برادرها: نیمه‌ی اضافی حذف + گوشه گرد
+  '& li:first-of-type::before': { borderTop: 'none' },
+  '& li:last-of-type::after': { borderTop: 'none' },
+  '& li:last-of-type::before': {
+    borderRight: `var(--lw) solid var(--lc)`,
+    borderTopLeftRadius: 'var(--cr)',
+  },
+  '& li:first-of-type::after': {
+    borderLeft: `var(--lw) solid var(--lc)`,
+    borderTopRightRadius: 'var(--cr)',
+  },
+
+  // 👇 توجه: عمودیِ قدیمی را حذف کردیم تا اتصال دقیق را خودِ نود بکشد
+  // '& ul ul::before':  << اینو نداشته باش
+};
+
+// ——— نود بازگشتی درخت
+function OrgTreeNode({
+  node,
+  onEdit, onDelete, onEditVehiclePolicy, onGrantMonitors,
+  currentUserId, currentUserRoleLevel, canDelete,
+}: {
+  node: UserNode;
+  onEdit?: (u: UserNode) => void;
+  onDelete?: (u: UserNode) => void;
+  onEditVehiclePolicy?: (u: UserNode) => void;
+  onGrantMonitors?: (u: UserNode) => void;
+  currentUserId?: number;
+  currentUserRoleLevel?: number;
+  canDelete?: boolean;
+}) {
+  const children = node.subordinates || [];
+  return (
+    <Box component="li">
+      <NodeCard
+        u={node}
+        isRoot={node.role_level === 2}
+        onEdit={onEdit}
+        onDelete={onDelete}
+        onEditVehiclePolicy={onEditVehiclePolicy}
+        onGrantMonitors={onGrantMonitors}
+        currentUserId={currentUserId}
+        currentUserRoleLevel={currentUserRoleLevel}
+        canDelete={canDelete}
+      />
+      {children.length > 0 && (
+        <Box component="ul">
+          {children.map((ch: UserNode) => (
+            <OrgTreeNode
+              key={ch.id}
+              node={ch}
+              onEdit={onEdit}
+              onDelete={onDelete}
+              onEditVehiclePolicy={onEditVehiclePolicy}
+              onGrantMonitors={onGrantMonitors}
+              currentUserId={currentUserId}
+              currentUserRoleLevel={currentUserRoleLevel}
+              canDelete={canDelete}
+            />
+          ))}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+
+
+// ---------- LABELS ----------
+function roleNameFa(level: number) {
+  switch (level) {
+    case 1: return 'مدیرکل';
+    case 2: return 'سوپرادمین';
+    case 3: return 'مدیر شعبه';
+    case 4: return 'مالک';
+    case 5: return 'تکنسین';
+    case 6: return 'راننده';
+    default: return '---';
+  }
+}
+
+const actionLabels: Record<string, string> = {
+  create_user: 'ایجاد کاربر',
+  grant_sub_permissions: 'دادن نقش‌های زیرمجموعه',
+  view_transaction: 'مشاهده تراکنش‌ها',
+  view_report: 'مشاهده گزارش‌ها',
+  control_device_remotely: 'کنترل از راه دور دستگاه',
+  report_device_fault: 'ثبت خرابی دستگاه',
+  chat: 'امکان چت',
+  track_driver: 'ردیابی راننده‌ها',
+  view_logs: 'مشاهده لاگ‌ها',
+};
+const actions = Object.keys(actionLabels);
+
+// ========== MAIN PAGE ==========
+export default function RoleManagementPage() {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [tree, setTree] = useState<UserNode[]>([]);
+  const [flatUsers, setFlatUsers] = useState<{ id: number; full_name: string; role_level: number }[]>([]);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      setLoading(true);
+      try {
+        const { data: me } = await api.get('/auth/me');
+        setUser(me);
+
+        if (me.role_level === 1) {
+          const { data } = await api.get('/users/my-subordinates-flat');
+          setTree(buildTree(data, { id: me.id, full_name: me.full_name, role_level: me.role_level }));
+
+        }
+      } catch {
+        setUser(null);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchData();
+  }, []);
+
+  if (loading) return <div>در حال بارگذاری...</div>;
+  if (!user) return <div>مشکل در دریافت اطلاعات کاربر</div>;
+
+  switch (user.role_level) {
+    case 1:
+      return <ManagerRoleSection user={user} tree={tree} setTree={setTree} />
+
+    case 2:
+      return <SuperAdminRoleSection user={user} />;
+    case 3:
+      return <BranchManagerRoleSection user={user} />;
+    case 4:
+      return <OwnerRoleSection user={user} />;
+    case 5:
+      return <TechnicianRoleSection user={user} />;
+    case 6:
+      return <DriverRoleSection user={user} />;
+    default:
+      return <div>نقش کاربر شناسایی نشد.</div>;
+  }
+}
+
+interface UserNode {
+  id: number;
+  full_name: string;
+  role_level: number;
+  subordinates?: UserNode[];
+}
+
+interface UserNode extends User {
+  subordinates?: UserNode[];
+}
+
+const VEHICLE_TYPES = [
+  { code: 'bus', label: 'اتوبوس' },
+  { code: 'minibus', label: 'مینی‌بوس' },
+  { code: 'van', label: 'ون' },
+  { code: 'tanker', label: 'تانکر آب' },
+  { code: 'truck', label: 'کامیون' },
+  { code: 'khavar', label: 'خاور' },
+  { code: 'sedan', label: 'سواری' },
+  { code: 'pickup', label: 'وانت' },
+] as const;
+
+type VehicleTypeCode = typeof VEHICLE_TYPES[number]['code'];
+
+// پارامترهای مانیتورینگ قابل انتخاب برای هر نوع خودرو
+const MONITOR_PARAMS = [
+  { key: 'gps', label: 'GPS / موقعیت لحظه‌ای' },
+  { key: 'ignition', label: 'وضعیت سوییچ (روشن/خاموش)' },
+  { key: 'idle_time', label: 'مدت توقف/سکون' },
+  { key: 'odometer', label: 'کیلومترشمار' },
+  { key: 'geo_fence', label: 'ژئوفنس/منطقه مجاز' },
+  { key: 'stations', label: 'تعریف ایستگاه' },
+  { key: 'routes', label: 'تعریف مسیر' },
+  { key: 'consumables', label: 'چک تعویض لوازم مصرفی' },
+] as const;
+type MonitorKey = typeof MONITOR_PARAMS[number]['key'];
+
+
+
+function VehicleQuotaDialog({
+  open,
+  onClose,
+  superAdmin,
+}: {
+  open: boolean;
+  onClose: (changed?: boolean) => void;
+  superAdmin: UserNode | null;
+}) {
+  const VEHICLE_TYPES = [
+    { code: 'bus', label: 'اتوبوس' },
+    { code: 'minibus', label: 'مینی‌بوس' },
+    { code: 'van', label: 'ون' },
+    { code: 'tanker', label: 'تانکر آب' },
+    { code: 'truck', label: 'کامیون' },
+    { code: 'khavar', label: 'خاور' },
+    { code: 'sedan', label: 'سواری' },
+    { code: 'pickup', label: 'وانت' },
+  ] as const;
+  type VehicleTypeCode = typeof VEHICLE_TYPES[number]['code'];
+
+  const MONITOR_PARAMS = [
+    { key: 'gps', label: 'GPS / موقعیت لحظه‌ای' },
+    { key: 'ignition', label: 'وضعیت سوییچ (روشن/خاموش)' },
+    { key: 'idle_time', label: 'مدت توقف/سکون' },
+    { key: 'odometer', label: 'کیلومترشمار' },
+    { key: 'geo_fence', label: 'ژئوفنس/منطقه مجاز' },
+    { key: 'stations', label: 'تعریف ایستگاه' },
+    { key: 'routes', label: 'تعریف مسیر' },
+    { key: 'consumables', label: 'چک تعویض لوازم مصرفی' },
+  ] as const;
+  type MonitorKey = typeof MONITOR_PARAMS[number]['key'];
+
+  const COUNTRY_OPTS = [
+    { code: 'IR', label: 'ایران' },
+    { code: 'QA', label: 'قطر' },
+    { code: 'AE', label: 'امارات' },
+    { code: 'IQ', label: 'عراق' },
+    { code: 'AF', label: 'افغانستان' },
+    { code: 'TM', label: 'ترکمنستان' },
+    { code: 'TR', label: 'ترکیه' },
+  ] as const;
+  type CountryCode = typeof COUNTRY_OPTS[number]['code'];
+
+  type VehiclePolicy = {
+    vehicle_type_code: VehicleTypeCode;
+    is_allowed: boolean;
+    max_count: number;
+    monitor_params: MonitorKey[];
+  };
+
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+
+  const [policies, setPolicies] = useState<Record<VehicleTypeCode, VehiclePolicy>>(() => {
+    const init: Record<VehicleTypeCode, VehiclePolicy> = {} as any;
+    VEHICLE_TYPES.forEach(t => {
+      init[t.code] = {
+        vehicle_type_code: t.code,
+        is_allowed: false,
+        max_count: 0,
+        monitor_params: [],
+      };
+    });
+    return init;
+  });
+
+  const [expanded, setExpanded] = useState<Record<VehicleTypeCode, boolean>>({} as any);
+
+  // کشورها
+  const [allowedCountries, setAllowedCountries] = useState<CountryCode[]>([]);
+
+  useEffect(() => {
+    if (!open || !superAdmin) return;
+    const run = async () => {
+      setLoading(true);
+      setErrorMsg('');
+      try {
+        // سیاست‌های فعلی
+        const { data: vehiclePolicies } = await api.get(`/vehicle-policies/user/${superAdmin.id}`);
+        const next: Record<VehicleTypeCode, VehiclePolicy> = {} as any;
+        const exp: Record<VehicleTypeCode, boolean> = {} as any;
+        VEHICLE_TYPES.forEach(t => {
+          const found = vehiclePolicies.find((p: any) => p.vehicle_type_code === t.code);
+          const allowed = !!found?.is_allowed;
+          next[t.code] = {
+            vehicle_type_code: t.code,
+            is_allowed: allowed,
+            max_count: Number(found?.max_count) || 0,
+            monitor_params: Array.isArray(found?.monitor_params) ? found.monitor_params : [],
+          };
+          exp[t.code] = allowed;
+        });
+        setPolicies(next);
+        setExpanded(exp);
+
+        // کشورها
+        const { data: countries } = await api.get(`/country-policies/user/${superAdmin.id}`);
+        setAllowedCountries(countries || []);
+      } catch (e: any) {
+        setErrorMsg(e?.response?.data?.message || 'خطا در دریافت اطلاعات');
+      } finally {
+        setLoading(false);
+      }
+    };
+    run();
+  }, [open, superAdmin]);
+
+  const toggleAllowed = (code: VehicleTypeCode, checked: boolean) => {
+    setPolicies(prev => ({
+      ...prev,
+      [code]: {
+        ...prev[code],
+        is_allowed: checked,
+        max_count: checked ? Math.max(prev[code].max_count, 1) : 0,
+      },
+    }));
+    setExpanded(prev => ({ ...prev, [code]: checked }));
+  };
+
+  const changeMax = (code: VehicleTypeCode, value: string) => {
+    const num = Math.max(0, Number(value) || 0);
+    setPolicies(prev => ({ ...prev, [code]: { ...prev[code], max_count: num } }));
+  };
+
+  const toggleMonitor = (code: VehicleTypeCode, key: MonitorKey, checked: boolean) => {
+    setPolicies(prev => {
+      const set = new Set(prev[code].monitor_params);
+      if (checked) set.add(key); else set.delete(key);
+      return {
+        ...prev,
+        [code]: { ...prev[code], monitor_params: Array.from(set) as MonitorKey[] },
+      };
+    });
+  };
+
+  const toggleCountry = (code: CountryCode, checked: boolean) => {
+    setAllowedCountries(prev => {
+      const s = new Set(prev);
+      if (checked) s.add(code); else s.delete(code);
+      return Array.from(s) as CountryCode[];
+    });
+  };
+
+  const handleSave = async () => {
+    if (!superAdmin) return;
+    setLoading(true);
+    setErrorMsg('');
+    try {
+      // ذخیره کشورها
+      await api.put(`/country-policies/user/${superAdmin.id}`, { countries: allowedCountries });
+      // ذخیره سیاست وسایل
+      const payload = { policies: VEHICLE_TYPES.map(t => policies[t.code]) };
+      await api.put(`/vehicle-policies/user/${superAdmin.id}`, payload);
+      onClose(true);
+    } catch (e: any) {
+      setErrorMsg(e?.response?.data?.message || 'ذخیره‌سازی ناموفق بود');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onClose={() => onClose(false)} fullWidth>
+      <DialogTitle>سهمیه و مجوز — {superAdmin?.full_name}</DialogTitle>
+      <DialogContent dividers>
+        {loading ? (
+          <div>در حال بارگذاری...</div>
+        ) : (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
+            {errorMsg && <Box sx={{ color: 'error.main' }}>{errorMsg}</Box>}
+
+            {/* بخش انتخاب کشورها */}
+            <Box sx={{ border: '1px solid #ccc', borderRadius: 1, p: 2 }}>
+              <Box sx={{ fontWeight: 600, mb: 1 }}>کشورهای مجاز پلاک</Box>
+              <FormGroup>
+                <Grid container spacing={1}>
+                  {COUNTRY_OPTS.map(c => (
+                    <Grid item xs={12} sm={6} md={4} key={c.code}>
+                      <FormControlLabel
+                        control={
+                          <Checkbox
+                            checked={allowedCountries.includes(c.code)}
+                            onChange={(e) => toggleCountry(c.code, e.target.checked)}
+                          />
+                        }
+                        label={c.label}
+                      />
+                    </Grid>
+                  ))}
+                </Grid>
+              </FormGroup>
+            </Box>
+
+            {/* لیست انواع خودرو */}
+            {VEHICLE_TYPES.map(t => {
+              const pol = policies[t.code];
+              const openRow = !!expanded[t.code];
+
+              return (
+                <Box key={t.code} sx={{ border: '1px solid #eee', borderRadius: 1, p: 2 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          checked={pol.is_allowed}
+                          onChange={e => toggleAllowed(t.code, e.target.checked)}
+                        />
+                      }
+                      label={t.label}
+                    />
+                    <IconButton onClick={() => setExpanded(prev => ({ ...prev, [t.code]: !openRow }))} disabled={!pol.is_allowed}>
+                      {openRow ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                    </IconButton>
+                  </Box>
+
+                  <Collapse in={openRow} timeout="auto" unmountOnExit>
+                    <Box sx={{ mt: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <TextField
+                        label="حداکثر مجاز"
+                        type="number"
+                        size="small"
+                        value={pol.max_count}
+                        onChange={e => changeMax(t.code, e.target.value)}
+                        inputProps={{ min: 0 }}
+                        sx={{ maxWidth: 240 }}
+                      />
+
+                      <Box sx={{ fontWeight: 600, fontSize: 14 }}>پارامترهای مانیتورینگ</Box>
+                      <FormGroup>
+                        <Grid container spacing={1}>
+                          {MONITOR_PARAMS.map(mp => (
+                            <Grid item xs={12} sm={6} md={4} key={mp.key}>
+                              <FormControlLabel
+                                control={
+                                  <Checkbox
+                                    checked={pol.monitor_params.includes(mp.key as any)}
+                                    onChange={(e) => toggleMonitor(t.code, mp.key as any, e.target.checked)}
+                                  />
+                                }
+                                label={mp.label}
+                              />
+                            </Grid>
+                          ))}
+                        </Grid>
+                      </FormGroup>
+                    </Box>
+                  </Collapse>
+                </Box>
+              );
+            })}
+          </Box>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={() => onClose(false)} disabled={loading}>انصراف</Button>
+        <Button variant="contained" onClick={handleSave} disabled={loading}>ذخیره</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+// کمک‌تابع: پیدا کردن نود با id داخل درخت
+function findNodeById(root: UserNode | undefined, id: number | null): UserNode | null {
+  if (!root || id == null) return null;
+  if (root.id === id) return root;
+  for (const ch of root.subordinates || []) {
+    const f = findNodeById(ch, id);
+    if (f) return f;
+  }
+  return null;
+}
+
+// نوار بالای صفحه: لیست سوپراَدمین‌ها برای انتخاب
+function SuperAdminStrip({
+  items, selectedId, onSelect,
+}: {
+  items: UserNode[];
+  selectedId: number | null;
+  onSelect: (id: number) => void;
+}) {
+  return (
+    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
+      {items.map((sa: UserNode) => (
+        <Paper
+          key={sa.id}
+          onClick={() => onSelect(sa.id)}
+          sx={(t) => ({
+            cursor: 'pointer',
+            px: 1.25, py: 1,
+            borderRadius: 12,
+            minWidth: 220,
+            display: 'flex', alignItems: 'center', gap: 1,
+            ...fancyBorderRoyal(t),
+            boxShadow: selectedId === sa.id ? `0 10px 24px ${alpha(royal.c2, .18)}` : 'none',
+            opacity: selectedId && selectedId !== sa.id ? .7 : 1,
+            transition: 'all .18s ease',
+            '&:hover': { transform: 'translateY(-2px)' },
+          })}
+        >
+          <Avatar sx={{ width: 34, height: 34, background: `linear-gradient(135deg, ${royal.c1}, ${royal.c2})`, color: '#fff' }}>
+            {String(sa.full_name || '?').slice(0, 1)}
+          </Avatar>
+          <Box sx={{ minWidth: 0 }}>
+            <Typography noWrap fontWeight={700}>{sa.full_name}</Typography>
+            <Typography noWrap variant="caption" sx={{ color: royal.c2 }}>
+              (سوپرادمین)
+            </Typography>
+          </Box>
+        </Paper>
+      ))}
+    </Stack>
+  );
+}
+
+// درخت «همیشه باز»: بدون Collapse/Expand — کل زیرشاخه‌ها یکجا
+function AlwaysOpenTree({
+  root,
+  currentUserId,
+  currentUserRoleLevel,
+  canDelete,
+  onEdit,
+  onDelete,
+  onEditVehiclePolicy,
+  onGrantMonitors,
+}: {
+  root: UserNode;
+  currentUserId: number;
+  currentUserRoleLevel: number;
+  canDelete?: boolean;
+  onEdit?: (u: UserNode) => void;
+  onDelete?: (u: UserNode) => void;
+  onEditVehiclePolicy?: (u: UserNode) => void;
+  onGrantMonitors?: (u: UserNode) => void;
+}) {
+  const render = (u: UserNode, depth = 0) => (
+    <Box
+      key={u.id}
+      sx={{
+        position: 'relative',
+        ml: depth ? 3 : 0,
+        // نمایش خط‌های درختی
+        ...(depth > 0 && {
+          '&::before': {
+            content: '""',
+            position: 'absolute',
+            right: 'calc(100% - 12px)',
+            top: 0, bottom: 0,
+            borderRight: '1px dashed',
+            borderColor: alpha(royal.c1, .25),
+          },
+        }),
+      }}
+    >
+      <UserCard
+        u={u}
+        isRoot={depth === 0}
+        onEdit={onEdit}
+        onDelete={onDelete}
+        onEditVehiclePolicy={onEditVehiclePolicy}
+        onGrantMonitors={onGrantMonitors}
+        currentUserId={currentUserId}
+        currentUserRoleLevel={currentUserRoleLevel}
+        canDelete={!!canDelete}
+      />
+      {(u.subordinates || []).map(ch => render(ch, depth + 1))}
+    </Box>
+  );
+
+  return <Box>{render(root, 0)}</Box>;
+}
+
+// ========== نمایش بازگشتی درخت ==========
+function UserTreeList({
+  users,
+  onEdit,
+  onEditVehiclePolicy,
+  currentUserRoleLevel,
+  currentUserId,                 // 👈 جدید
+  onEditCountryPolicy,
+  onAddVehicle,              // ⬅️ جدید
+  onGrantMonitors,          // ⬅️ جدید
+  onManageVehicles,      // 👈 جدید
+  onDelete,
+  canDelete
+}: {
+  users: UserNode[];
+  onEdit?: (u: UserNode) => void;
+  onEditVehiclePolicy?: (u: UserNode) => void;
+  currentUserRoleLevel?: number; // 1 = مدیرکل
+  onEditCountryPolicy?: (u: UserNode) => void;   // ⬅️ جدید
+  currentUserId?: number;
+  onAddVehicle?: (u: UserNode) => void;  // ⬅️ جدید
+  onGrantMonitors?: (u: UserNode) => void;  // ⬅️ جدید
+  onManageVehicles?: (u: UserNode) => void;   // 👈 جدید
+  onDelete?: (u: UserNode) => void;   // ✔ جدید
+  canDelete?: boolean;
+}) {
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+
+  const toggle = (id: number) => {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const renderNode = (u: UserNode) => {
+    const hasChildren = !!u.subordinates && u.subordinates.length > 0;
+    const isOpen = expanded.has(u.id);
+
+    return (
+      <Box key={u.id} sx={{ ml: 2 }}>
+        <ListItem
+          disableGutters
+          onClick={() => hasChildren && toggle(u.id)}
+          secondaryAction={
+            <>
+              {/* مدیرکل → آیکون سهمیه/مجوز نوع خودرو برای سوپرادمین‌ها */}
+              {onEditVehiclePolicy &&
+                currentUserRoleLevel === 1 &&
+                u.role_level === 2 && (
+                  <IconButton
+                    edge="end"
+                    onClick={(e) => { e.stopPropagation(); onEditVehiclePolicy(u); }}
+                    title="سهمیه و مجوز ماشین‌ها"
+                    sx={{ mr: 1 }}
+                  >
+                    <DirectionsBusIcon />
+                  </IconButton>
+                )}
+
+
+              {/* حذف کاربر (برای نقش 2: فقط زیرمجموعه‌ها | برای نقش 1: هر کسی پایین‌تر از خودش) */}
+              {onDelete && u.id !== currentUserId && (
+                ((currentUserRoleLevel === 1 && u.role_level > 1) ||             // مدیرکل: همه پایین‌تر
+                  (currentUserRoleLevel === 2 && canDelete && u.role_level > 2))  // SA: فقط اگر تیک create_user دارد
+                && (
+                  <IconButton
+                    edge="end"
+                    color="error"
+                    onClick={(e) => { e.stopPropagation(); onDelete(u); }}
+                    title="حذف کاربر"
+                    sx={{ mr: 1 }}
+                  >
+                    <DeleteIcon />
+                  </IconButton>
+                )
+              )}
+
+
+              {/* آیکون «ماشین» — واگذاری پرمیشن‌های مانیتورینگ برای زیرمجموعه‌ها */}
+              {onGrantMonitors && currentUserRoleLevel === 2 && u.role_level > 2 && (
+                <IconButton
+                  edge="end"
+                  onClick={(e) => { e.stopPropagation(); onGrantMonitors(u); }}
+                  title="واگذاری پرمیشن‌های مانیتورینگ"
+                  sx={{ mr: 1 }}
+                >
+                  <DirectionsBusIcon />
+                </IconButton>
+              )}
+
+              {/* آیکن ویرایش — مدیرکل: فقط روی سوپرادمین‌ها | سوپرادمین: فقط روی زیرمجموعه‌ها (نه خودش) */}
+              {onEdit &&
+                (
+                  (currentUserRoleLevel === 2 && u.role_level > 2 && u.id !== currentUserId) || // سوپرادمین
+                  (currentUserRoleLevel === 1 && u.role_level === 2)                            // مدیرکل
+                ) && (
+                  <IconButton
+                    edge="end"
+                    onClick={(e) => { e.stopPropagation(); onEdit(u); }}
+                    title="ویرایش کاربر"
+                  >
+                    <EditIcon />
+                  </IconButton>
+                )}
+
+              {hasChildren && (
+                <IconButton
+                  edge="end"
+                  onClick={(e) => { e.stopPropagation(); toggle(u.id); }}
+                >
+                  {isOpen ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                </IconButton>
+              )}
+            </>
+          }
+
+        >
+          <ListItemText
+            primary={
+              <span style={{ fontWeight: u.role_level <= 2 ? 'bold' : 'normal' }}>
+                {u.full_name} <small>({roleNameFa(u.role_level)})</small>
+              </span>
+            }
+          />
+        </ListItem>
+        {hasChildren && (
+          <Collapse in={isOpen} timeout="auto" unmountOnExit>
+            <Box sx={{ ml: 4 }}>
+              {u.subordinates!.map(child => renderNode(child))}
+            </Box>
+          </Collapse>
+        )}
+      </Box>
+    );
+  };
+
+  if (!users || users.length === 0)
+    return <span style={{ color: '#aaa' }}>زیرمجموعه‌ای وجود ندارد.</span>;
+
+  return <List sx={{ width: '100%' }}>{users.map(renderNode)}</List>;
+}
+
+
+
+
+
+
+
+
+// مرحله ۲: والد هر کاربر رو پیدا کن و به children اضافه کن
+function buildTree(
+  flatUsers: User[],
+  root: { id: number; full_name: string; role_level: number }
+): UserNode[] {
+  const map = new Map<number, UserNode>();
+  const roots: UserNode[] = [];
+
+  const base = flatUsers.some(u => u.id === root.id)
+    ? flatUsers
+    : [{ id: root.id, full_name: root.full_name, role_level: root.role_level } as User, ...flatUsers];
+
+  base.forEach(u => map.set(u.id, { ...u, subordinates: [] }));
+
+  base.forEach(u => {
+    const pid = u.parent_id ?? null;
+    if (pid && pid !== u.id && map.has(pid)) {
+      map.get(pid)!.subordinates!.push(map.get(u.id)!);
+    } else if (u.id === root.id) {
+      roots.push(map.get(u.id)!);
+    }
+  });
+
+  return roots;
+}
+
+
+
+// ========== دیالوگ افزودن/ویرایش ==========
+
+
+
+export function SuperAdminFormDialog({
+  open,
+  onClose,
+  onSubmit,
+  initialData
+}: {
+  open: boolean;
+  onClose: () => void;
+  onSubmit: (data: any) => void;
+  initialData?: any;
+}) {
+  const [form, setForm] = useState<{
+    full_name: string;
+    phone: string;
+    password: string;
+    permissions: { action: string; is_allowed: boolean }[];
+  }>({
+    full_name: '',
+    phone: '',
+    password: '',
+    permissions: actions.map(action => ({ action, is_allowed: false })),
+  });
+
+  useEffect(() => {
+    if (initialData) {
+      setForm({
+        full_name: initialData.full_name ?? '',
+        phone: initialData.phone ?? '',
+        // اگه می‌خوای موقع ادیت پسورد خالی باشه، بذار '' — ولی چون خودت گذاشته بودی همونو نگه داشتم
+        password: initialData.password ?? '',
+        permissions: actions.map(action => ({
+          action,
+          is_allowed:
+            initialData.permissions?.find((p: any) => p.action === action)?.is_allowed ?? false,
+        })),
+      });
+    } else {
+      setForm({
+        full_name: '',
+        phone: '',
+        password: '',
+        permissions: actions.map(action => ({ action, is_allowed: false })),
+      });
+    }
+  }, [initialData, open]);
+
+  const handleCheck = (action: string, checked: boolean) => {
+    setForm(f => ({
+      ...f,
+      permissions: f.permissions.map(p =>
+        p.action === action ? { ...p, is_allowed: checked } : p
+      ),
+    }));
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setForm(f => ({ ...f, [name]: value }));
+  };
+
+  // ✅ این تابع همونیه که نداشتی
+  const handleSubmit = () => {
+    onSubmit(form);
+  };
+
+  return (
+    <Dialog open={open} onClose={onClose} fullWidth>
+      <DialogTitle>{initialData ? 'ویرایش سوپرادمین' : 'افزودن سوپرادمین جدید'}</DialogTitle>
+      <DialogContent>
+        <Grid container spacing={2} sx={{ mt: 1 }}>
+          <Grid item xs={12}>
+            <TextField
+              fullWidth
+              label="نام کامل"
+              name="full_name"
+              value={form.full_name}
+              onChange={handleChange}
+            />
+          </Grid>
+
+          <Grid item xs={6}>
+            <TextField
+              label="شماره موبایل"
+              name="phone"
+              value={form.phone}
+              onChange={handleChange}
+              fullWidth
+            />
+          </Grid>
+
+          <Grid item xs={6}>
+            <TextField
+              label="رمز عبور"
+              type="text"
+              name="password"
+              value={form.password}
+              onChange={handleChange}
+              fullWidth
+            />
+          </Grid>
+
+          <Grid item xs={12}><b>مجوزها:</b></Grid>
+          <Grid item xs={12}>
+            <FormGroup>
+              {actions.map(action => (
+                <FormControlLabel
+                  key={action}
+                  control={
+                    <Checkbox
+                      checked={form.permissions.find(p => p.action === action)?.is_allowed || false}
+                      onChange={e => handleCheck(action, e.target.checked)}
+                    />
+                  }
+                  label={actionLabels[action]}
+                />
+              ))}
+            </FormGroup>
+          </Grid>
+        </Grid>
+      </DialogContent>
+
+      <DialogActions>
+        <Button onClick={onClose}>انصراف</Button>
+        <Button onClick={handleSubmit} variant="contained">
+          {initialData ? 'ذخیره تغییرات' : 'افزودن'}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+
+async function fetchSuperAdminPermissions(id: number) {
+  // لیست مجوزها را از بک‌اند می‌گیرد
+  const { data: permissions } = await api.get(`/role-permissions/user/${id}`);
+  return permissions;
+}
+
+
+// ========== بخش مدیرکل ==========
+function ManagerRoleSection({
+  user,
+  tree,
+  setTree
+}: {
+  user: User;
+  tree: UserNode[];
+  setTree: React.Dispatch<React.SetStateAction<UserNode[]>>;
+}) {
+  const [editData, setEditData] = useState<any>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [addLoading, setAddLoading] = useState(false);
+  const [treeLoading, setTreeLoading] = useState(false);
+  // داخل ManagerRoleSection:
+  const [countryOpen, setCountryOpen] = useState(false);
+  const [countrySA, setCountrySA] = useState<UserNode | null>(null);
+
+  const handleEditCountryPolicy = (sa: UserNode) => {
+    setCountrySA(sa);
+    setCountryOpen(true);
+  };
+  const [canDelete, setCanDelete] = useState(false);
+
+  const checkPermissionBasics = async () => {
+    try {
+      const { data: mine } = await api.get(`/role-permissions/user/${user.id}`);
+      const allowed = (mine || []).filter((p: any) => p.is_allowed);
+      const hasCreate = !!allowed.find((p: any) => p.action === 'create_user');
+
+      // مدیرکل: همیشه اجازه حذف دارد. سوپرادمین: اگر create_user داشته باشد.
+      setCanDelete(user.role_level === 1 || hasCreate);
+    } catch {
+      setCanDelete(user.role_level === 1); // حتی اگر خطا، مدیرکل بتواند
+    }
+  };
+
+  const handleDeleteUser = async (u: UserNode) => {
+    if (!canDelete) return;
+    if (!u) return;
+    if (u.id === user.id) { alert('نمی‌توانید خودتان را حذف کنید.'); return; }
+    if (u.role_level <= user.role_level) { alert('فقط کاربر با نقش پایین‌تر را می‌توانید حذف کنید.'); return; }
+    if (!confirm(`کاربر «${u.full_name ?? u.id}» حذف شود؟`)) return;
+
+    try {
+      await api.delete(`/users/${u.id}`);
+      await refreshTree();
+    } catch (e: any) {
+      alert(e?.response?.data?.message || 'حذف ناموفق بود');
+    }
+  };
+
+  useEffect(() => { checkPermissionBasics(); }, []);
+
+  // ⬇️ جدید
+  const [policyOpen, setPolicyOpen] = useState(false);
+  const [policySA, setPolicySA] = useState<UserNode | null>(null);
+
+  const refreshTree = async () => {
+    setTreeLoading(true);
+    const { data } = await api.get('/users/my-subordinates-flat');
+    setTree(
+      buildTree(data, { id: user.id, full_name: user.full_name, role_level: user.role_level })
+    );
+    setTreeLoading(false);
+  };
+
+  // داخل ManagerRoleSection
+  const handleEdit = async (sa: UserNode) => {
+    // هم‌زمان پروفایل کاربر و مجوزها رو بگیر
+    const [{ data: userRow }, permissions] = await Promise.all([
+      api.get(`/users/${sa.id}`),               // ← از دیتابیس: phone و ... میاد
+      fetchSuperAdminPermissions(sa.id),        // ← همین که داشتی
+    ]);
+
+    // مقداردهی اولیه برای فرم ادیت
+    setEditData({
+      ...sa,
+      phone: userRow?.phone ?? '',              // ← شماره از دیتابیس
+      permissions,
+    });
+  };
+
+
+  // ⬇️ جدید
+  const handleEditVehiclePolicy = (sa: UserNode) => {
+    setPolicySA(sa);
+    setPolicyOpen(true);
+  };
+  const saList = useMemo<UserNode[]>(() => {
+    const root = tree?.[0];
+    const children = root?.subordinates || [];
+    return children.filter(u => u.role_level === 2);
+  }, [tree]);
+
+  const [selectedSAId, setSelectedSAId] = useState<number | null>(null);
+
+  // انتخاب پیش‌فرض: اولین SA
+  useEffect(() => {
+    if (saList.length && (selectedSAId == null || !saList.find(sa => sa.id === selectedSAId))) {
+      setSelectedSAId(saList[0].id);
+    }
+  }, [saList, selectedSAId]);
+
+  // نود انتخابی (با تمام زیرمجموعه‌ها)
+  const selectedSANode = useMemo(
+    () => findNodeById(tree?.[0], selectedSAId ?? null),
+    [tree, selectedSAId]
+  );
+  return (
+    <div>
+      <h2>مدیریت نقش‌ها (مدیرکل)</h2>
+
+      <Button variant="contained" onClick={() => setAddOpen(true)} sx={{ mb: 2 }}>
+        افزودن سوپرادمین جدید
+      </Button>
+
+      {/* نوار انتخاب سوپرادمین‌ها در بالا */}
+      {treeLoading ? (
+        <div>در حال بروزرسانی...</div>
+      ) : saList.length === 0 ? (
+        <div style={{ color: '#888' }}>سوپرادمینی یافت نشد.</div>
+      ) : (
+        <>
+          <SuperAdminStrip
+            items={saList}
+            selectedId={selectedSAId}
+            onSelect={setSelectedSAId}
+          />
+
+          {/* ... بالاتر SuperAdminStrip و انتخاب SA ... */}
+
+          {selectedSANode ? (
+            <ScrollViewport height="calc(100vh - 240px)">
+              <Box sx={orgTreeSx}>
+                <Box component="ul">
+                  <OrgTreeNode
+                    node={selectedSANode}
+                    onEdit={handleEdit}
+                    onDelete={handleDeleteUser}
+                    onEditVehiclePolicy={handleEditVehiclePolicy}
+                    onGrantMonitors={(_u) => { }}
+                    currentUserId={user.id}
+                    currentUserRoleLevel={user.role_level}
+                    canDelete
+                  />
+                </Box>
+              </Box>
+            </ScrollViewport>
+          ) : (
+            <div style={{ color: '#888' }}>یک سوپرادمین را انتخاب کنید.</div>
+          )}
+
+
+        </>
+      )}
+
+
+      {/* افزودن سوپرادمین */}
+      <SuperAdminFormDialog
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        onSubmit={async (data) => {
+          setAddLoading(true);
+          await api.post('/users', { ...data, role_level: 2, permissions: data.permissions });
+          setAddOpen(false);
+          await refreshTree();
+          setAddLoading(false);
+        }}
+      />
+
+      {/* ویرایش سوپرادمین */}
+      <SuperAdminFormDialog
+        open={!!editData}
+        onClose={() => setEditData(null)}
+        initialData={editData || undefined}
+        onSubmit={async (data) => {
+          await api.put(`/users/${editData.id}`, {
+            full_name: data.full_name,
+            phone: data.phone,
+            password: data.password, // 👈 اضافه شد
+          });
+          await api.put(`/role-permissions/user/${editData.id}`, { permissions: data.permissions });
+          setEditData(null);
+          await refreshTree();
+        }}
+      />
+
+      {/* ⬇️ Dialog سهمیه ماشین‌ها */}
+      <VehicleQuotaDialog
+        open={policyOpen}
+        superAdmin={policySA}
+        onClose={async (changed) => {
+          setPolicyOpen(false);
+          setPolicySA(null);
+          if (changed) {
+            // اگر لازم داری چیزی رفرش بشه
+            // await refreshTree();
+          }
+        }}
+      />
+    </div>
+  );
+
+}
+
+
+
+
+
+// ====== سایر نقش‌ها با همان استایل قبلی ======
+function SuperAdminRoleSection({ user }: { user: User }) {
+  const [tree, setTree] = useState<UserNode[]>([]);
+  const [addOpen, setAddOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editUser, setEditUser] = useState<any>(null);
+  const [vehOpen, setVehOpen] = useState(false);
+  const handleOpenVehicle = () => setVehOpen(true);
+  const [grantOpen, setGrantOpen] = useState(false);
+  const [grantTarget, setGrantTarget] = useState<UserNode | null>(null);
+  // اگر خواستی روی کدِ هر نود هم کلیک باعث بازشدن همین دیالوگ شود:
+  const handleAddVehicleFromTree = (_u: UserNode) => setVehOpen(true);
+  const [vehAccessOpen, setVehAccessOpen] = useState(false);
+  const [vehAccessUser, setVehAccessUser] = useState<UserNode | null>(null);
+  const [canDelete, setCanDelete] = useState(false); // ⬅️ جدید
+
+  const openVehAccess = (u: UserNode) => { setVehAccessUser(u); setVehAccessOpen(true); };
+  const [canCreate, setCanCreate] = useState(false);
+  const [canGrant, setCanGrant] = useState(false);
+
+  // نوع خودرو => کلیدهایی که SA اجازه واگذاری‌شان را دارد
+  const [grantableMap, setGrantableMap] =
+    useState<Record<VehicleTypeCode, MonitorKey[]>>({} as any);
+
+  const fetchSubordinates = async () => {
+    const { data } = await api.get('/users/my-subordinates-flat');
+    setTree(buildTree(data, user));
+  };
+
+  const checkPermissionBasics = async () => {
+    try {
+      const { data: mine } = await api.get(`/role-permissions/user/${user.id}`);
+      const allowed = (mine || []).filter((p: any) => p.is_allowed);
+
+      const hasCreate = !!allowed.find((p: any) => p.action === 'create_user');
+      const hasGrant = !!allowed.find((p: any) => p.action === 'grant_sub_permissions');
+
+      setCanCreate(hasCreate);
+      setCanGrant(hasGrant);
+      setCanDelete(hasCreate); // ✔ همان تیک ساخت کاربر ⇒ اجازه حذف
+    } catch {
+      setCanCreate(false);
+      setCanGrant(false);
+      setCanDelete(false);
+    }
+  };
+
+  const handleDeleteUser = async (u: UserNode) => {
+    if (!canDelete) return;
+    if (!u) return;
+    if (u.id === user.id) { alert('نمی‌توانید خودتان را حذف کنید.'); return; }
+    if (u.role_level <= user.role_level) { alert('فقط کاربر با نقش پایین‌تر را می‌توانید حذف کنید.'); return; }
+    if (!confirm(`کاربر «${u.full_name ?? u.id}» حذف شود؟`)) return;
+
+    try {
+      await api.delete(`/users/${u.id}`);
+      await fetchSubordinates();
+    } catch (e: any) {
+      alert(e?.response?.data?.message || 'حذف ناموفق بود');
+    }
+  };
+  const fetchGrantable = async () => {
+    try {
+      const { data } = await api.get('/vehicle-policies/grantable');
+      const map: Record<VehicleTypeCode, MonitorKey[]> = {} as any;
+      (data || []).forEach((p: any) => {
+        if (p.is_allowed) {
+          map[p.vehicle_type_code as VehicleTypeCode] =
+            Array.isArray(p.monitor_params) ? (p.monitor_params as MonitorKey[]) : [];
+        }
+      });
+      setGrantableMap(map); // حتی اگر آرایه مانیتور خالی باشد، کلید type می‌ماند
+    } catch (e) {
+      console.error('grantable fetch error:', e);
+      setGrantableMap({} as any);
+    }
+  };
+
+  useEffect(() => {
+    fetchSubordinates();
+    checkPermissionBasics();
+    fetchGrantable();
+  }, []);
+
+  useEffect(() => { if (addOpen) fetchGrantable(); }, [addOpen]);
+  useEffect(() => { if (editOpen) fetchGrantable(); }, [editOpen]);
+
+  const handleEditUser = async (u: UserNode) => {
+    try {
+      const { data: userRow } = await api.get(`/users/${u.id}`);
+      setEditUser({ ...u, ...userRow });
+      setEditOpen(true);
+    } catch (e) { console.error(e); }
+  };
+
+  return (
+    <div>
+      <h2>مدیریت نقش‌ها (سوپرادمین)</h2>
+
+      <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+        {canCreate && (
+          <Button variant="contained" onClick={() => setAddOpen(true)}>
+            افزودن کاربر جدید
+          </Button>
+        )}
+        <Button startIcon={<DirectionsBusIcon />} onClick={() => setVehOpen(true)}>
+          افزودن ماشین
+        </Button>
+      </Box>
+
+      <h3>زیرمجموعه‌ها:</h3>
+      {tree.length > 0 ? (
+        <UserTreeList
+          users={tree}
+          onEdit={handleEditUser}
+          currentUserRoleLevel={user.role_level}
+          currentUserId={user.id}
+          onAddVehicle={handleAddVehicleFromTree}   // ⬅️ اینو اضافه کن
+          onGrantMonitors={(u) => { setGrantTarget(u); setGrantOpen(true); }}
+          onManageVehicles={openVehAccess}     // 👈 این
+          onDelete={handleDeleteUser}             // ⬅️ لازم تا آیکن حذف نمایش داده شود
+          canDelete={canDelete} />
+
+      ) : (
+        <div style={{ color: '#aaa' }}>هیچ زیرمجموعه‌ای ثبت نشده است.</div>
+      )}
+      {/* دیالوگ مدیریت دسترسیِ ماشین برای زیرمجموعه */}
+      <SubUserVehicleAccessDialog
+        open={vehAccessOpen}
+        onClose={() => { setVehAccessOpen(false); setVehAccessUser(null); }}
+        subUser={vehAccessUser}
+        ownerId={user.id}
+        grantableMap={grantableMap}
+      />
+      {canCreate && (
+        <AddUserDialog
+          open={addOpen}
+          onClose={() => setAddOpen(false)}
+          parentId={user.id}
+          onCreated={fetchSubordinates}
+          canGrant={canGrant}
+          grantableMap={grantableMap}
+        />
+      )}
+
+      <EditUserDialog
+        open={editOpen}
+        onClose={() => setEditOpen(false)}
+        data={editUser}
+        canGrant={canGrant}
+        grantableMap={grantableMap}
+        onSaved={async () => {
+          setEditOpen(false);
+          await fetchSubordinates();
+        }}
+
+      />
+      {/* ⬇️ همین‌جا اضافه کن */}
+      <AddVehicleDialog
+        open={vehOpen}
+        onClose={() => setVehOpen(false)}
+        ownerId={user.id}                // ماشین به نام همین SA
+        onCreated={fetchSubordinates}
+      />
+      <GrantMonitorDialog
+        open={grantOpen}
+        onClose={() => { setGrantOpen(false); setGrantTarget(null); }}
+        targetUser={grantTarget}
+        grantableMap={grantableMap}
+      />
+    </div>
+  );
+}
+
+function GrantMonitorDialog({
+  open,
+  onClose,
+  targetUser,
+  grantableMap,
+}: {
+  open: boolean;
+  onClose: (changed?: boolean) => void;
+  targetUser: UserNode | null;
+  grantableMap: Record<VehicleTypeCode, MonitorKey[]>;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [perType, setPerType] = useState<Record<VehicleTypeCode, Set<MonitorKey>>>({} as any);
+  const hasAnyGrantable = Object.keys(grantableMap || {}).length > 0;
+
+  useEffect(() => {
+    if (!open || !targetUser?.id) return;
+    (async () => {
+      setLoading(true);
+      try {
+        // پرمیشن‌های فعلی کاربر هدف
+        const { data: policies } = await api.get(`/vehicle-policies/user/${targetUser.id}`, { params: { onlyAllowed: true } });
+        const next: Record<VehicleTypeCode, Set<MonitorKey>> = {} as any;
+
+        (Object.keys(grantableMap) as VehicleTypeCode[]).forEach(vt => {
+          const row = (policies || []).find((p: any) => p.vehicle_type_code === vt);
+          const current = new Set<MonitorKey>(Array.isArray(row?.monitor_params) ? row.monitor_params : []);
+          const allowed = new Set<MonitorKey>(grantableMap[vt] || []);
+          const initial: MonitorKey[] = [];
+          current.forEach(k => allowed.has(k) && initial.push(k)); // تقاطع
+          next[vt] = new Set(initial);
+        });
+
+        setPerType(next);
+      } catch {
+        const empty: Record<VehicleTypeCode, Set<MonitorKey>> = {} as any;
+        (Object.keys(grantableMap) as VehicleTypeCode[]).forEach(vt => (empty[vt] = new Set()));
+        setPerType(empty);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [open, targetUser, grantableMap]);
+
+  const toggle = (vt: VehicleTypeCode, key: MonitorKey, checked: boolean) => {
+    setPerType(prev => {
+      const next = { ...prev };
+      const s = new Set(next[vt] || []);
+      checked ? s.add(key) : s.delete(key);
+      next[vt] = s;
+      return next;
+    });
+  };
+
+  const handleSave = async () => {
+    if (!targetUser?.id) return;
+    setLoading(true);
+    try {
+      const policies = (Object.keys(grantableMap) as VehicleTypeCode[]).map(vt => ({
+        vehicle_type_code: vt,
+        monitor_params: Array.from(perType[vt] || []),
+      }));
+      await api.put(`/vehicle-policies/user/${targetUser.id}/bounded`, { policies });
+      onClose(true);
+    } catch (e) {
+      console.error(e);
+      onClose(false);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onClose={() => onClose(false)} fullWidth>
+      <DialogTitle>
+        واگذاری دسترسی مانیتورینگ — {targetUser?.full_name}
+      </DialogTitle>
+      <DialogContent dividers>
+        {loading ? 'در حال بارگذاری...' : (
+          !hasAnyGrantable ? (
+            <Box sx={{ color: 'text.secondary' }}>
+              شما پرمیشن قابل‌واگذاری فعالی ندارید.
+            </Box>
+          ) : (
+            (Object.keys(grantableMap) as VehicleTypeCode[]).map(vt => (
+              <Box key={vt} sx={{ border: '1px solid #eee', borderRadius: 1, p: 2, mb: 1 }}>
+                <Box sx={{ fontWeight: 600, mb: 1 }}>
+                  {VEHICLE_TYPES.find(t => t.code === vt)?.label || vt}
+                </Box>
+                <FormGroup>
+                  <Grid container spacing={1}>
+                    {grantableMap[vt].map(mk => (
+                      <Grid item xs={12} sm={6} md={4} key={`${vt}-${mk}`}>
+                        <FormControlLabel
+                          control={
+                            <Checkbox
+                              checked={(perType[vt] || new Set()).has(mk)}
+                              onChange={(e) => toggle(vt, mk as MonitorKey, e.target.checked)}
+                            />
+                          }
+                          label={MONITOR_PARAMS.find(m => m.key === mk)?.label || mk}
+                        />
+                      </Grid>
+                    ))}
+                  </Grid>
+                </FormGroup>
+              </Box>
+            ))
+          )
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={() => onClose(false)} disabled={loading}>انصراف</Button>
+        <Button variant="contained" onClick={handleSave} disabled={loading || !hasAnyGrantable}>
+          ذخیره
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+
+
+
+
+
+type CountryCode = 'IR' | 'QA' | 'AE' | 'IQ' | 'AF' | 'TM' | 'TR';
+
+export function AddVehicleDialog({
+  open,
+  onClose,
+  ownerId,      // id سوپرادمین
+  onCreated,
+}: {
+  open: boolean;
+  onClose: () => void;
+  ownerId: number;
+  onCreated: () => void;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+
+  // لیست نوع‌های مجاز با ظرفیت باقی‌مانده
+  const [allowedTypes, setAllowedTypes] = useState<{ code: VehicleTypeCode; label: string; remaining: number }[]>([]);
+  // کشورهایی که منیجر برای این سوپرادمین مجاز کرده
+  const [allowedCountries, setAllowedCountries] = useState<CountryCode[]>([]);
+
+  // فرم + تکه‌های پلاک ایران
+  const [form, setForm] = useState<{
+    country_code: CountryCode | '';
+    plate_no: string;
+    plate_part1: string; // 2 رقم
+    plate_part2: string; // 1 حرف فارسی
+    plate_part3: string; // 3 رقم
+    plate_part4: string; // 2 رقم
+    vehicle_type_code: VehicleTypeCode | '';
+    tracker_imei: string; // ⬅️ جدید و اجباری
+    fuel_type: string;
+    manufactured_year: number | '';
+    tank_capacity_liters: number | '';
+  }>({
+    country_code: '',
+    plate_no: '',
+    plate_part1: '',
+    plate_part2: '',
+    plate_part3: '',
+    plate_part4: '',
+    vehicle_type_code: '',
+    tracker_imei: '',      // ⬅️
+    fuel_type: '',
+    manufactured_year: '',
+    tank_capacity_liters: '',
+  });
+  type VehicleTypeCode =
+    | "bus"
+    | "minibus"
+    | "van"
+    | "tanker"
+    | "truck"
+    | "khavar"
+    | "sedan"
+    | "pickup";
+  const labelOfType = (code: VehicleTypeCode) =>
+    VEHICLE_TYPES.find(t => t.code === code)?.label || code;
+
+  // بارگذاری سیاست‌ها و کشورها هنگام باز شدن
+  useEffect(() => {
+    if (!open) return;
+
+    const fetchAll = async () => {
+      setLoading(true);
+      setErrorMsg('');
+      try {
+        // 1) سیاست‌های نوع خودرو
+        const { data: policies } = await api.get(`/vehicle-policies/user/${ownerId}`);
+
+        // 2) شمارش وسایل فعلی برای محاسبه remaining
+        const { data: vehiclesList } = await api.get('/vehicles', {
+          params: { owner_user_id: ownerId, limit: 1000 },
+        });
+        const counts: Record<string, number> = {};
+        VEHICLE_TYPES.forEach(t => (counts[t.code] = 0));
+        (vehiclesList.items || []).forEach((v: any) => {
+          if (counts[v.vehicle_type_code] !== undefined) counts[v.vehicle_type_code] += 1;
+        });
+
+        const types = (policies || [])
+          .filter((p: any) => p.is_allowed)
+          .map((p: any) => {
+            const used = counts[p.vehicle_type_code] || 0;
+            const remaining = Math.max(0, Number(p.max_count || 0) - used);
+            return {
+              code: p.vehicle_type_code as VehicleTypeCode,
+              label: labelOfType(p.vehicle_type_code),
+              remaining,
+            };
+          })
+          .filter(x => x.remaining > 0);
+
+        setAllowedTypes(types);
+
+        // 3) کشورها
+        const { data: countries } = await api.get(`/country-policies/user/${ownerId}`);
+        setAllowedCountries(countries || []);
+
+        // 4) مقداردهی اولیهٔ فرم
+        setForm(prev => ({
+          ...prev,
+          vehicle_type_code: types.length === 1 ? types[0].code : '',
+          country_code: countries?.length
+            ? (countries.includes(prev.country_code as any) ? (prev.country_code as any) : (countries[0] as any))
+            : '',
+        }));
+      } catch (e: any) {
+        setErrorMsg(e?.response?.data?.message || 'خطا در دریافت مجوزها/آمار');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchAll();
+  }, [open, ownerId]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const { name, value } = e.target as any;
+    setForm(f => ({ ...f, [name]: value }));
+  };
+
+  const handleSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const { name, value } = e.target as any;
+    setForm(f => ({ ...f, [name]: value }));
+  };
+  const normalizedUID = (form.tracker_imei || '').trim().replace(/\s/g, '').toUpperCase();
+  const uidInvalid =
+    normalizedUID.length === 0 || !/^[A-Z0-9._-]{4,64}$/.test(normalizedUID); // IMEI 15 رقمی هم داخلش اوکیه
+
+  // تنها نسخه‌ی handleSubmit
+  const handleSubmit = async () => {
+    setLoading(true);
+    setErrorMsg('');
+    try {
+      if (!form.vehicle_type_code) throw new Error('نوع ماشین را انتخاب کنید');
+      if (!form.country_code) throw new Error('کشور پلاک را انتخاب کنید');
+      if (uidInvalid) throw new Error('UID/IMEI دستگاه الزامی و باید معتبر باشد');
+
+      // ساخت پلاک نهایی
+      let plateNo = form.plate_no?.trim();
+      if (form.country_code === 'IR') {
+        if (!/^\d{2}$/.test(form.plate_part1)) throw new Error('دو رقم اولِ پلاک ایران صحیح نیست');
+        if (!/^[ء-ی]$/.test(form.plate_part2)) throw new Error('حرف پلاک ایران باید فارسی باشد');
+        if (!/^\d{3}$/.test(form.plate_part3)) throw new Error('سه رقم وسط پلاک ایران صحیح نیست');
+        if (!/^\d{2}$/.test(form.plate_part4)) throw new Error('دو رقم آخر پلاک ایران صحیح نیست');
+        plateNo = `${form.plate_part1}${form.plate_part2}${form.plate_part3}${form.plate_part4}`;
+      } else {
+        if (!plateNo) throw new Error('پلاک را وارد کنید');
+      }
+
+      await api.post('/vehicles', {
+        owner_user_id: ownerId,
+        country_code: form.country_code,
+        plate_no: plateNo,
+        vehicle_type_code: form.vehicle_type_code,
+        tracker_imei: normalizedUID, // ⬅️ می‌فرستیم به بک‌اند
+        fuel_type: form.fuel_type || undefined,
+        manufactured_year: form.manufactured_year !== '' ? Number(form.manufactured_year) : undefined,
+        tank_capacity_liters:
+          form.vehicle_type_code === 'tanker' && form.tank_capacity_liters !== ''
+            ? Number(form.tank_capacity_liters)
+            : undefined,
+      });
+
+      onClose();
+      onCreated();
+    } catch (e: any) {
+      setErrorMsg(e?.response?.data?.message || e?.message || 'ثبت ناموفق بود');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const noTypeCapacity = !allowedTypes.length;
+  const noCountryAllowed = !allowedCountries.length;
+
+  return (
+    <Dialog open={open} onClose={onClose} fullWidth>
+      <DialogTitle>افزودن ماشین جدید</DialogTitle>
+      <DialogContent>
+        {loading ? (
+          <div>در حال بارگذاری...</div>
+        ) : (
+          <Grid container spacing={2} sx={{ mt: 1 }}>
+            {errorMsg && (
+              <Grid item xs={12}>
+                <Box sx={{ color: 'error.main', fontSize: 14 }}>{errorMsg}</Box>
+              </Grid>
+            )}
+
+            {(noTypeCapacity || noCountryAllowed) ? (
+              <Grid item xs={12}>
+                <Box sx={{ color: 'text.secondary' }}>
+                  {!allowedCountries.length
+                    ? 'هیچ کشور مجازی توسط مدیرکل برای شما تعریف نشده است.'
+                    : 'برای هیچ نوع خودرویی ظرفیت مجاز فعالی وجود ندارد.'}
+                </Box>
+              </Grid>
+            ) : (
+              <>
+                <Grid item xs={12}>
+                  <label>نوع ماشین (ظرفیت باقیمانده)</label>
+                  <select
+                    name="vehicle_type_code"
+                    value={form.vehicle_type_code}
+                    onChange={handleSelect}
+                    style={{ width: '100%', padding: '8px', marginTop: 6 }}
+                  >
+                    <option value="" disabled>انتخاب نوع</option>
+                    {allowedTypes.map(t => (
+                      <option key={t.code} value={t.code}>
+                        {t.label} — باقی‌مانده: {t.remaining}
+                      </option>
+                    ))}
+                  </select>
+                </Grid>
+
+                <Grid item xs={6}>
+                  <label>کشور پلاک</label>
+                  <select
+                    name="country_code"
+                    value={form.country_code}
+                    onChange={handleSelect}
+                    style={{ width: '100%', padding: '8px', marginTop: 6 }}
+                  >
+                    {allowedCountries.map(code => (
+                      <option key={code} value={code}>
+                        {{
+                          IR: 'ایران', QA: 'قطر', AE: 'امارات', IQ: 'عراق',
+                          AF: 'افغانستان', TM: 'ترکمنستان', TR: 'ترکیه'
+                        }[code] || code}
+                      </option>
+                    ))}
+                  </select>
+                </Grid>
+
+                <Grid container spacing={1}>
+                  {/* کشور = ایران ⇒ چهار تکه */}
+                  {form.country_code === 'IR' ? (
+                    <Grid container spacing={1} alignItems="center" sx={{ mt: 1 }}>
+                      <Grid item>
+                        <TextField
+                          label="دو رقم اول"
+                          value={form.plate_part1}
+                          onChange={(e) =>
+                            setForm(f => ({ ...f, plate_part1: e.target.value.replace(/\D/g, '').slice(0, 2) }))
+                          }
+                          size="small"
+                          sx={{ width: 120 }}
+                        />
+                      </Grid>
+                      <Grid item>
+                        <TextField
+                          label="حرف فارسی"
+                          value={form.plate_part2}
+                          onChange={(e) =>
+                            setForm(f => ({
+                              ...f,
+                              plate_part2: e.target.value
+                                // حروف غیر فارسی حذف شود
+                                .replace(/[^آابپتثجچحخدذرزژسشصضطظعغفقکگلمنوهی]/g, '')
+                                .slice(0, 1),
+                            }))
+                          }
+                          size="small"
+                          sx={{ width: 120 }}
+                        />
+                      </Grid>
+                      <Grid item>
+                        <TextField
+                          label="سه رقم وسط"
+                          value={form.plate_part3}
+                          onChange={(e) =>
+                            setForm(f => ({ ...f, plate_part3: e.target.value.replace(/\D/g, '').slice(0, 3) }))
+                          }
+                          size="small"
+                          sx={{ width: 120 }}
+                        />
+                      </Grid>
+                      <Grid item>
+                        <TextField
+                          label="دو رقم آخر"
+                          value={form.plate_part4}
+                          onChange={(e) =>
+                            setForm(f => ({ ...f, plate_part4: e.target.value.replace(/\D/g, '').slice(0, 2) }))
+                          }
+                          size="small"
+                          sx={{ width: 120 }}
+                        />
+                      </Grid>
+                    </Grid>
+                  ) : (
+                    // کشور ≠ ایران ⇒ یک فیلد سادهٔ پلاک
+                    <Grid item xs={12} sx={{ mt: 1 }}>
+                      <TextField
+                        fullWidth
+                        label="پلاک"
+                        name="plate_no"
+                        value={form.plate_no}
+                        onChange={(e) => setForm(f => ({ ...f, plate_no: e.target.value }))}
+                      />
+                    </Grid>
+                  )}
+
+                </Grid>
+
+
+                {/* ✅ UID/IMEI اجباری */}
+                <Grid item xs={12} sx={{ mt: 1 }}>
+                  <TextField
+                    fullWidth
+                    required
+                    label="UID/IMEI دستگاه (اجباری)"
+                    name="tracker_imei"
+                    value={form.tracker_imei}
+                    onChange={(e) =>
+                      setForm(f => ({ ...f, tracker_imei: e.target.value.replace(/\s/g, '').toUpperCase() }))
+                    }
+                    error={normalizedUID.length > 0 && uidInvalid}
+                    helperText="فقط حروف/عدد و . _ - ؛ بدون فاصله (مثال: IMEI 15 رقمی)"
+                    inputProps={{ maxLength: 64 }}
+                  />
+                </Grid>
+
+                <Grid item xs={6}>
+                  <TextField fullWidth label="سوخت (اختیاری)" name="fuel_type" value={form.fuel_type} onChange={handleChange} />
+                </Grid>
+
+                <Grid item xs={6}>
+                  <TextField
+                    fullWidth
+                    label="سال ساخت (اختیاری)"
+                    name="manufactured_year"
+                    type="number"
+                    value={form.manufactured_year}
+                    onChange={handleChange}
+                  />
+                </Grid>
+
+                {form.vehicle_type_code === 'tanker' && (
+                  <Grid item xs={6}>
+                    <TextField
+                      fullWidth
+                      label="حجم مخزن (لیتر)"
+                      name="tank_capacity_liters"
+                      type="number"
+                      value={form.tank_capacity_liters}
+                      onChange={handleChange}
+                    />
+                  </Grid>
+                )}
+              </>
+            )}
+          </Grid>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} disabled={loading}>انصراف</Button>
+        <Button
+          variant="contained"
+          onClick={handleSubmit}
+          disabled={loading || noTypeCapacity || noCountryAllowed || uidInvalid}
+        >
+          ثبت
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+
+
+function AddUserDialog({
+  open,
+  onClose,
+  parentId,
+  onCreated,
+  canGrant,
+  grantableMap,
+}: {
+  open: boolean;
+  onClose: () => void;
+  parentId: number;
+  onCreated: () => void;
+  canGrant: boolean;
+  grantableMap: Record<VehicleTypeCode, MonitorKey[]>;
+}) {
+  // فرم پروفایل + نقش
+  const [form, setForm] = useState({
+    full_name: '',
+    phone: '',
+    password: '',
+    role_level: 4,          // پیش‌فرض: مالک
+    parent_user_id: parentId,
+  });
+
+  // والدهای مجاز براساس نقش انتخابی
+  const [filteredParents, setFilteredParents] =
+    useState<{ id: number; full_name: string }[]>([]);
+
+  // انتخاب‌های مانیتورینگ برای هر نوع خودرو (فقط از روی grantableMap)
+  const [perType, setPerType] =
+    useState<Record<VehicleTypeCode, Set<MonitorKey>>>({} as any);
+
+  // وضعیت‌ها
+  const [saving, setSaving] = useState(false);
+  const [errors, setErrors] = useState<{ full_name?: string; phone?: string; password?: string }>({});
+
+  // هر بار دیالوگ باز شد، مقداردهی اولیه
+  useEffect(() => {
+    if (!open) return;
+
+    // reset پروفایل
+    setForm(f => ({
+      ...f,
+      full_name: '',
+      phone: '',
+      password: '',
+      role_level: 4,
+      parent_user_id: parentId,
+    }));
+
+    // reset انتخاب‌های مانیتورینگ (فقط روی کلیدهای قابل واگذاری‌ی SA)
+    const init: Record<VehicleTypeCode, Set<MonitorKey>> = {} as any;
+    (Object.keys(grantableMap) as VehicleTypeCode[]).forEach(vt => (init[vt] = new Set()));
+    setPerType(init);
+    setErrors({});
+  }, [open, parentId, grantableMap]);
+
+  // لیست والدها را براساس نقش انتخابی فیلتر کن
+  useEffect(() => {
+    if (!open) return;
+    (async () => {
+      const { data } = await api.get('/users/my-subordinates-flat');
+      const all = [{ id: parentId, full_name: 'زیرمجموعه مستقیم من (سوپرادمین)', role_level: 2 }, ...data];
+      // فقط کسانی که نقش‌شان از کاربر جدید بالاتر است می‌توانند والد باشند
+      const filtered = all.filter(u => u.role_level < form.role_level);
+      // اگر parent انتخاب‌شده معتبر نیست، اولین گزینه را بگذار
+      if (!filtered.find(u => u.id === form.parent_user_id)) {
+        setForm(f => ({ ...f, parent_user_id: filtered[0]?.id ?? parentId }));
+      }
+      setFilteredParents(filtered.map(u => ({ id: u.id, full_name: u.full_name })));
+    })();
+  }, [open, form.role_level, parentId]);
+
+  // تغییر فیلدهای متنی
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setForm(f => ({ ...f, [name]: value }));
+  };
+
+  // تغییر سلکت‌ها (نقش/والد)
+  const handleSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const name = e.target.name;
+    const value = name === 'role_level' || name === 'parent_user_id'
+      ? Number(e.target.value) : e.target.value;
+    setForm(f => ({ ...f, [name]: value }));
+  };
+
+  // تیک‌های مانیتورینگ
+  const toggleMonitor = (vt: VehicleTypeCode, key: MonitorKey, checked: boolean) => {
+    setPerType(prev => {
+      const next = { ...prev };
+      const set = new Set(next[vt] || []);
+      checked ? set.add(key) : set.delete(key);
+      next[vt] = set;
+      return next;
+    });
+  };
+
+  // اعتبارسنجی ساده‌ی پروفایل
+  const validate = () => {
+    const e: typeof errors = {};
+    if (!form.full_name.trim()) e.full_name = 'نام الزامی است';
+    if (!form.phone.trim()) e.phone = 'شماره موبایل الزامی است';
+    if (!form.password.trim()) e.password = 'رمز عبور الزامی است';
+    setErrors(e);
+    return Object.keys(e).length === 0;
+  };
+
+  // ثبت کاربر
+  const handleSubmit = async () => {
+    try {
+      // 1) ساخت کاربر
+      const { parent_user_id, role_level, ...rest } = form;
+      if (!rest.full_name?.trim() || !rest.phone?.trim() || !rest.password?.trim()) {
+        throw new Error('نام، موبایل و رمز الزامی است');
+      }
+
+      const payload: any = { ...rest, role_level, parent_id: parent_user_id };
+      const { data: created } = await api.post('/users', payload);
+      const newUserId = created?.id;
+      if (!newUserId) throw new Error('ساخت کاربر موفق بود ولی id برنگشت.');
+
+      // 2) در صورت نیاز، واگذاری دسترسی‌های مانیتورینگ (اختیاری)
+      if (canGrant && Object.keys(grantableMap).length) {
+        const policies = (Object.keys(grantableMap) as VehicleTypeCode[]).map(vt => ({
+          vehicle_type_code: vt,
+          monitor_params: Array.from(perType[vt] || []),
+        }));
+        // فقط اگر حداقل یک مانیتور انتخاب شده بود
+        const hasAny = policies.some(p => p.monitor_params.length > 0);
+        if (hasAny) {
+          api.put(`/vehicle-policies/user/${newUserId}/bounded`, { policies })
+            .catch(err => {
+              console.warn('bounded failed but user created:', err?.response?.data || err?.message);
+              // این خطا نباید فرآیند ساخت را خراب کند
+            });
+        }
+      }
+
+      // 3) بستن و رفرش
+      onClose();
+      onCreated();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+  return (
+    <Dialog open={open} onClose={onClose} fullWidth>
+      <DialogTitle>افزودن کاربر جدید</DialogTitle>
+      <DialogContent>
+        <Grid container spacing={2} sx={{ mt: 1 }}>
+          {/* فیلدهای پروفایل */}
+          <Grid item xs={12}>
+            <TextField
+              fullWidth
+              label="نام و نام خانوادگی"
+              name="full_name"
+              value={form.full_name}
+              onChange={handleChange}
+              error={!!errors.full_name}
+              helperText={errors.full_name}
+            />
+          </Grid>
+          <Grid item xs={12}>
+            <TextField
+              fullWidth
+              label="شماره موبایل"
+              name="phone"
+              value={form.phone}
+              onChange={handleChange}
+              error={!!errors.phone}
+              helperText={errors.phone}
+            />
+          </Grid>
+          <Grid item xs={12}>
+            <TextField
+              fullWidth
+              type="password"
+              label="رمز عبور"
+              name="password"
+              value={form.password}
+              onChange={handleChange}
+              error={!!errors.password}
+              helperText={errors.password}
+            />
+          </Grid>
+
+          {/* نقش و والد */}
+          <Grid item xs={6}>
+            <label>نقش:</label>
+            <select
+              name="role_level"
+              value={form.role_level}
+              onChange={handleSelectChange}
+              style={{ width: '100%', padding: 8, marginTop: 6 }}
+            >
+              <option value={3}>مدیر شعبه</option>
+              <option value={4}>مالک</option>
+              <option value={5}>تکنسین</option>
+              <option value={6}>راننده</option>
+            </select>
+          </Grid>
+
+          <Grid item xs={6}>
+            <label>زیرمجموعه‌ی:</label>
+            <select
+              name="parent_user_id"
+              value={form.parent_user_id}
+              onChange={handleSelectChange}
+              style={{ width: '100%', padding: 8, marginTop: 6 }}
+            >
+              {filteredParents.map(u => (
+                <option key={u.id} value={u.id}>{u.full_name}</option>
+              ))}
+            </select>
+          </Grid>
+
+          {/* دسترسی‌های مانیتورینگ قابل واگذاری */}
+
+        </Grid>
+      </DialogContent>
+
+      <DialogActions>
+        <Button onClick={onClose} disabled={saving}>انصراف</Button>
+        <Button onClick={handleSubmit} variant="contained" disabled={saving}>
+          ثبت
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+
+
+function BranchManagerRoleSection({ user }: { user: User }) {
+  return <div>مدیر شعبه</div>;
+}
+function OwnerRoleSection({ user }: { user: User }) {
+  return <div>مالک</div>;
+}
+function TechnicianRoleSection({ user }: { user: User }) {
+  return <div>تکنسین</div>;
+}
+function DriverRoleSection({ user }: { user: User }) {
+  return <div>راننده</div>;
+}
+function EditUserDialog({
+  open,
+  onClose,
+  data,
+  canGrant,
+  grantableMap, // دیگه استفاده نمی‌کنیم ولی برای سازگاری می‌ذاریم
+  onSaved,
+}: {
+  open: boolean;
+  onClose: () => void;
+  data: any;
+  canGrant: boolean;
+  grantableMap: Record<VehicleTypeCode, MonitorKey[]>;
+  onSaved: () => void;
+}) {
+  // پروفایل/نقش
+  const [savingInfo, setSavingInfo] = useState(false);
+  const [savingRole, setSavingRole] = useState(false);
+  const [formInfo, setFormInfo] = useState({ full_name: '', phone: '', password: '' });
+  const [roleLevel, setRoleLevel] = useState<number>(4);
+
+  // مجوزها
+  const [myAllowed, setMyAllowed] = useState<Set<string>>(new Set());          // مجوزهای خودِ SA
+  const [grantableActions, setGrantableActions] = useState<string[]>([]);       // اکشن‌هایی که SA می‌تواند واگذار کند
+  const [selectedActions, setSelectedActions] = useState<Set<string>>(new Set());// انتخاب‌های فعلی برای زیرمجموعه
+  const [savingPerms, setSavingPerms] = useState(false);
+
+  useEffect(() => {
+    if (!open || !data?.id) return;
+
+    // مقداردهی فیلدهای پروفایل/نقش
+    setFormInfo({ full_name: data.full_name || '', phone: data.phone || '', password: '' });
+    setRoleLevel(data.role_level ?? 4);
+
+    (async () => {
+      try {
+        // 1) گرفتن خودِ من (سوپرادمین)
+        const { data: me } = await api.get('/auth/me');
+
+        // 2) مجوزهای خودِ SA
+        const { data: mine } = await api.get(`/role-permissions/user/${me.id}`);
+        const mineAllowed = (mine || [])
+          .filter((p: any) => p.is_allowed)
+          .map((p: any) => p.action as string);
+        const mineSet = new Set<string>(mineAllowed);
+        setMyAllowed(mineSet);
+
+        // 3) مجوزهای فعلی کاربر هدف
+        const { data: target } = await api.get(`/role-permissions/user/${data.id}`);
+        const targetAllowed = new Set<string>(
+          (target || []).filter((p: any) => p.is_allowed).map((p: any) => p.action as string)
+        );
+
+        // 4) اکشن‌های قابل واگذاری = اکشن‌هایی که خودم دارم
+        const grantables = actions.filter(a => mineSet.has(a));
+        setGrantableActions(grantables);
+
+        // 5) مقدار اولیهٔ انتخاب‌ها = تقاطعِ (target ∩ grantables)
+        const initial = new Set<string>();
+        grantables.forEach(a => { if (targetAllowed.has(a)) initial.add(a); });
+        setSelectedActions(initial);
+      } catch (e) {
+        setMyAllowed(new Set());
+        setGrantableActions([]);
+        setSelectedActions(new Set());
+      }
+    })();
+  }, [open, data]);
+
+  const toggleAction = (action: string, checked: boolean) => {
+    setSelectedActions(prev => {
+      const next = new Set(prev);
+      checked ? next.add(action) : next.delete(action);
+      return next;
+    });
+  };
+
+  const handleSaveUserInfo = async () => {
+    if (!data?.id) return;
+    setSavingInfo(true);
+    try {
+      const payload: any = { full_name: formInfo.full_name, phone: formInfo.phone };
+      const pwd = formInfo.password.trim();
+      if (pwd) payload.password = pwd;
+      await api.put(`/users/${data.id}`, payload);
+      await onSaved();
+    } finally { setSavingInfo(false); }
+  };
+
+  const handleSaveRole = async () => {
+    if (!data?.id) return;
+    setSavingRole(true);
+    try {
+      await api.put(`/users/${data.id}`, { role_level: roleLevel });
+      await onSaved();
+    } finally { setSavingRole(false); }
+  };
+
+  const handleSavePermissions = async () => {
+    if (!data?.id) return;
+    setSavingPerms(true);
+    try {
+      // فقط داخل دامنهٔ مجازِ خودِ SA اجازه می‌دهیم
+      const payload = {
+        permissions: actions.map(a => ({
+          action: a,
+          is_allowed: myAllowed.has(a) && selectedActions.has(a),
+        })),
+      };
+      await api.put(`/role-permissions/user/${data.id}`, payload);
+      await onSaved();
+    } finally { setSavingPerms(false); }
+  };
+
+  if (!data) return null;
+
+  return (
+    <Dialog open={open} onClose={onClose} fullWidth>
+      <DialogTitle>ویرایش کاربر — {data.full_name}</DialogTitle>
+      <DialogContent>
+        {/* پروفایل */}
+        <Grid container spacing={2} sx={{ mt: 1 }}>
+          <Grid item xs={12}>
+            <TextField
+              fullWidth label="نام کامل"
+              value={formInfo.full_name}
+              onChange={e => setFormInfo({ ...formInfo, full_name: e.target.value })}
+            />
+          </Grid>
+          <Grid item xs={12}>
+            <TextField
+              fullWidth label="شماره موبایل"
+              value={formInfo.phone}
+              onChange={e => setFormInfo({ ...formInfo, phone: e.target.value })}
+            />
+          </Grid>
+          <Grid item xs={12}>
+            <TextField
+              fullWidth type="password" label="رمز عبور جدید"
+              value={formInfo.password}
+              onChange={e => setFormInfo({ ...formInfo, password: e.target.value })}
+            />
+          </Grid>
+          <Grid item xs={12}>
+            <Button variant="outlined" onClick={handleSaveUserInfo} disabled={savingInfo}>
+              ذخیره اطلاعات کاربر
+            </Button>
+          </Grid>
+
+          {/* نقش */}
+          <Grid item xs={12}>
+            <label>نقش:</label>
+            <select
+              value={roleLevel}
+              onChange={e => setRoleLevel(Number(e.target.value))}
+              style={{ width: '100%', padding: 8, marginTop: 6 }}
+              disabled={!canGrant}
+            >
+              <option value={3}>مدیر شعبه</option>
+              <option value={4}>مالک</option>
+              <option value={5}>تکنسین</option>
+              <option value={6}>راننده</option>
+            </select>
+          </Grid>
+          <Grid item xs={12}>
+            <Button variant="contained" onClick={handleSaveRole} disabled={savingRole || !canGrant}>
+              ذخیره نقش
+            </Button>
+          </Grid>
+
+          {/* مجوزهای اکشنی قابل‌واگذاری */}
+          {canGrant && (
+            <Grid item xs={12}>
+              <b>مجوزهای قابل واگذاری (بر اساس مجوزهای شما):</b>
+              {grantableActions.length === 0 ? (
+                <Box sx={{ color: 'text.secondary', mt: 1 }}>
+                  شما مجوزی برای واگذاری ندارید.
+                </Box>
+              ) : (
+                <FormGroup sx={{ mt: 1 }}>
+                  <Grid container spacing={1}>
+                    {grantableActions.map(action => (
+                      <Grid item xs={12} sm={6} md={4} key={action}>
+                        <FormControlLabel
+                          control={
+                            <Checkbox
+                              checked={selectedActions.has(action)}
+                              onChange={e => toggleAction(action, e.target.checked)}
+                            />
+                          }
+                          label={actionLabels[action]}
+                        />
+                      </Grid>
+                    ))}
+                  </Grid>
+                </FormGroup>
+              )}
+              <Box sx={{ mt: 1 }}>
+                <Button
+                  variant="contained"
+                  onClick={handleSavePermissions}
+                  disabled={savingPerms || grantableActions.length === 0}
+                >
+                  ذخیره مجوزها
+                </Button>
+              </Box>
+            </Grid>
+          )}
+        </Grid>
+      </DialogContent>
+
+      <DialogActions>
+        <Button onClick={onClose} disabled={savingInfo || savingRole || savingPerms}>بستن</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+
+
+
+function SubUserVehicleAccessDialog({
+  open,
+  onClose,
+  subUser,
+  ownerId,                      // id سوپرادمین (خود کاربر جاری)
+  grantableMap,                 // مجوزهای نوعیِ خود SA (از سمت منیجر)
+}: {
+  open: boolean;
+  onClose: () => void;
+  subUser: UserNode | null;
+  ownerId: number;
+  grantableMap: Record<VehicleTypeCode, MonitorKey[]>;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+
+  // فقط نوع‌های خودرو که SA واقعاً دارد
+  const [types, setTypes] = useState<VehicleTypeCode[]>([]);
+  const [typeCounts, setTypeCounts] = useState<Record<VehicleTypeCode, number>>({} as any);
+
+  // مجوزهای فعلی زیرمجموعه به تفکیک نوع (محدود به مجوزهای خود SA)
+  const [perType, setPerType] = useState<Record<VehicleTypeCode, Set<MonitorKey>>>({} as any);
+
+  const labelOfType = (code: VehicleTypeCode) =>
+    VEHICLE_TYPES.find(t => t.code === code)?.label || code;
+
+  useEffect(() => {
+    if (!open || !subUser) return;
+
+    const run = async () => {
+      setLoading(true);
+      setErrorMsg('');
+      try {
+        // 1) همه‌ی خودروهای خود SA ⇒ استخراج نوع‌های یکتا + شمارش
+        const { data: list } = await api.get('/vehicles', {
+          params: { owner_user_id: ownerId, limit: 1000 },
+        });
+        const items = list?.items || [];
+        const counts: Record<VehicleTypeCode, number> = {} as any;
+        items.forEach((v: any) => {
+          const code = v.vehicle_type_code as VehicleTypeCode;
+          counts[code] = (counts[code] || 0) + 1;
+        });
+
+        // نوع‌های یکتا که هم وجود دارند هم برای SA قابل واگذاری‌اند
+        const uniqTypes: VehicleTypeCode[] = Array.from(
+          new Set<VehicleTypeCode>(
+            items.map((v: any) => v.vehicle_type_code as VehicleTypeCode)
+          )
+        ).filter(
+          (vt) => (grantableMap[vt] ?? []).length > 0
+        );
+
+        setTypes(uniqTypes);
+        setTypeCounts(counts);
+
+        // 2) سیاست‌های فعلی زیرمجموعه (فقط Allowed) و اینترسکت با مجوزهای SA
+        const { data: childAllowed } = await api.get(
+          `/vehicle-policies/user/${subUser.id}`,
+          { params: { onlyAllowed: true } }
+        );
+
+        const init: Record<VehicleTypeCode, Set<MonitorKey>> = {} as any;
+        uniqTypes.forEach(vt => {
+          const saAllowed = new Set<MonitorKey>(grantableMap[vt] || []);
+          const row = (childAllowed || []).find((p: any) => p.vehicle_type_code === vt);
+          const childSet = new Set<MonitorKey>(Array.isArray(row?.monitor_params) ? row.monitor_params : []);
+          const fin: MonitorKey[] = [];
+          childSet.forEach(m => saAllowed.has(m) && fin.push(m));
+          init[vt] = new Set(fin);
+        });
+        setPerType(init);
+      } catch (e: any) {
+        setErrorMsg(e?.response?.data?.message || 'خطا در دریافت اطلاعات');
+        // اگر خطا خورد، لیست خالی می‌ماند
+        setTypes([]);
+        setPerType({} as any);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    run();
+  }, [open, subUser, ownerId, grantableMap]);
+
+  const toggleMonitor = (vt: VehicleTypeCode, key: MonitorKey, checked: boolean) => {
+    setPerType(prev => {
+      const next = { ...prev };
+      const s = new Set(next[vt] || []);
+      checked ? s.add(key) : s.delete(key);
+      next[vt] = s;
+      return next;
+    });
+  };
+
+  const handleSave = async () => {
+    if (!subUser) return;
+    setLoading(true);
+    setErrorMsg('');
+    try {
+      // فقط نوع‌هایی که نمایش داده شده‌اند را به bounded بفرست
+      const policies = types.map(vt => ({
+        vehicle_type_code: vt,
+        monitor_params: Array.from(perType[vt] || []),
+      }));
+      await api.put(`/vehicle-policies/user/${subUser.id}/bounded`, { policies });
+      onClose();
+    } catch (e: any) {
+      setErrorMsg(e?.response?.data?.message || 'ذخیره ناموفق بود');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
+      <DialogTitle>
+        ماشین‌ها و مجوزهای «{subUser?.full_name}»
+      </DialogTitle>
+      <DialogContent dividers>
+        {loading ? 'در حال بارگذاری...' : (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {errorMsg && <Box sx={{ color: 'error.main' }}>{errorMsg}</Box>}
+
+            <Box sx={{ color: 'text.secondary', fontSize: 13 }}>
+              تیک‌های هر ردیف، قوانین نوع همان ردیف را تغییر می‌دهد و برای همهٔ
+              خودروهای همان نوع برای این کاربر اعمال می‌شود.
+            </Box>
+
+            {types.length === 0 ? (
+              <Box sx={{ color: 'text.secondary' }}>نوع خودرویی برای نمایش موجود نیست.</Box>
+            ) : (
+              <Grid container spacing={2}>
+                {types.map(vt => {
+                  const available = grantableMap[vt] || [];
+                  const selected = Array.from(perType[vt] || []);
+                  return (
+                    <Grid item xs={12} key={vt}>
+                      <Box sx={{ border: '1px solid #eee', borderRadius: 1, p: 2 }}>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                          <Box sx={{ fontWeight: 600 }}>
+                            {labelOfType(vt)}{typeCounts[vt] ? ` — ${typeCounts[vt]} دستگاه` : ''}
+                          </Box>
+                          <Box>
+                            {selected.map(k => (
+                              <Chip key={k} label={MONITOR_PARAMS.find(m => m.key === k)?.label || k} size="small" sx={{ mr: .5 }} />
+                            ))}
+                          </Box>
+                        </Box>
+
+                        <FormGroup>
+                          <Grid container spacing={1}>
+                            {available.map((mk: MonitorKey) => (
+                              <Grid item xs={12} sm={6} md={4} key={`${vt}-${mk}`}>
+                                <FormControlLabel
+                                  control={
+                                    <Checkbox
+                                      checked={(perType[vt] || new Set()).has(mk)}
+                                      onChange={(e) => toggleMonitor(vt, mk, e.target.checked)}
+                                    />
+                                  }
+                                  label={MONITOR_PARAMS.find(m => m.key === mk)?.label || mk}
+                                />
+                              </Grid>
+                            ))}
+                          </Grid>
+                        </FormGroup>
+                      </Box>
+                    </Grid>
+                  );
+                })}
+              </Grid>
+            )}
+          </Box>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} disabled={loading}>بستن</Button>
+        <Button variant="contained" onClick={handleSave} disabled={loading}>ذخیره</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+import { useLayoutEffect, useRef } from 'react';
+export function AutoFitTree({
+  children,
+  minScale = 0.45,               // اگر درخت خیلی پهن شد، بیشتر کوچیک می‌کنه
+  maxScale = 1,                  // بیشتر از اندازه‌ی واقعی بزرگ نکن
+  height = 'calc(100vh - 220px)' // ارتفاع قاب؛ برای صفحه‌ی منیجر هماهنگ با هدر/نوارها تنظیم کن
+}: {
+  children: React.ReactNode;
+  minScale?: number;
+  maxScale?: number;
+  height?: string | number;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const [st, setSt] = useState({ ready: false, scale: 1, tx: 0, ty: 0 });
+
+  useLayoutEffect(() => {
+    const measure = () => {
+      const c = containerRef.current;
+      const d = contentRef.current;
+      if (!c || !d) return;
+
+      // حواشی داخلی محتوا رو حذف نکن؛ اندازه‌ی واقعی درخت باید به‌دست بیاد
+      const crect = c.getBoundingClientRect();
+      const drect = d.getBoundingClientRect();
+
+      const fit = Math.min(
+        crect.width / Math.max(1, drect.width),
+        crect.height / Math.max(1, drect.height)
+      );
+
+      const scale = Math.max(minScale, Math.min(maxScale, fit));
+      const tx = (crect.width - drect.width * scale) / 2;
+      const ty = (crect.height - drect.height * scale) / 2;
+
+      setSt({ ready: true, scale, tx, ty });
+    };
+
+    // یک بار و با تغییر اندازه‌ها
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (containerRef.current) ro.observe(containerRef.current);
+    if (contentRef.current) ro.observe(contentRef.current);
+    // اگر فونت‌ها دیر لود شوند
+    window.addEventListener('load', measure);
+
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('load', measure);
+    };
+  }, [minScale, maxScale]);
+
+  return (
+    <Box
+      ref={containerRef}
+      sx={{
+        position: 'relative',
+        height,
+        overflow: 'hidden',         // نه اسکرول عمودی، نه پرش
+        border: '1px solid',
+        borderColor: 'divider',
+        borderRadius: 1,
+        bgcolor: 'background.default'
+      }}
+    >
+      <Box
+        ref={contentRef}
+        sx={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          transform: `translate(${st.tx}px, ${st.ty}px) scale(${st.scale})`,
+          transformOrigin: 'top left',
+          transition: 'transform 140ms ease',
+          visibility: st.ready ? 'visible' : 'hidden', // تا مقیاس محاسبه نشه، مخفی ⇒ CLS صفر
+          p: 2
+        }}
+      >
+        {children}
+      </Box>
+    </Box>
+  );
+}
+
+
+function AutoFitScale({
+  children,
+  minScale = 0.35,   // حداقل بزرگ‌نمایی (برای خیلی درخت‌های بزرگ‌تر)
+  maxScale = 1,      // نذار بزرگ‌تر از اندازه‌ی واقعی بشه
+  pad = 24,          // حاشیه امن داخل ظرف
+  sx,
+}: {
+  children: React.ReactNode;
+  minScale?: number;
+  maxScale?: number;
+  pad?: number;
+  sx?: any;
+}) {
+  const outerRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const [scale, setScale] = useState(1);
+
+  useLayoutEffect(() => {
+    const outer = outerRef.current;
+    const content = contentRef.current;
+    if (!outer || !content) return;
+
+    const calc = () => {
+      // ابعاد ظرف قابل استفاده
+      const availW = Math.max(outer.clientWidth - pad * 2, 1);
+      const availH = Math.max(outer.clientHeight - pad * 2, 1);
+
+      // ابعاد واقعی محتوا (transform روی اینها اثر نداره، پس قابل اندازه‌گیری‌اند)
+      const needW = Math.max(content.scrollWidth, 1);
+      const needH = Math.max(content.scrollHeight, 1);
+
+      const s = Math.min(availW / needW, availH / needH);
+      const clamped = Math.max(minScale, Math.min(maxScale, s || 1));
+      setScale(clamped);
+    };
+
+    // رویدادهای تغییر اندازه
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(calc);
+    });
+    ro.observe(outer);
+    ro.observe(content);
+
+    calc();
+    return () => ro.disconnect();
+  }, [minScale, maxScale, pad]);
+
+  return (
+    <div
+      ref={outerRef}
+      style={{
+        position: 'relative',
+        width: '100%',
+        height: '100%',
+        overflow: 'hidden',   // جلوگیری از اسکرول ناگهانی
+        ...sx,
+      }}
+    >
+      <div
+        ref={contentRef}
+        style={{
+          transform: `scale(${scale})`,
+          transformOrigin: 'top center',
+          transition: 'transform 120ms ease',
+          // برای اینکه محتوا وسط ظرف قرار بگیرد:
+          margin: '0 auto',
+          width: 'max-content',
+          willChange: 'transform',
+          padding: pad,
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+function ScrollViewport({
+  children,
+  height = 'calc(100vh - 240px)', // هرچی خواستی بده
+}: {
+  children: React.ReactNode;
+  height?: string | number;
+}) {
+  return (
+    <Box
+      sx={{
+        position: 'relative',
+        height,
+        overflow: 'auto',                // ⇐ اسکرول عمودی/افقی
+        WebkitOverflowScrolling: 'touch',
+        overscrollBehavior: 'contain',
+        p: 1,
+      }}
+    >
+      {/* این لایه باعث میشه عرض به اندازهٔ محتوا بزرگ بشه تا اسکرول افقی داشته باشی */}
+      <Box sx={{ width: 'max-content', minHeight: '100%' }}>
+        {children}
+      </Box>
+    </Box>
+  );
+}

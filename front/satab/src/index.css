@@ -1,0 +1,48 @@
+/* پایه‌ها */
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+#root {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+body {
+  font-family: 'Vazirmatn', sans-serif;
+  direction: rtl;
+  background: #fff;
+}
+
+/* ظرف نقشه عمومی برای MapLibre / Leaflet */
+.map-wrap {
+  position: relative;
+  width: 100%;
+  height: 75vh;          /* ارتفاع نقشه اینجاست */
+  background: #eef2f5;   /* رنگ پس‌زمینه قبل از لود کاشی‌ها */
+  overflow: hidden;
+}
+.map-surface {
+  position: absolute;
+  inset: 0;              /* width/height 100% */
+}
+
+/* --- MapLibre GL --- */
+.maplibregl-canvas {
+  outline: none;         /* حذف لبه فوکوس */
+}
+.maplibregl-ctrl-group {
+  box-shadow: none;
+}
+
+/* --- Leaflet (فقط اگر استفاده شد) --- */
+/* به‌جای سراسری، محدود به wrap کن تا تداخل نداشته باشه */
+.map-wrap .leaflet-container {
+  width: 100%;
+  height: 100%;
+  background: #eef2f5;
+}
+.map-wrap .leaflet-container img {
+  max-width: none !important;
+}

@@ -1,0 +1,38 @@
+/* پایه‌ها شما خوبه، همین‌ها بمونه */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+#root {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  padding: 0;
+  text-align: initial;
+}
+
+body {
+  font-family: 'Vazirmatn', sans-serif;
+  direction: rtl;
+}
+
+/* ظرف نقشه */
+.map-wrap {
+  position: relative;
+  width: 100%;
+  height: 75vh;       /* ارتفاع نقشه اینجاست */
+  background: #eef2f5;
+  overflow: hidden;
+}
+
+.map-wrap .leaflet-container {
+  width: 100%;
+  height: 100%;
+  background: #eef2f5;
+}
+.map-wrap .leaflet-container img {
+  max-width: none !important;
+}

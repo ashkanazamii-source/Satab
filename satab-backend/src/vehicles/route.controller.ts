@@ -1,0 +1,66 @@
+import {
+  Controller,
+  Get,
+  Param,
+  ParseIntPipe,
+  Req,
+  UsePipes,
+  ValidationPipe,
+  UseGuards,
+  Delete,
+  Put,
+  Body
+} from '@nestjs/common';
+import { VehiclesService } from './vehicles.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { AclGuard } from '../acl/acl.guard';
+
+@UseGuards(JwtAuthGuard, AclGuard)
+@Controller('routes')
+@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
+export class RoutesController {
+  constructor(private readonly service: VehiclesService) {}
+
+  // لیست ایستگاه‌های یک مسیر
+  @Get(':id/stations')
+  listStationsOfRoute(@Req() req: any, @Param('id', ParseIntPipe) id: number) {
+    return this.service.listStationsByRouteForUser(id, +req.user.id);
+  }
+
+  // دریافت مشخصات مسیر
+  @Get(':id')
+  getRoute(@Req() req: any, @Param('id', ParseIntPipe) id: number) {
+    return this.service.getRouteForUser(id, +req.user.id);
+  }
+
+  // ویرایش مسیر (نام/threshold و در صورت ارسال، جایگزینی ایستگاه‌ها)
+  @Put(':id')
+  updateRoute(
+    @Req() req: any,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: {
+      name?: string;
+      threshold_m?: number;
+      stations?: { order_no?: number; name?: string; lat: number; lng: number; radius_m?: number | null }[];
+    }
+  ) {
+    return this.service.updateRouteForUser(id, +req.user.id, body);
+  }
+
+  // فقط جایگزینی ایستگاه‌ها (آپشنال؛ اگر PUT بالا را برای هر دو مورد می‌خواهی)
+  @Put(':id/stations')
+  replaceStations(
+    @Req() req: any,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() stations: { order_no?: number; name?: string; lat: number; lng: number; radius_m?: number | null }[]
+  ) {
+    return this.service.replaceRouteStationsForUser(id, +req.user.id, stations);
+  }
+
+  // حذف مسیر
+  @Delete(':id')
+  async deleteRoute(@Req() req: any, @Param('id', ParseIntPipe) id: number) {
+    await this.service.deleteRouteForUser(id, +req.user.id);
+    return { ok: true };
+  }
+}
