@@ -1,4 +1,3 @@
-// src/pages/ChatPage.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import api from '../services/api';
@@ -130,6 +129,46 @@ function ChatApp({ me }: { me: User }) {
     const [roomMaxBytes, setRoomMaxBytes] = useState<Record<number, number>>({});
     const uploadLimitBytes = activeRoom ? (roomMaxBytes[activeRoom.id] ?? defaultMaxBytes) : defaultMaxBytes;
 
+    useEffect(() => {
+        const loadReads = async () => {
+            if (!activeRoom || !messages.length) {
+                setReadsByMsg({});
+                return;
+            }
+
+            const messageIds = messages.map(m => m.id);
+            if (messageIds.length === 0) {
+                setReadsByMsg({});
+                return;
+            }
+            const myMsgIds = messages.filter(m => m.sender_id === me.id).map(m => m.id);
+            if (!myMsgIds.length) { setReadsByMsg({}); return; }
+            try {
+
+                const res = await api.post(`/chat/rooms/${activeRoom.id}/readers-map`, { ids: messageIds });
+
+
+                const map: Record<number, number[]> = res.data;
+                const newReadsByMsg: Record<number, Record<number, true>> = {};
+
+                for (const [msgIdStr, readerIds] of Object.entries(map)) {
+                    const msgId = Number(msgIdStr);
+                    if (Number.isNaN(msgId)) continue;
+                    newReadsByMsg[msgId] = {};
+                    for (const readerId of readerIds) {
+                        newReadsByMsg[msgId][readerId] = true;
+                    }
+                }
+
+                setReadsByMsg(newReadsByMsg);
+            } catch (err) {
+                console.error("Failed to load message read status:", err);
+
+            }
+        };
+
+        loadReads();
+    }, [messages, activeRoom]); // وابستگی به messages و activeRoom
     useEffect(() => { activeRoomIdRef.current = activeRoomId; }, [activeRoomId]);
     useEffect(() => { activeRoomRef.current = activeRoom; }, [activeRoom]);
 
@@ -398,6 +437,8 @@ function ChatApp({ me }: { me: User }) {
 
         // رسید خواندن
         s.on('message:read', (evt: any) => {
+            console.log('[FE] READ_EVT', evt);  // باید messageId و readerId (یوزر B) رو ببینی
+
             const messageId = Number(evt?.messageId);
             const readerId = Number(evt?.readerId);
             if (!messageId || !readerId) return;
@@ -483,13 +524,52 @@ function ChatApp({ me }: { me: User }) {
 
     // ===== Readers
     const sentReadsRef = useRef<Set<number>>(new Set());
-    const safeEmitRead = (messageId: number) => {
-        const s = socketRef.current; const ar = activeRoomRef.current;
-        if (!s || !ar || sentReadsRef.current.has(messageId)) return;
-        const wire = toWireRoom(ar, me.id);
+    const safeEmitRead = useCallback(async (messageId: number) => {
+        const s = socketRef.current;
+        if (!s || !activeRoom || !me) return;
+        if (sentReadsRef.current.has(messageId)) return; // قبلاً ارسال شده
+
         sentReadsRef.current.add(messageId);
-        s.emit('chat.message.read', { ...wire, messageId });
-    };
+        try {
+            await s.timeout(10000).emitWithAck('chat.message.read', {
+                messageId,
+                kind: activeRoom.type === 'DIRECT' ? 'DIRECT' : 'GROUP',   // ⬅️ قبلاً SA_GROUP بود
+                groupId: activeRoom.type !== 'DIRECT' ? activeRoom.id : undefined,
+                peerId:
+                    activeRoom.type === 'DIRECT'
+                        ? (() => {
+                            const [a, b] = (activeRoom.direct_key ?? '').split('-').map(Number); // ⬅️ عددی‌سازی
+                            if (Number.isNaN(a) || Number.isNaN(b)) return undefined;
+                            return me.id === a ? b : a;
+                        })()
+                        : undefined,
+            });
+
+            console.log(`[FE] Read confirmation sent for message ${messageId}`);
+        } catch (err) {
+            console.error(`[FE] Failed to send read confirmation for message ${messageId}:`, err);
+            // در صورت خطا، ممکن است بخواهید messageId را از sentReadsRef.current حذف کنید تا دوباره تلاش کند
+            sentReadsRef.current.delete(messageId);
+        }
+    }, [activeRoom, me]); // وابستگی‌ها
+    useEffect(() => {
+        const s = socketRef.current;
+        if (!s) return;
+
+        const handleMessageRead = (payload: { messageId: number; readerId: number }) => {
+            const { messageId, readerId } = payload;
+            setReadsByMsg(prev => {
+                const updated = { ...(prev[messageId] || {}) };
+                updated[readerId] = true;
+                return { ...prev, [messageId]: updated };
+            });
+        };
+
+        s.on('message:read', handleMessageRead);
+        return () => { s.off('message:read', handleMessageRead); };
+    }, []);
+
+
 
     // ===== Send
 
@@ -805,15 +885,16 @@ function ChatApp({ me }: { me: User }) {
                                                                         {new Date(m.created_at).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })}
                                                                     </Typography>
 
-                                                                    {/* تیک‌ها برای همهٔ پیام‌ها (خوانده‌شدن توسط غیرِ فرستنده) */}
-                                                                    {isReadByOtherThanSender(m)
-                                                                        ? <DoneAllRoundedIcon sx={{ fontSize: 16, color: 'primary.main' }} />
-                                                                        : <DoneRoundedIcon sx={{ fontSize: 16, color: 'text.secondary' }} />}
+                                                                    {/* ✅ نمایش تیک فقط برای پیام‌های خودم */}
+                                                                    {m.sender_id === me.id && (
+                                                                        isReadByOtherThanSender(m)
+                                                                            ? <DoneAllRoundedIcon sx={{ fontSize: 16, color: 'primary.main' }} />
+                                                                            : <DoneRoundedIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
+                                                                    )}
 
-                                                                    <IconButton size="small" onClick={() => openReaders(m.id)} title="چه کسانی خوانده‌اند؟">
-                                                                        <InfoOutlinedIcon fontSize="inherit" />
-                                                                    </IconButton>
+
                                                                 </Stack>
+
                                                             </Stack>
                                                         </Paper>
                                                     </Box>
@@ -887,7 +968,6 @@ function ChatApp({ me }: { me: User }) {
                     )}
                 </Paper>
             </Stack>
-            disabled={!activeRoom || (!input.trim() && !file) || !socketRef.current?.connected}
 
             {/* دیالوگ DM */}
             <Dialog open={openNewDm} onClose={() => setOpenNewDm(false)} maxWidth="xs" fullWidth>

@@ -1,11 +1,11 @@
 // src/acl/acl.module.ts
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common'; // 👈 forwardRef را اضافه کنید
 import { AclGuard } from './acl.guard';
 import { RolePermissionModule } from '../permissions/role-permission.module';
 
 @Module({
-  imports: [RolePermissionModule],
+  imports: [forwardRef(() => RolePermissionModule)], // ✅ مشکل حل شد
   providers: [AclGuard],
-  exports: [AclGuard], // فقط گارد رو صادر کن
+  exports: [AclGuard], // بهتر است فقط چیزی که واقعا نیاز است export شود (AclGuard)
 })
-export class AclModule {}
+export class AclModule { }

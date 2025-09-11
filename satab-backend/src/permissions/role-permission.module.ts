@@ -7,14 +7,17 @@ import { RolePermissionController } from './role-permission.controller';
 import { Users } from '../users/users.entity';
 import { UserModule } from '../users/users.module';
 import { VehiclePolicy } from '../vehicle-policies/vehicle-policy.entity';
+import { AnalyticsModule } from '../analytics/analytics.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([RolePermission, Users, VehiclePolicy]),
     forwardRef(() => UserModule),
+    forwardRef(() => AnalyticsModule),
+       // ✅ اینجا forwardRef
   ],
   providers: [RolePermissionService],
-  exports: [RolePermissionService], // ⬅️ لازم
+  exports: [RolePermissionService],
   controllers: [RolePermissionController],
 })
 export class RolePermissionModule {}

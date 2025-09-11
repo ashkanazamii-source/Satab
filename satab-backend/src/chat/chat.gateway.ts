@@ -202,7 +202,6 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         socket.to(room).emit('typing.stopped', { userId: u.id, room, at: Date.now() });
     }
 
-    // === ارسال پیام (بدون هیچ شرط مزاحم) ===
     @SubscribeMessage('chat.message.send')
     async wsSend(
         @ConnectedSocket() socket: Socket,
@@ -216,14 +215,14 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     ) {
         const u = this.socketUser.get(socket.id);
         if (!u) throw new WsException('Unauthorized');
-        console.log('[BE] chat.message.send IN', { sid: socket.id, userId: u?.id, body });
-
-        let roomId: number;
+        console.log('[GW] SEND_IN', { sid: socket.id, userId: u.id, body });
 
         try {
+            // 1) تعیین roomId و دسترسی
+            let roomId: number;
             if (body.kind === 'DIRECT' && body.peerId) {
-                const dmRoom = await this.chatService.ensureDirectRoom(u.id, body.peerId);
-                roomId = dmRoom.id;
+                const dm = await this.chatService.ensureDirectRoom(u.id, body.peerId);
+                roomId = dm.id;
             } else if (body.kind === 'GROUP' && body.groupId) {
                 roomId = body.groupId;
                 const isMember = await this.chatService.canJoinRoom(u.id, roomId);
@@ -232,72 +231,102 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
                 throw new WsException('Invalid room type or missing room identifier.');
             }
 
+            // 2) ذخیره پیام
             const savedMessage = await this.chatService.sendMessage({
-                roomId: roomId,
+                roomId,
                 senderId: u.id,
                 text: body.text,
                 attachmentUrl: body.attachmentUrl,
             });
-
-            if (!savedMessage) {
-                console.error('[GW] SEND_ERROR: sendMessage returned null/undefined');
-                throw new WsException('Failed to save message');
-            }
-
-            console.log('[GW] SEND_SAVED_MSG', savedMessage);
+            if (!savedMessage) throw new WsException('Failed to save message');
 
             const wsMessage = this.mapMessageToWs(savedMessage);
-            console.log('[GW] wsSend: Final wsMessage to be emitted:', JSON.stringify(wsMessage, null, 2));
 
+            // 3) نام اتاق و مخاطبان
             let roomName = '';
-            let audience: number[] = [];
+            let audienceUserIds: number[] = [];
+
             if (body.kind === 'DIRECT') {
                 const peer = body.peerId!;
-                roomName = this.dmRoom(u.id, peer);
-                audience = [u.id, peer];
+                const a = Math.min(u.id, peer);
+                const b = Math.max(u.id, peer);
+                roomName = this.dmRoom(a, b);
+                audienceUserIds = [u.id, peer];
             } else {
-                const groupId = body.groupId!;
-                roomName = this.groupRoom(groupId);
-                audience = Array.from(this.roomMembers.get(roomName) ?? new Set<number>());
+                roomName = this.groupRoom(body.groupId!);
+                // فقط آنلاین‌هایی که join کرده‌اند را داریم؛ همین‌ها را هم فالبک می‌کنیم
+                audienceUserIds = Array.from(this.roomMembers.get(roomName) ?? []);
             }
 
-            console.log('[GW] SEND_EMIT', { roomName, audience, wsMessage });
+            // 4) ارسال
+            const socketsInRoomBefore = Array.from(this.server.sockets.adapter.rooms.get(roomName) ?? []);
+            console.log('[GW] SEND_EMIT', { roomName, wsMessage, socketsInRoomBefore });
 
+            // به خود اتاق
             this.server.to(roomName).emit('message:new', wsMessage);
 
-            console.log('[GW] SEND_DONE', { id: wsMessage.id });
-            return { ok: true, id: wsMessage.id };
-
-        } catch (error) {
-            console.error('[GW] SEND_ERROR', error);
-            if (error instanceof WsException) {
-                throw error;
-            } else {
-                throw new WsException('Failed to send message: ' + (error.message || 'Unknown error'));
+            // فالبک مطمئن به U:<id> (حتی اگر join نشده باشند)
+            if (audienceUserIds.length) {
+                this.emitToUsers(audienceUserIds, 'message:new', wsMessage);
+            } else if (body.kind === 'DIRECT') {
+                // DM: اگر به هر دلیل لیست خالی شد، لااقل به فرستنده بفرست
+                this.emitToUsers([u.id], 'message:new', wsMessage);
             }
+
+            const socketsInRoomAfter = Array.from(this.server.sockets.adapter.rooms.get(roomName) ?? []);
+            console.log('[GW] SEND_DONE', { id: wsMessage.id, socketsInRoomAfter });
+
+            return { ok: true, id: wsMessage.id };
+        } catch (error: any) {
+            console.error('[GW] SEND_ERROR', { msg: error?.message || error, stack: error?.stack });
+            if (error instanceof WsException) throw error;
+            throw new WsException('Failed to send message: ' + (error?.message || 'Unknown error'));
         }
     }
 
-    // === رسیدِ خواندن (برای همهٔ اعضای اتاق هم پخش می‌شود) ===
+
+    // ChatGateway.wsRead
     @SubscribeMessage('chat.message.read')
     async wsRead(
         @ConnectedSocket() socket: Socket,
-        @MessageBody() b: { messageId: number; kind: RoomKind; groupId?: number; peerId?: number },
+        @MessageBody() b: { messageId: number; kind: 'DIRECT' | 'GROUP'; groupId?: number; peerId?: number },
     ) {
-        const u = this.socketUser.get(socket.id)!;
-        const roomName =
-            b.kind === 'DIRECT'
-                ? this.dmRoom(u.id, b.peerId!)
-                : this.groupRoom(b.groupId!);
+        const u = this.socketUser.get(socket.id);
+        if (!u) throw new WsException('Unauthorized');
+
+        console.log('[GW] READ_IN', { sid: socket.id, userId: u.id, body: b }); // ⬅️
+
+        await this.chatService.markRead(b.messageId, u.id);
 
         const evt = { messageId: b.messageId, readerId: u.id };
 
-        this.server.to(roomName).emit('message:read', evt);
-        const audience = Array.from(this.roomMembers.get(roomName) ?? new Set<number>());
-        this.emitToUsers(audience, 'message:read', evt);
+        if (b.kind === 'DIRECT' && b.peerId) {
+            const [a, bPeer] = [Math.min(u.id, b.peerId), Math.max(u.id, b.peerId)];
+            const roomName = this.dmRoom(a, bPeer);
+
+            this.server.to(roomName).emit('message:read', evt);
+            this.emitToUsers([u.id, b.peerId], 'message:read', evt);
+
+            const socketsInRoom = Array.from(this.server.sockets.adapter.rooms.get(roomName) ?? []);
+            console.log('[GW] READ_OUT_DM', { roomName, evt, socketsInRoom }); // ⬅️
+        } else if (b.kind === 'GROUP' && b.groupId) {
+            const roomName = this.groupRoom(b.groupId);
+
+            this.server.to(roomName).emit('message:read', evt);
+
+            // ⬅️ فالبک: اگر کاربری به هر دلیل عضو اتاق نشده بود، به U:<id> هم بفرست
+            const memberUserIds = Array.from(this.roomMembers.get(roomName) ?? []);
+            if (memberUserIds.length) this.emitToUsers(memberUserIds, 'message:read', evt);
+
+            const socketsInRoom = Array.from(this.server.sockets.adapter.rooms.get(roomName) ?? []);
+            console.log('[GW] READ_OUT_GRP', { roomName, evt, socketsInRoom, memberUserIds }); // ⬅️
+        }
 
         return { ok: true };
     }
+
+
+
 
     // === Presence list (فقط گزارش) ===
     @SubscribeMessage('presence.list')
@@ -309,54 +338,117 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return { users };
     }
 
-    private mapMessageToWs(m: ChatMessage & { sender?: Users | null }): SavedMessage {
+    private mapMessageToWs(
+        m: ChatMessage & { sender?: Users | null; room?: any }
+    ): SavedMessage {
         console.log('[GW] mapMessageToWs INPUT:', JSON.stringify(m, null, 2));
 
-        const senderId = Number(m.sender_id ?? m.sender?.id);
-        if (isNaN(senderId) || senderId <= 0) {
-            console.error('[GW] mapMessageToWs: Invalid or missing senderId', { m, senderId });
+        // --- sender ---
+        const senderId = Number((m as any).sender_id ?? (m as any).senderId ?? m.sender?.id);
+        if (!Number.isFinite(senderId) || senderId <= 0) {
+            console.error('[GW] mapMessageToWs: Invalid or missing senderId', { senderId, m });
             throw new Error('Sender ID is missing or invalid in message object');
         }
 
-        let senderName: string;
-        const senderFullName = m.sender?.full_name;
-        if (typeof senderFullName === 'string' && senderFullName.trim()) {
-            senderName = senderFullName.trim();
-        } else {
-            senderName = `کاربر #${senderId}`;
-        }
+        const senderNameRaw =
+            (m as any).senderName ??
+            m.sender?.full_name ??
+            (typeof (m as any).sender_full_name === 'string' ? (m as any).sender_full_name : null);
+        const senderName =
+            typeof senderNameRaw === 'string' && senderNameRaw.trim()
+                ? senderNameRaw.trim()
+                : `کاربر #${senderId}`;
 
+        // --- room (DIRECT/GROUP) ---
         let roomInfo: { kind: RoomKind; groupId?: number; peerId?: number };
-        if (m.room?.type === 'DIRECT' || m.room?.direct_key) {
-            const directKey = m.room.direct_key || '0-0';
-            const [a, b] = String(directKey).split('-').map(Number);
+
+        // اگر اتاق DIRECT است، از direct_key «a-b» peerId را دربیار
+        const roomType = m?.room?.type ?? (m as any).roomType ?? null;
+        const directKey =
+            (m?.room?.direct_key as string | undefined) ??
+            ((m as any).room?.directKey as string | undefined) ??
+            (typeof (m as any).direct_key === 'string' ? (m as any).direct_key : undefined);
+
+        if (roomType === 'DIRECT' || directKey) {
+            const key = (directKey ?? '0-0').toString();
+            const [a, b] = key.split('-').map(n => Number(n));
             const peerId = senderId === a ? b : a;
             roomInfo = { kind: 'DIRECT', peerId };
         } else {
-            roomInfo = { kind: 'GROUP', groupId: Number(m.room?.id) };
+            // گروهی (از room.id یا room_id استفاده کن)
+            const groupId =
+                Number(m?.room?.id) ||
+                Number((m as any).room_id ?? (m as any).groupId) ||
+                NaN;
+            if (!Number.isFinite(groupId)) {
+                console.warn('[GW] mapMessageToWs: groupId not resolvable, falling back to room_id', {
+                    room: m?.room,
+                    room_id: (m as any).room_id,
+                });
+            }
+            roomInfo = { kind: 'GROUP', groupId: groupId };
         }
 
+        // --- attachment (normalize snake/camel) ---
+        const attUrl =
+            (m as any).attachment_url ??
+            (m as any).attachmentUrl ??
+            null;
+        const attMime =
+            (m as any).attachment_mime ??
+            (m as any).attachmentMime ??
+            null;
+        const attSize =
+            (m as any).attachment_size ??
+            (m as any).attachmentSize ??
+            null;
+
+        // --- kind ---
         let kind: 'TEXT' | 'IMAGE' | 'FILE' = 'TEXT';
-        if (m.kind) {
-            kind = m.kind;
-        } else if (m.attachment_url) { 
-            kind = 'IMAGE';
+        if ((m as any).kind) {
+            kind = (m as any).kind;
+        } else if (attUrl) {
+            kind = typeof attMime === 'string' && attMime.startsWith('image/') ? 'IMAGE' : 'FILE';
+        } else {
+            kind = 'TEXT';
+        }
+
+        // --- text (ممکنه خالی یا undefined باشد) ---
+        const textVal = (m as any).text;
+        const text = typeof textVal === 'string' ? textVal : undefined;
+
+        // --- createdAt → ISO ---
+        // ورودی می‌تواند Date باشد یا string؛ هر دو را به ISO تبدیل کن
+        const createdRaw =
+            (m as any).created_at ??
+            (m as any).createdAt ??
+            null;
+
+        let createdAtIso: string;
+        if (createdRaw instanceof Date) {
+            createdAtIso = createdRaw.toISOString();
+        } else if (typeof createdRaw === 'string' && createdRaw.trim()) {
+            const d = new Date(createdRaw);
+            createdAtIso = Number.isFinite(d.getTime()) ? d.toISOString() : new Date().toISOString();
+        } else {
+            createdAtIso = new Date().toISOString();
         }
 
         const result: SavedMessage = {
-            id: Number(m.id),
+            id: Number((m as any).id),
             room: roomInfo,
-            senderId: senderId,
-            senderName: senderName,
-            kind: kind,
-            text: m.text ?? undefined,
-            attachmentUrl: m.attachment_url ?? null,
-            createdAt: m.created_at?.toISOString() ?? new Date().toISOString(),
+            senderId,
+            senderName,
+            kind,
+            text,
+            attachmentUrl: attUrl ?? null,
+            createdAt: createdAtIso,
         };
 
         console.log('[GW] mapMessageToWs OUTPUT:', JSON.stringify(result, null, 2));
         return result;
     }
+
 
     // ===== Bridge: وقتی پیام با HTTP ساخته شد =====
     @OnEvent('chat.message.created')
@@ -401,39 +493,48 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         }
     }
 
-    // ===== Bridge: وقتی Read با HTTP ثبت شد =====
+    // ChatGateway.handleReadFromHttp
     @OnEvent('chat.message.read')
     handleReadFromHttp(payload: {
         messageId: number;
         readerId: number;
         senderId: number;
         roomType: 'DIRECT' | 'SA_GROUP';
+        roomId: number | null;
         saRootId: number | null;
         audienceUserIds: number[];
     }) {
-        const { messageId, readerId, roomType, audienceUserIds } = payload;
+        const { messageId, readerId, roomType, audienceUserIds, roomId } = payload;
+        const evt = { messageId, readerId };
 
-        let roomName = '';
         if (roomType === 'DIRECT') {
             if (Array.isArray(audienceUserIds) && audienceUserIds.length === 2) {
                 const [a, b] = audienceUserIds.slice().sort((x, y) => x - y);
-                roomName = this.dmRoom(a, b);
+                const roomName = this.dmRoom(a, b);
+                this.server.to(roomName).emit('message:read', evt);
+                this.emitToUsers(audienceUserIds, 'message:read', evt);
+                console.log('[GW] HTTP_READ_OUT_DM', { roomName, evt });
             }
+            return;
         }
 
-        const evt = { messageId, readerId };
-
-        if (roomType === 'DIRECT' && roomName) {
+        // SA_GROUP
+        if (roomId) {
+            const roomName = this.groupRoom(roomId);
             this.server.to(roomName).emit('message:read', evt);
+
+            // ⬅️ فالبک: به UserRoom اعضای حاضر هم بفرست
+            const memberUserIds = Array.from(this.roomMembers.get(roomName) ?? []);
+            if (memberUserIds.length) this.emitToUsers(memberUserIds, 'message:read', evt);
+
             if (Array.isArray(audienceUserIds) && audienceUserIds.length) {
                 this.emitToUsers(audienceUserIds, 'message:read', evt);
             }
-        } else if (roomType === 'SA_GROUP') {
-            if (Array.isArray(audienceUserIds) && audienceUserIds.length) {
-                this.emitToUsers(audienceUserIds, 'message:read', evt);
-            }
+            console.log('[GW] HTTP_READ_OUT_GRP', { roomName, evt, memberUserIds, audienceUserIds });
         }
     }
+
+
 
     // ===== Bridge: تغییر سقف آپلود از طریق HTTP =====
     @OnEvent('chat.room.upload_limit_updated')

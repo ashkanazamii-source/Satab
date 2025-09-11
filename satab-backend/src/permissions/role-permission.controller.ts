@@ -16,7 +16,9 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ACL } from '../acl/acl.decorator';
 import { AclGuard } from '../acl/acl.guard';
 import { UserService } from '../users/users.service';
-
+import { AnalyticsService } from '../analytics/analytics.service';
+import { CurrentUser } from '../auth/current-user.decorator';
+import { Users } from '../users/users.entity';
 
 @Controller('role-permissions')
 @UseGuards(JwtAuthGuard, AclGuard)
@@ -24,8 +26,34 @@ export class RolePermissionController {
   constructor(
     private readonly rolePermissionService: RolePermissionService,
     private readonly userService: UserService,
+    private readonly analytics: AnalyticsService, 
 
   ) { }
+  @Get('user/:id/summary')
+  @ACL({ roles: [1, 2, 3, 4, 5, 6] })
+  async getUserAnalyticsSummary(
+    @CurrentUser() me: Users,
+    @Param('id', ParseIntPipe) userId: number,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const fromD = from ? new Date(from) : new Date('1970-01-01');
+    const toD = to ? new Date(to) : new Date();
+    return this.analytics.getNodeSummary(me, userId, fromD, toD);
+  }
+  @Get('user/:id/dashboard')
+  @ACL({ roles: [1, 2, 3, 4, 5, 6] })
+  async getUserAnalyticsDashboard(
+    @CurrentUser() me: Users,
+    @Param('id', ParseIntPipe) userId: number,
+    @Query('bucket') bucket: 'day' | 'week' | 'month' = 'day',
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const fromD = from ? new Date(from) : new Date('1970-01-01');
+    const toD = to ? new Date(to) : new Date();
+    return this.analytics.getDashboard(me, userId, bucket, fromD, toD);
+  }
 
   @Get('user/:id')
   @ACL({ roles: [1, 2, 3] })

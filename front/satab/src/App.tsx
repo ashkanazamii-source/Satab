@@ -7,6 +7,7 @@ import DriversManagementPage from './pages/DriversManagementPage';
 import LogsPage from './pages/LogsPage'; // صفحه‌ی لاگ‌ها
 import 'leaflet/dist/leaflet.css';
 import ChatPage from './pages/ChatPage'; // صفحه‌ی لاگ‌ها
+import AnalyticsPage from './pages/AnalyticsPage'; // صفحه‌ی لاگ‌ها
 
 export default function App() {
   return (
@@ -19,6 +20,7 @@ export default function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/chat" element={<ChatPage />} />
+        <Route path="/analytics" element={<AnalyticsPage />} />
 
         <Route
           path="/"

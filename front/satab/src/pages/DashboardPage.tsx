@@ -14,6 +14,7 @@ import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded';
 import CelebrationRoundedIcon from '@mui/icons-material/CelebrationRounded';
 import ChatRoundedIcon from '@mui/icons-material/ChatRounded';
+import InsightsRoundedIcon from '@mui/icons-material/InsightsRounded';
 
 import { alpha, keyframes, useTheme } from '@mui/material/styles';
 
@@ -298,7 +299,14 @@ export default function DashboardPage() {
             onClick={() => window.open('/logs', '_blank', 'noopener,noreferrer')}
           />
         </Grid>
-
+        <Grid item xs={12} sm={6} md={4}>
+          <ActionCard
+            icon={<InsightsRoundedIcon />}
+            title="تحلیل داده"
+            desc="گزارش‌های تحلیلی و داشبوردهای پیشرفته"
+            onClick={() => window.open('/analytics', '_blank', 'noopener,noreferrer')}
+          />
+        </Grid>
         {/* کارت چت: تب جدید */}
         <Grid item xs={12} sm={6} md={4}>
           <ActionCard

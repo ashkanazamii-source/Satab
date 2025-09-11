@@ -189,7 +189,7 @@ export class ChatService {
       attachment_url: input.attachmentUrl ?? null,
       attachment_size: input.attachmentSize ?? null,
       attachment_mime: input.attachmentMime ?? null,
-      
+
     });
     const savedRow = await this.msgRepo.save(msg);
 
@@ -235,25 +235,28 @@ export class ChatService {
 
     // رویداد read
     if (msg.room.type === 'SA_GROUP') {
-      this.events.emit('chat.message.read', <const>{
+      this.events.emit('chat.message.read', {
         messageId,
         readerId,
         senderId: msg.sender_id,
         roomType: 'SA_GROUP',
-        saRootId: msg.room.sa_root_user_id, // null
+        roomId: msg.room_id,                 // ⬅️ اضافه شد
+        saRootId: msg.room.sa_root_user_id,
         audienceUserIds: [],
       });
     } else if (msg.room.type === 'DIRECT' && msg.room.direct_key) {
       const [a, b] = msg.room.direct_key.split('-').map(Number);
-      this.events.emit('chat.message.read', <const>{
+      this.events.emit('chat.message.read', {
         messageId,
         readerId,
         senderId: msg.sender_id,
         roomType: 'DIRECT',
+        roomId: msg.room_id,              // ⬅️ (اختیاری اما مفید)
         saRootId: null,
         audienceUserIds: [a, b],
       });
     }
+    console.log('[BE] READ_SAVED', { messageId, readerId, roomType: msg.room.type, roomId: msg.room_id });
 
     return { ok: true };
   }

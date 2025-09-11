@@ -7,6 +7,7 @@ import {
 } from '@mui/material';
 import * as L from 'leaflet';
 import SearchIcon from '@mui/icons-material/Search';
+import { Checkbox, ListItemButton } from '@mui/material';
 import api from '../services/api';
 import './mapStyles.css';
 import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvent } from 'react-leaflet';
@@ -382,7 +383,6 @@ function PickPointsForStations({
 }
 
 /* ------------ Sections ------------ */
-
 function ManagerRoleSection({ user }: { user: User }) {
   const ALL_KEYS: MonitorKey[] = MONITOR_PARAMS.map(m => m.key);
   const TELEMETRY_KEYS: MonitorKey[] = ['ignition', 'idle_time', 'odometer', 'engine_temp'];
@@ -400,6 +400,116 @@ function ManagerRoleSection({ user }: { user: User }) {
   const tileUrl = useMapTiler && MT_KEY
     ? `https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=${MT_KEY}`
     : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+  const [defaultsOpen, setDefaultsOpen] = useState(false);
+  type TmpStation = { name: string; lat: number; lng: number; radius_m: number; order_no?: number };
+  type TmpLatLng = { lat: number; lng: number };
+  type TmpGeofence =
+    | { type: 'circle'; center: TmpLatLng; radius_m: number; tolerance_m?: number }
+    | { type: 'polygon'; points: TmpLatLng[]; tolerance_m?: number };
+
+  const [dfStations, setDfStations] = useState<TmpStation[]>([]);
+  const [dfGfMode, setDfGfMode] = useState<'circle' | 'polygon'>('circle');
+  const [dfGfCircle, setDfGfCircle] = useState<{ center?: TmpLatLng; radius_m: number; tolerance_m: number }>({ radius_m: 150, tolerance_m: 15 });
+  const [dfGfPoly, setDfGfPoly] = useState<TmpLatLng[]>([]);
+  const [dfDrawing, setDfDrawing] = useState(false);
+  const [dfTempSt, setDfTempSt] = useState<TmpStation | null>(null);
+  const [dfAuto, setDfAuto] = useState(1);
+
+
+
+  const mapDefaultsRef = React.useRef<RLMap | null>(null);
+  function PickPointsDF({ enabled, onPick }: { enabled: boolean; onPick: (lat: number, lng: number) => void }) {
+    useMapEvent('click', (e) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
+    return null;
+  }
+
+  // ساختن آبجکت geofence نهایی از state
+  const buildDfGeofence = (): TmpGeofence | null => {
+    if (dfGfMode === 'circle') {
+      if (!dfGfCircle.center || !Number.isFinite(dfGfCircle.radius_m)) return null;
+      return { type: 'circle', center: dfGfCircle.center, radius_m: Math.max(1, dfGfCircle.radius_m), tolerance_m: Math.max(0, dfGfCircle.tolerance_m) };
+    }
+    if (dfGfPoly.length >= 3) return { type: 'polygon', points: dfGfPoly.slice(), tolerance_m: Math.max(0, dfGfCircle.tolerance_m) };
+    return null;
+  };
+
+  const [supers, setSupers] = useState<FlatUser[]>([]);
+  const [driversBySA, setDriversBySA] = useState<Record<number, FlatUser[]>>({});
+  const [vehiclesBySA, setVehiclesBySA] = useState<Record<number, Vehicle[]>>({});
+  const [dfApplying, setDfApplying] = useState(false);
+  const [dfApplyLog, setDfApplyLog] = useState<string[]>([]);
+  const [dfTarget, setDfTarget] = useState<'currentVehicle' | 'currentSA'>('currentSA'); // مود هدف
+  // --- انتخاب ماشین‌ها برای دیالوگ «تنظیمات پیش‌فرض» ---
+  const [selectedVehicleIds, setSelectedVehicleIds] = useState<Set<number>>(new Set());
+  const [selectAll, setSelectAll] = useState(false);
+  const [qSA, setQSA] = useState('');
+  const [selectedSAId, setSelectedSAId] = useState<number | null>(null);
+  const [tabSA, setTabSA] = useState<'drivers' | 'vehicles'>('drivers');
+  const toggleVehiclePick = useCallback((vid: number) => {
+    setSelectedVehicleIds(prev => {
+      const next = new Set(prev);
+      next.has(vid) ? next.delete(vid) : next.add(vid);
+      return next;
+    });
+  }, []);
+
+  const handleSelectAll = useCallback((checked: boolean) => {
+    setSelectAll(checked);
+    if (!selectedSAId) { setSelectedVehicleIds(new Set()); return; }
+    const list = vehiclesBySA[selectedSAId] || [];
+    setSelectedVehicleIds(checked ? new Set(list.map(v => v.id)) : new Set());
+  }, [selectedSAId, vehiclesBySA]);
+
+  useEffect(() => {
+    if (!defaultsOpen) return;
+    if (!selectedSAId) { setSelectedVehicleIds(new Set()); setSelectAll(false); return; }
+    const list = vehiclesBySA[selectedSAId] || [];
+    setSelectedVehicleIds(selectAll ? new Set(list.map(v => v.id)) : new Set());
+  }, [defaultsOpen, selectedSAId, vehiclesBySA, selectAll]);
+
+  useEffect(() => {
+    if (dfTarget === 'currentVehicle') { setSelectedVehicleIds(new Set()); setSelectAll(false); }
+  }, [dfTarget]);
+
+  async function handleApplyDefaults() {
+    if (!user?.id) return;
+    const geofence = buildDfGeofence();
+    if (!dfStations.length && !geofence) { alert('هیچ آیتمی برای اعمال تنظیم نشده.'); return; }
+
+    const profile = {
+      stations: dfStations.length ? dfStations : undefined,
+      geofence: geofence ?? undefined,
+    };
+
+    const targetVids: number[] =
+      dfTarget === 'currentVehicle'
+        ? (selectedVehicle ? [selectedVehicle.id] : [])
+        : (selectedSAId
+          ? (selectedVehicleIds.size
+            ? Array.from(selectedVehicleIds)
+            : (vehiclesBySA[selectedSAId] || []).map(v => v.id)) // فالبک: همه
+          : []);
+
+    if (!targetVids.length) { alert('ماشینی برای اعمال تنظیمات پیدا نشد.'); return; }
+
+    setDfApplying(true);
+    setDfApplyLog([]);
+    try {
+      const logs: string[] = [];
+      for (const vid of targetVids) {
+        try {
+          const res = await applyVehicleProfile(api, vid, profile, user.id, user.role_level as any, { stationsMode: 'replace' });
+          logs.push(`✅ VID ${vid}: ${JSON.stringify(res.applied || {})}`);
+        } catch (e: any) {
+          logs.push(`❌ VID ${vid}: ${e?.response?.data?.message || e?.message || 'خطا'}`);
+        }
+        setDfApplyLog([...logs]);
+      }
+    } finally {
+      setDfApplying(false);
+    }
+  }
+
 
   const INITIAL_CENTER: [number, number] = [35.6892, 51.3890];
   const INITIAL_ZOOM = 6, MIN_ZOOM = 3, MAX_ZOOM = 18;
@@ -421,13 +531,8 @@ function ManagerRoleSection({ user }: { user: User }) {
 
   // آخرین سابسکرایب ایستگاه‌ها (هم scoped هم عمومی)
 
-  const [supers, setSupers] = useState<FlatUser[]>([]);
-  const [driversBySA, setDriversBySA] = useState<Record<number, FlatUser[]>>({});
-  const [vehiclesBySA, setVehiclesBySA] = useState<Record<number, Vehicle[]>>({});
 
-  const [qSA, setQSA] = useState('');
-  const [selectedSAId, setSelectedSAId] = useState<number | null>(null);
-  const [tabSA, setTabSA] = useState<'drivers' | 'vehicles'>('drivers');
+
 
   const [focusLatLng, setFocusLatLng] = useState<[number, number] | undefined>(undefined);
   // گزینه‌های فعال مانیتورینگ برای مدیر: همیشه همه
@@ -467,9 +572,8 @@ function ManagerRoleSection({ user }: { user: User }) {
   const canOdometer = MANAGER_ALWAYS_ALLOWED;
   const canEngineTemp = MANAGER_ALWAYS_ALLOWED; // ⬅️ جدید
   const canGeoFence = MANAGER_ALWAYS_ALLOWED;
-  // بالای فایل، کنار تایپ Station:
-  // جایگزین همین الان در ManagerRoleSection
-  const normalizeStations = (payload: any): Station[] => {
+
+  const normalizeStations = useCallback((payload: any): Station[] => {
     const src: any[] =
       Array.isArray(payload) ? payload :
         Array.isArray(payload?.items) ? payload.items :
@@ -484,22 +588,23 @@ function ManagerRoleSection({ user }: { user: User }) {
       const n = Number(v);
       return Number.isFinite(n) ? n : NaN;
     };
-
-    const list = src.map((s: any) => ({
-      id: s.id ?? s._id ?? s.station_id ?? s.stationId,          // ← انواع id
-      name: String(s.name ?? s.title ?? 'ایستگاه').trim(),
-      lat: toNum(s.lat ?? s.latitude ?? s.location?.lat ?? (Array.isArray(s) ? s[1] : undefined)),
-      lng: toNum(s.lng ?? s.lon ?? s.longitude ?? s.location?.lng ?? (Array.isArray(s) ? s[0] : undefined)),
-      radius_m: toNum(s.radius_m ?? s.radiusM ?? s.radius ?? 60),
-      order_no: s.order_no ?? s.orderNo ?? s.order,
-    }))
-      .filter(s => s.id != null && Number.isFinite(s.lat) && Number.isFinite(s.lng));
+    const list = src.map((s: any) => {
+      const idNum = Number(s.id ?? s._id ?? s.station_id ?? s.stationId);
+      return {
+        id: idNum,
+        name: String(s.name ?? s.title ?? 'ایستگاه').trim(),
+        lat: toNum(s.lat ?? s.latitude ?? s.location?.lat ?? (Array.isArray(s) ? s[1] : undefined)),
+        lng: toNum(s.lng ?? s.lon ?? s.longitude ?? s.location?.lng ?? (Array.isArray(s) ? s[0] : undefined)),
+        radius_m: toNum(s.radius_m ?? s.radiusM ?? s.radius ?? 60),
+        order_no: toNum(s.order_no ?? s.orderNo ?? s.order),
+      } as Station;
+    }).filter(s => Number.isFinite(s.id) && Number.isFinite(s.lat) && Number.isFinite(s.lng));
 
     // dedupe + sort
-    const map = new Map<string, Station>();
-    list.forEach(s => map.set(String(s.id), s as any));
-    return [...map.values()].sort((a: any, b: any) => (a.order_no ?? 0) - (b.order_no ?? 0));
-  };
+    const map = new Map<number, Station>();
+    list.forEach(s => map.set(s.id, s));
+    return [...map.values()].sort((a, b) => (a.order_no ?? 0) - (b.order_no ?? 0));
+  }, []);
 
 
   // برای فاصله از مسیر
@@ -539,42 +644,7 @@ function ManagerRoleSection({ user }: { user: User }) {
   const [loadingStationsForVid, setLoadingStationsForVid] = React.useState<number | null>(null);
   const stationsReqIdRef = React.useRef(0);
 
-  // اگر نداری:
 
-
-  // ====== Normalizer (قالب‌های مختلف API را می‌بلعد) ======
-  /*const normalizeStations = React.useCallback((payload: any): Station[] => {
-    const src: any[] =
-      Array.isArray(payload) ? payload :
-        Array.isArray(payload?.items) ? payload.items :
-          Array.isArray(payload?.data?.items) ? payload.data.items :
-            Array.isArray(payload?.data) ? payload.data :
-              Array.isArray(payload?.rows) ? payload.rows :
-                Array.isArray(payload?.list) ? payload.list :
-                  [];
-
-    const toNum = (v: any) => {
-      const n = Number(v);
-      return Number.isFinite(n) ? n : NaN;
-    };
-
-    const list = src
-      .map((s) => ({
-        id: s.id ?? s._id,
-        name: s.name ?? s.title ?? 'ایستگاه',
-        lat: toNum(s.lat ?? s.latitude ?? s.location?.lat),
-        lng: toNum(s.lng ?? s.longitude ?? s.location?.lng),
-        radius_m: toNum(s.radius_m ?? s.radiusM ?? s.radius ?? 60),
-        order_no: s.order_no ?? s.orderNo ?? s.order ?? undefined,
-      }))
-      .filter((s) => Number.isFinite(s.lat) && Number.isFinite(s.lng) && s.id != null);
-
-    // dedupe + sort
-    const map = new Map<number, Station>();
-    list.forEach((s) => map.set(Number(s.id), s));
-    return Array.from(map.values()).sort((a, b) => (a.order_no ?? 0) - (b.order_no ?? 0));
-  }, []);
-*/
   // ====== Loader از DB ======
   const loadStations = React.useCallback(async (vid: number) => {
     const my = ++stationsReqIdRef.current;
@@ -1999,18 +2069,295 @@ function ManagerRoleSection({ user }: { user: User }) {
             <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: .2 }}>
               سوپر ادمین‌ها
             </Typography>
-            <Chip
-              label={supers.length}
-              size="small"
-              sx={(t) => ({
-                fontWeight: 700,
-                color: ACC,
-                border: `1px solid ${ACC}33`,
-                bgcolor: `${ACC}14`,
-                '& .MuiChip-label': { px: 1.25 },
-              })}
-            />
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Button
+                size="small"
+                variant="contained"
+                onClick={() => { setDefaultsOpen(true); }}
+                startIcon={<span>⚙️</span>}
+              >
+                افزودن تنظیمات پیش‌فرض
+              </Button>
+              <Chip
+                label={supers.length}
+                size="small"
+                sx={(t) => ({
+                  fontWeight: 700,
+                  color: ACC,
+                  border: `1px solid ${ACC}33`,
+                  bgcolor: `${ACC}14`,
+                  '& .MuiChip-label': { px: 1.25 },
+                })}
+              />
+            </Stack>
           </Stack>
+          <Dialog open={defaultsOpen} onClose={() => setDefaultsOpen(false)} fullWidth maxWidth="lg">
+            <DialogTitle>تنظیمات پیش‌فرض منیجر</DialogTitle>
+            <DialogContent dividers sx={{ p: 0 }}>
+              <Grid2 container>
+                {/* نقشه سمت چپ */}
+                <Grid2 xs={12} md={7} sx={{ height: { xs: 360, md: 520 } }}>
+                  <Box sx={{ height: '100%' }}>
+                    <MapContainer
+                      center={INITIAL_CENTER}
+                      zoom={INITIAL_ZOOM}
+                      minZoom={MIN_ZOOM}
+                      maxZoom={MAX_ZOOM}
+                      style={{ width: '100%', height: '100%' }}
+                      whenCreated={(m: RLMap) => {
+                        mapDefaultsRef.current = m;
+                        setTimeout(() => m.invalidateSize(), 0);
+                      }}
+                    >
+                      <TileLayer url={tileUrl} {...({ attribution: '&copy; OpenStreetMap | © MapTiler' } as any)} />
+
+                      {/* کلیک‌گیرها */}
+                      <PickPointsDF
+                        enabled={dfDrawing && dfGfMode === 'circle'}
+                        onPick={(lat, lng) => setDfGfCircle(s => ({ ...s, center: { lat, lng } }))}
+                      />
+                      <PickPointsDF
+                        enabled={dfDrawing && dfGfMode === 'polygon'}
+                        onPick={(lat, lng) => setDfGfPoly(prev => [...prev, { lat, lng }])}
+                      />
+                      <PickPointsDF
+                        enabled={!dfDrawing} // وقتی درحال رسم نیستیم: کلیک = افزودن ایستگاه موقت
+                        onPick={(lat, lng) => setDfTempSt({ name: `ایستگاه ${dfAuto}`, lat, lng, radius_m: 60 })}
+                      />
+
+                      {/* پیش‌نمایش ژئوفنس */}
+                      {dfGfMode === 'circle' && dfGfCircle.center && (
+                        <Circle center={[dfGfCircle.center.lat, dfGfCircle.center.lng]} radius={dfGfCircle.radius_m} />
+                      )}
+                      {dfGfMode === 'polygon' && dfGfPoly.length >= 2 && (
+                        <Polygon positions={dfGfPoly.map(p => [p.lat, p.lng] as [number, number])} pathOptions={{ dashArray: '6 6' }} />
+                      )}
+
+                      {/* ایستگاه‌های انتخاب‌شده */}
+                      {dfStations.map((st, i) => (
+                        <React.Fragment key={`dfst-${i}`}>
+                          <Circle center={[st.lat, st.lng]} radius={st.radius_m} />
+                          <Marker position={[st.lat, st.lng]}>
+                            <Popup><b>{st.name}</b><br />{st.lat.toFixed(5)}, {st.lng.toFixed(5)}</Popup>
+                          </Marker>
+                        </React.Fragment>
+                      ))}
+
+                      {/* مارکر موقت ایستگاه */}
+                      {dfTempSt && (
+                        <>
+                          <Circle center={[dfTempSt.lat, dfTempSt.lng]} radius={dfTempSt.radius_m} />
+                          <Marker position={[dfTempSt.lat, dfTempSt.lng]} draggable
+                            eventHandlers={{
+                              add: (e: any) => e.target.openPopup(),
+                              dragend: (e: any) => {
+                                const ll = e.target.getLatLng();
+                                setDfTempSt(s => s ? ({ ...s, lat: ll.lat, lng: ll.lng }) : s);
+                              },
+                            }}>
+                            <Popup autoClose={false} closeOnClick={false} autoPan>
+                              <div style={{ minWidth: 220 }}>
+                                <strong>ایجاد ایستگاه</strong>
+                                <div style={{ marginTop: 8 }}>
+                                  <input
+                                    style={{ width: '100%', padding: 6 }}
+                                    placeholder="نام ایستگاه"
+                                    value={dfTempSt.name}
+                                    onChange={(e) => setDfTempSt(s => s ? ({ ...s, name: e.target.value }) : s)}
+                                  />
+                                </div>
+                                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                                  <button onClick={() => { if (dfTempSt) { setDfStations(p => [...p, dfTempSt]); setDfAuto(a => a + 1); setDfTempSt(null); } }}>تایید</button>
+                                  <button onClick={() => setDfTempSt(null)}>لغو</button>
+                                </div>
+                              </div>
+                            </Popup>
+                          </Marker>
+                        </>
+                      )}
+                    </MapContainer>
+                  </Box>
+                </Grid2>
+
+                {/* فرم‌ها سمت راست */}
+                <Grid2 xs={12} md={5} sx={{ p: 2 }}>
+                  <Stack spacing={2}>
+                    {/* هدف اعمال */}
+                    <FormControl size="small">
+                      <InputLabel id="df-target-lbl">اعمال روی</InputLabel>
+                      <Select
+                        labelId="df-target-lbl"
+                        label="اعمال روی"
+                        value={dfTarget}
+                        onChange={(e) => setDfTarget(e.target.value as any)}
+                      >
+                        <MenuItem value="currentSA">همه‌ی ماشین‌های SA انتخاب‌شده</MenuItem>
+                        <MenuItem value="currentVehicle" disabled={!selectedVehicle}>فقط ماشین انتخاب‌شده</MenuItem>
+                      </Select>
+                    </FormControl>
+
+                    {/* ⬇️ این‌جـــا بگذار ⬇️ */}
+                    {dfTarget === 'currentSA' && (
+                      <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 2 }}>
+                        <Stack direction="row" alignItems="center" justifyContent="space-between">
+                          <Typography fontWeight={700}>ماشین‌های SA انتخاب‌شده</Typography>
+                          <FormControlLabel
+                            control={
+                              <Checkbox
+                                checked={selectAll}
+                                onChange={(_, ch) => handleSelectAll(ch)}
+                              />
+                            }
+                            label="انتخاب همه"
+                          />
+                        </Stack>
+
+                        {selectedSAId && (vehiclesBySA[selectedSAId]?.length ?? 0) ? (
+                          <List dense sx={{ maxHeight: 220, overflow: 'auto', mt: 1 }}>
+                            {vehiclesBySA[selectedSAId]!.map(v => {
+                              const checked = selectedVehicleIds.has(v.id);
+                              return (
+                                <ListItem
+                                  key={v.id}
+                                  secondaryAction={
+                                    <Checkbox
+                                      edge="end"
+                                      checked={checked}
+                                      onChange={() => toggleVehiclePick(v.id)}
+                                    />
+                                  }
+                                >
+                                  <ListItemText
+                                    primary={v.plate_no}
+                                    secondary={v.vehicle_type_code || '—'}
+                                  />
+                                </ListItem>
+                              );
+                            })}
+                          </List>
+                        ) : (
+                          <Typography sx={{ mt: 1 }} color="text.secondary" variant="body2">
+                            برای این SA ماشینی نداریم.
+                          </Typography>
+                        )}
+
+                        <Typography variant="caption" color="text.secondary">
+                          {selectedVehicleIds.size.toLocaleString('fa-IR')} ماشین انتخاب شده‌اند.
+                        </Typography>
+                      </Paper>
+                    )}
+
+                    {/* ژئوفنس */}
+                    <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 2 }}>
+                      <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                        <Typography fontWeight={700}>ژئوفنس</Typography>
+                        <Button size="small" onClick={() => setDfDrawing(v => !v)} variant={dfDrawing ? 'contained' : 'outlined'}>
+                          {dfDrawing ? 'پایان ترسیم' : 'ترسیم روی نقشه'}
+                        </Button>
+                      </Stack>
+                      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 1 }}>
+                        <FormControl size="small" sx={{ minWidth: 140 }}>
+                          <InputLabel id="df-gf-mode">حالت</InputLabel>
+                          <Select
+                            labelId="df-gf-mode"
+                            value={dfGfMode}
+                            label="حالت"
+                            onChange={(e) => { setDfGfMode(e.target.value as any); setDfGfPoly([]); setDfGfCircle(c => ({ ...c, center: undefined })); }}
+                          >
+                            <MenuItem value="circle">دایره‌ای</MenuItem>
+                            <MenuItem value="polygon">چندضلعی</MenuItem>
+                          </Select>
+                        </FormControl>
+                        <TextField
+                          size="small"
+                          label="تلورانس (m)"
+                          type="number"
+                          value={dfGfCircle.tolerance_m}
+                          onChange={(e) => setDfGfCircle(c => ({ ...c, tolerance_m: Math.max(0, Number(e.target.value || 0)) }))}
+                          sx={{ width: 140 }}
+                        />
+                        {dfGfMode === 'circle' && (
+                          <TextField
+                            size="small"
+                            label="شعاع (m)"
+                            type="number"
+                            value={dfGfCircle.radius_m}
+                            onChange={(e) => setDfGfCircle(c => ({ ...c, radius_m: Math.max(1, Number(e.target.value || 0)) }))}
+                            sx={{ width: 140 }}
+                          />
+                        )}
+                        {dfGfMode === 'polygon' && (
+                          <Stack direction="row" spacing={1}>
+                            <Button size="small" onClick={() => setDfGfPoly(pts => pts.slice(0, -1))} disabled={!dfGfPoly.length}>برگشت نقطه</Button>
+                            <Button size="small" onClick={() => setDfGfPoly([])} disabled={!dfGfPoly.length}>پاک‌کردن نقاط</Button>
+                          </Stack>
+                        )}
+                      </Stack>
+                    </Paper>
+
+                    {/* ایستگاه‌ها */}
+                    <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 2 }}>
+                      <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                        <Typography fontWeight={700}>ایستگاه‌ها</Typography>
+                        <Chip size="small" label={`${dfStations.length} مورد`} />
+                      </Stack>
+                      {dfStations.length ? (
+                        <List dense sx={{ maxHeight: 180, overflow: 'auto', mt: 1 }}>
+                          {dfStations.map((s, i) => (
+                            <ListItem
+                              key={i}
+                              secondaryAction={
+                                <Stack direction="row" spacing={0.5}>
+                                  <IconButton size="small" onClick={() => {
+                                    setDfStations(arr => arr.filter((_, idx) => idx !== i));
+                                  }}>🗑️</IconButton>
+                                </Stack>
+                              }
+                            >
+                              <ListItemText
+                                primary={s.name}
+                                secondary={`${s.lat.toFixed(5)}, ${s.lng.toFixed(5)} — r=${s.radius_m}m`}
+                              />
+                            </ListItem>
+                          ))}
+                        </List>
+                      ) : (
+                        <Typography sx={{ mt: 1 }} color="text.secondary" variant="body2">
+                          روی نقشه کلیک کن تا ایستگاه اضافه شود.
+                        </Typography>
+                      )}
+                    </Paper>
+
+
+
+                    {/* لاگ اجرا */}
+                    {!!dfApplyLog.length && (
+                      <Paper variant="outlined" sx={{ p: 1, borderRadius: 2, maxHeight: 140, overflow: 'auto' }}>
+                        <Typography variant="caption" color="text.secondary">نتیجه اعمال:</Typography>
+                        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', direction: 'ltr' }}>{dfApplyLog.join('\n')}</pre>
+                      </Paper>
+                    )}
+                  </Stack>
+                </Grid2>
+              </Grid2>
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setDefaultsOpen(false)}>بستن</Button>
+              <Button
+                variant="contained"
+                onClick={handleApplyDefaults}
+                disabled={
+                  dfApplying ||
+                  (!dfStations.length && !buildDfGeofence()) ||
+                  (dfTarget === 'currentSA' && selectedVehicleIds.size === 0) ||
+                  (dfTarget === 'currentVehicle' && !selectedVehicle)
+                }
+              >
+                {dfApplying ? 'در حال اعمال…' : 'اعمال روی ماشین‌ها'}
+              </Button>
+
+            </DialogActions>
+          </Dialog>
 
           {/* جستجو */}
           <TextField
@@ -2756,6 +3103,7 @@ function ManagerRoleSection({ user }: { user: User }) {
 }
 
 
+
 function SuperAdminRoleSection({ user }: { user: User }) {
   // -------- انواع کمکی داخل همین فایل --------
   type VehicleTypeCode =
@@ -2777,6 +3125,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
       return [];
     }
   }
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
 
   function saveConsumablesToStorage(vid: number, items: any[]) {
     try {
@@ -2804,6 +3153,91 @@ function SuperAdminRoleSection({ user }: { user: User }) {
   const [gfRadius, setGfRadius] = useState<number>(150);                 // شعاع دایره (متر)
   const [gfPoly, setGfPoly] = useState<{ lat: number; lng: number }[]>([]);            // نقاط چندضلعی
   const [gfTolerance, setGfTolerance] = useState<number>(15);            // تلورانس (متر)
+  // --- فقط اضافه کن (بالای کامپوننت، کنار بقیه stateها) ---
+  const mapDefaultsRef = useRef<any>(null);
+  const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(null);
+
+  const [dfDrawing, setDfDrawing] = useState(false);
+  const [dfTempSt, setDfTempSt] = useState<{ name: string; lat: number; lng: number; radius_m: number } | null>(null);
+  const [dfAuto, setDfAuto] = useState(1);
+  const [dfApplyLog, setDfApplyLog] = useState<string[]>([]);
+
+  // انتخاب هدف: همه‌ی ماشین‌های SA یا فقط ماشین فعلی
+  // (تو snippet خودت "currentSA" و "currentVehicle" هست)
+  const [dfTarget, setDfTarget] = useState<'currentSA' | 'currentVehicle'>('currentVehicle');
+
+  // گروه‌بندی ماشین‌ها بر اساس SA (owner_user_id)
+  const vehiclesBySA = useMemo(() => {
+    const map: Record<number, Vehicle[]> = {};
+    for (const v of vehicles) {
+      const k = v.owner_user_id;
+      if (!map[k]) map[k] = [];
+      map[k].push(v);
+    }
+    return map;
+  }, [vehicles]);
+  const getVehicleOptions = React.useCallback(async (vid: number): Promise<MonitorKey[]> => {
+    const v = vehiclesRef.current.find(x => x.id === vid);
+    const valid = new Set<MonitorKey>(MONITOR_PARAMS.map(m => m.key));
+    let raw: string[] = [];
+
+    try {
+      const { data } = await api.get(`/vehicles/${vid}/options`);
+      raw = Array.isArray(data?.options) ? data.options : [];
+    } catch {
+      if (v) {
+        const { data: policies } = await api
+          .get(`/vehicle-policies/user/${v.owner_user_id}`)
+          .catch(() => ({ data: [] }));
+        const pol = (policies || []).find((p: any) => p?.vehicle_type_code === v.vehicle_type_code);
+        raw = Array.isArray(pol?.monitor_params) ? pol.monitor_params : [];
+      }
+    }
+
+    const opts = Array.from(new Set(raw.map(s => s?.toString().trim().toLowerCase())))
+      .filter((k): k is MonitorKey => valid.has(k as MonitorKey));
+
+    return opts;
+  }, []);
+  // اگر از قبل جایی SA انتخاب می‌کنی، همونو ست کن؛ در غیر این صورت روی کاربر فعلی
+  const [selectedSAId, setSelectedSAId] = useState<number | null>(user?.id ?? null);
+  const [selectedVehicleIds, setSelectedVehicleIds] = useState<Set<number>>(new Set());
+  const selectAll = useMemo(() => {
+    if (!selectedSAId) return false;
+    const list = vehiclesBySA[selectedSAId] ?? [];
+    return !!list.length && list.every(v => selectedVehicleIds.has(v.id));
+  }, [selectedSAId, vehiclesBySA, selectedVehicleIds]);
+
+  const handleSelectAll = (checked: boolean) => {
+    if (!selectedSAId) return;
+    const list = vehiclesBySA[selectedSAId] ?? [];
+    setSelectedVehicleIds(checked ? new Set(list.map(v => v.id)) : new Set());
+  };
+  const toggleVehiclePick = (id: number) => {
+    setSelectedVehicleIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+  const [vehicleOptions, setVehicleOptions] = useState<string[]>([]);
+
+  // کلیک‌گیر نقشه داخل دیالوگ پیش‌فرض
+  function PickPointsDF({
+    enabled,
+    onPick,
+  }: { enabled: boolean; onPick: (lat: number, lng: number) => void }) {
+    useMapEvent('click', (e) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
+    return null;
+  }
+  const dfShowGeofence = useMemo(() => {
+    if (dfTarget === 'currentVehicle') {
+      // فقط وقتی ماشین انتخاب‌شده geo_fence داشته باشد
+      return !!(selectedVehicle && vehicleOptions.includes('geo_fence'));
+    }
+    // در حالت گروهی نشان بده؛ موقع اعمال برای هر ماشین جداگانه چک می‌کنیم
+    return true;
+  }, [dfTarget, selectedVehicle?.id, vehicleOptions]);
 
   // کلیک‌گیر روی نقشه برای ژئوفنس
   function PickPointsForGeofence({
@@ -2832,7 +3266,6 @@ function SuperAdminRoleSection({ user }: { user: User }) {
   const [savingCons, setSavingCons] = useState(false);
 
   const [consumablesOpen, setConsumablesOpen] = useState(false);
-  const [vehicleOptions, setVehicleOptions] = useState<string[]>([]);
   const [vehicleOptionsLoading, setVehicleOptionsLoading] = useState(false);
   const LIVE_OPTION_KEY: MonitorKey = 'gps'; // هر چی اسم گزینهٔ لایوته
   const [vehicleLiveAllowed, setVehicleLiveAllowed] = useState(false);
@@ -2856,6 +3289,64 @@ function SuperAdminRoleSection({ user }: { user: User }) {
   const routeThresholdRef = useRef<number>(60);
   const [consumables, setConsumables] = useState<any[]>([]);
   const [toast, setToast] = useState<{ open: boolean; msg: string } | null>(null);
+  type VehicleProfile = {
+    // null => پاک کن، [] => لیست جدید خالی (عملاً پاک)، undefined => اصلاً دست نزن
+    stations?: { name: string; lat: number; lng: number; radius_m: number }[] | null;
+    // null => پاک کن، object => تنظیم کن، undefined => اصلاً دست نزن
+    geofence?: Geofence | null;
+  };
+  const dfShowStations = useMemo(() => {
+    // اگر هدف فقط همین ماشین است: از options همان ماشین استفاده کن
+    if (dfTarget === 'currentVehicle') {
+      return !!(selectedVehicle && vehicleOptions.includes('stations'));
+    }
+    // اگر هدف گروهی (currentSA) است: اجازه بده فرم ایستگاه نشان داده شود
+    // ولی در زمان اعمال، برای ماشین‌های غیرمجاز اسکیپ می‌کنیم (مرحله 2)
+    return true;
+  }, [dfTarget, selectedVehicle?.id, vehicleOptions]);
+  const [defaultsOpen, setDefaultsOpen] = useState(false);
+  const [dfStations, setDfStations] = useState<
+    { name: string; lat: number; lng: number; radius_m: number }[]
+  >([]);
+  const [dfGfMode, setDfGfMode] = useState<'circle' | 'polygon'>('circle');
+  const [dfGfCircle, setDfGfCircle] = useState<{
+    center: { lat: number; lng: number };
+    radius_m: number;
+    tolerance_m?: number | null;
+  }>({ center: { lat: 0, lng: 0 }, radius_m: 150, tolerance_m: 15 });
+  const [dfGfPoly, setDfGfPoly] = useState<{
+    points: { lat: number; lng: number }[];
+    tolerance_m?: number | null;
+  }>({ points: [], tolerance_m: 15 });
+  const [vehicleStations, setVehicleStations] = useState<
+    { id: number; name: string; lat: number; lng: number; radius_m: number }[]
+  >([]);
+  // از وضعیت فعلی ماشین انتخاب‌شده، فرم پیش‌فرض را پُر کن
+  const preloadDefaultsFromCurrent = React.useCallback(() => {
+    setDfStations(
+      (Array.isArray(vehicleStations) ? vehicleStations : []).map(s => ({
+        name: s.name, lat: s.lat, lng: s.lng, radius_m: s.radius_m,
+      }))
+    );
+    if (geofence?.type === 'circle') {
+      setDfGfMode('circle');
+      setDfGfCircle({
+        center: { lat: geofence.center.lat, lng: geofence.center.lng },
+        radius_m: geofence.radius_m,
+        tolerance_m: geofence.tolerance_m ?? 0,
+      });
+    } else if (geofence?.type === 'polygon') {
+      setDfGfMode('polygon');
+      setDfGfPoly({
+        points: geofence.points.map(p => ({ lat: p.lat, lng: p.lng })),
+        tolerance_m: geofence.tolerance_m ?? 0,
+      });
+    } else {
+      setDfGfMode('circle');
+      setDfGfCircle({ center: { lat: 0, lng: 0 }, radius_m: 150, tolerance_m: 15 });
+      setDfGfPoly({ points: [], tolerance_m: 15 });
+    }
+  }, [vehicleStations, geofence?.type]);
 
   const [tripNote, setTripNote] = useState('');                 // متن دلخواه
   const [tripDate, setTripDate] = useState<Date | null>(new Date()); // تاریخ شروع شمارش
@@ -2893,6 +3384,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
       base_odometer_km: c.base_odometer_km ?? null,
     });
   };
+
   function mergeConsumables(prev: any[], next: any[]) {
     // ادغام بر اساس id؛ اگر id نداشت، با start_at+mode+note یه کلید می‌سازیم
     const keyOf = (c: any) => c?.id ?? `${c.mode}:${c.start_at ?? c.base_odometer_km ?? c.note ?? Math.random()}`;
@@ -3177,7 +3669,6 @@ function SuperAdminRoleSection({ user }: { user: User }) {
     useState<'idle' | 'loading' | 'loaded' | 'error'>('idle');
 
   const [selectedDriver, setSelectedDriver] = useState<User | null>(null);
-  const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(null);
   const normalizeConsumables = (payload: any) => {
     // 1) آرایه‌ را از شکل‌های مختلف پاسخ دربیار
     let arr: any[] =
@@ -3383,9 +3874,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
     return null;
   }
 
-  const [vehicleStations, setVehicleStations] = useState<
-    { id: number; name: string; lat: number; lng: number; radius_m: number }[]
-  >([]);
+
   const [vehicleRoute, setVehicleRoute] = useState<VehicleRoute | null>(null);
 
   // لوازم مصرفی
@@ -3439,7 +3928,6 @@ function SuperAdminRoleSection({ user }: { user: User }) {
 
   // -------- دیتای راننده/ماشین --------
   const [drivers, setDrivers] = useState<User[]>([]);
-  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [loading, setLoading] = useState(true);
   const vehiclesRef = useRef<Vehicle[]>([]);
   useEffect(() => { vehiclesRef.current = vehicles; }, [vehicles]);
@@ -3976,6 +4464,20 @@ function SuperAdminRoleSection({ user }: { user: User }) {
   };
 
 
+  // انتخاب‌های کاربر برای ماشین‌ها (وقتی select_vehicles باشه)
+  const [dfSelectedVehicleIds, setDfSelectedVehicleIds] = useState<number[]>([]);
+  const [dfVehiclesQuery, setDfVehiclesQuery] = useState('');
+
+  // فهرست ماشین‌ها برای نمایش داخل دیالوگ (با جستجو)
+  const dfVehiclesList = useMemo(() => {
+    const s = dfVehiclesQuery.trim().toLowerCase();
+    const base = vehicles; // همین vehicles که بالاتر لود می‌کنی
+    if (!s) return base;
+    return base.filter(v =>
+      v.plate_no.toLowerCase().includes(s) ||
+      (v.vehicle_type_code || '').toLowerCase().includes(s)
+    );
+  }, [vehicles, dfVehiclesQuery]);
 
   // لغو
   const cancelTempStation = () => {
@@ -4026,8 +4528,72 @@ function SuperAdminRoleSection({ user }: { user: User }) {
     }
   };
 
-  // ===== UI =====
-  // به‌روز کردن threshold در ref (NEW)
+  const allVisibleSelected = useMemo(() => {
+    if (!dfVehiclesList.length) return false;
+    const set = new Set(dfSelectedVehicleIds);
+    return dfVehiclesList.every(v => set.has(v.id));
+  }, [dfVehiclesList, dfSelectedVehicleIds]);
+
+  const toggleAllVisible = () => {
+    const visibleIds = dfVehiclesList.map(v => v.id);
+    const set = new Set(dfSelectedVehicleIds);
+    if (allVisibleSelected) {
+      // برداشتن تیک همهٔ آیتم‌های قابل‌نمایش
+      visibleIds.forEach(id => set.delete(id));
+    } else {
+      // اضافه‌کردن همهٔ آیتم‌های قابل‌نمایش
+      visibleIds.forEach(id => set.add(id));
+    }
+    setDfSelectedVehicleIds(Array.from(set));
+  };
+
+  const toggleOneVehicle = (id: number) => {
+    setDfSelectedVehicleIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+
+
+  // NEW: حذف مسیر فعلی
+  const deleteCurrentRoute = async () => {
+    if (!selectedVehicle || !vehicleRoute) return;
+    if (!confirm('مسیر حذف شود؟')) return;
+
+    await api.delete(`/routes/${vehicleRoute.id}`);
+
+    // اگر بک‌اند association را حفظ می‌کند، current را هم خالی کن (الگوی موجودِ سرور را بگذار)
+    await api.delete(`/vehicles/${selectedVehicle.id}/routes/current`).catch(() => { });
+    // یا:
+    // await api.put(`/vehicles/${selectedVehicle.id}/routes/current`, { route_id: null }).catch(() => {});
+
+    setVehicleRoute(null);
+    setRoutePoints([]);
+    routePolylineRef.current = [];
+  };
+
+  const routePts = vehicleRoute?.points ?? [];
+
+  // وقتی مسیر عوض شد، فرم رو پر کن
+
+  // بخش ۲ - لیسنر برای گرفتن پیام‌ها (داخل useEffect جدا)
+  const handleTripReset = async () => {
+    if (!selectedVehicle) return;
+    if (liveOdoKm == null) {
+      alert('داده‌ی کیلومترشمار در دسترس نیست.');
+      return;
+    }
+    const startedAt = (tripDate || new Date()).toISOString();
+
+    // اگر API داری، این رو ذخیره کن تا پایدار بمونه:
+    try {
+      await api.post(`/vehicles/${selectedVehicle.id}/trip/start`, {
+        base_odometer_km: Number(liveOdoKm),
+        started_at: startedAt,
+        note: (tripNote || '').trim(),
+      }).catch(() => { }); // اختیاری
+    } catch { }
+
+    // به‌هرحال، پایه رو همینجا بروز کن (یعنی صفر از الان)
+    setTripBaseKm(Number(liveOdoKm));
+  };  // به‌روز کردن threshold در ref (NEW)
   const [editingRoute, setEditingRoute] = useState(false);
   const [routeForm, setRouteForm] = useState<{ name: string; threshold_m: number }>({
     name: '',
@@ -4371,50 +4937,104 @@ function SuperAdminRoleSection({ user }: { user: User }) {
     setDrawingRoute(false);
     setRoutePoints([]);
   };
+  // هدف اعمال: فقط همین ماشین، یا انتخاب دستی از لیست
 
 
-  // NEW: حذف مسیر فعلی
-  const deleteCurrentRoute = async () => {
-    if (!selectedVehicle || !vehicleRoute) return;
-    if (!confirm('مسیر حذف شود؟')) return;
+  // انتخاب/عدم‌انتخاب همهٔ آیتم‌های قابل‌نمایش
+  // === Helper: options of a vehicle (per-vehicle -> policy fallback) ===
 
-    await api.delete(`/routes/${vehicleRoute.id}`);
 
-    // اگر بک‌اند association را حفظ می‌کند، current را هم خالی کن (الگوی موجودِ سرور را بگذار)
-    await api.delete(`/vehicles/${selectedVehicle.id}/routes/current`).catch(() => { });
-    // یا:
-    // await api.put(`/vehicles/${selectedVehicle.id}/routes/current`, { route_id: null }).catch(() => {});
 
-    setVehicleRoute(null);
-    setRoutePoints([]);
-    routePolylineRef.current = [];
-  };
 
-  const routePts = vehicleRoute?.points ?? [];
 
-  // وقتی مسیر عوض شد، فرم رو پر کن
 
-  // بخش ۲ - لیسنر برای گرفتن پیام‌ها (داخل useEffect جدا)
-  const handleTripReset = async () => {
-    if (!selectedVehicle) return;
-    if (liveOdoKm == null) {
-      alert('داده‌ی کیلومترشمار در دسترس نیست.');
-      return;
+
+
+
+
+
+  async function applyVehicleProfile(api: any, vid: number, profile: VehicleProfile, actorId: number, roleLevel: number) {
+    const opts = await getVehicleOptions(vid);
+
+    // --- Stations ---
+    if (profile.stations !== undefined && opts.includes('stations')) {
+      if (!profile.stations || profile.stations.length === 0) {
+        // پاک‌کردن همهٔ ایستگاه‌ها
+        const { data: cur } = await api.get(`/vehicles/${vid}/stations`).catch(() => ({ data: [] }));
+        if (Array.isArray(cur)) {
+          await Promise.all(cur.map((s: any) =>
+            api.delete(`/vehicles/${vid}/stations/${s.id}`).catch(() => { })
+          ));
+        }
+      } else {
+        // جایگزینی کامل
+        try {
+          await api.put(`/vehicles/${vid}/stations`, profile.stations);
+        } catch {
+          const { data: cur } = await api.get(`/vehicles/${vid}/stations`).catch(() => ({ data: [] }));
+          if (Array.isArray(cur)) {
+            await Promise.all(cur.map((s: any) =>
+              api.delete(`/vehicles/${vid}/stations/${s.id}`).catch(() => { })
+            ));
+          }
+          for (const st of profile.stations) {
+            await api.post(`/vehicles/${vid}/stations`, st).catch(() => { });
+          }
+        }
+      }
     }
-    const startedAt = (tripDate || new Date()).toISOString();
 
-    // اگر API داری، این رو ذخیره کن تا پایدار بمونه:
-    try {
-      await api.post(`/vehicles/${selectedVehicle.id}/trip/start`, {
-        base_odometer_km: Number(liveOdoKm),
-        started_at: startedAt,
-        note: (tripNote || '').trim(),
-      }).catch(() => { }); // اختیاری
-    } catch { }
+    // --- Geofence ---
+    if (profile.geofence !== undefined && opts.includes('geo_fence')) {
+      if (!profile.geofence) {
+        // حذف ژئوفنس
+        await api.delete(`/vehicles/${vid}/geofence`).catch(() => { });
+      } else {
+        // جایگزینی کامل: اول حذف، بعد ست
+        await api.delete(`/vehicles/${vid}/geofence`).catch(() => { });
+        if (profile.geofence.type === 'circle') {
+          const g = profile.geofence;
+          const payload = {
+            type: 'circle',
+            centerLat: g.center.lat,
+            centerLng: g.center.lng,
+            radiusM: g.radius_m,
+            toleranceM: g.tolerance_m ?? 0,
+          };
+          await api.put(`/vehicles/${vid}/geofence`, payload).catch(() =>
+            api.post(`/vehicles/${vid}/geofence`, payload)
+          );
+        } else {
+          const g = profile.geofence;
+          const payload = {
+            type: 'polygon',
+            polygonPoints: g.points.map(p => ({ lat: p.lat, lng: p.lng })),
+            toleranceM: g.tolerance_m ?? 0,
+          };
+          await api.put(`/vehicles/${vid}/geofence`, payload).catch(() =>
+            api.post(`/vehicles/${vid}/geofence`, payload)
+          );
+        }
+      }
+    }
 
-    // به‌هرحال، پایه رو همینجا بروز کن (یعنی صفر از الان)
-    setTripBaseKm(Number(liveOdoKm));
-  };
+    // (اختیاری) اگر می‌خواهی ویژگی‌هایی که آن ماشین ندارد بی‌صدا رد شوند،
+    // کافیست branches بالا را فقط وقتی opts.includes(...) بود اجرا کنی (که همین‌طور است).
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
   return (
     <Grid2 container spacing={2} dir="ltr">
@@ -4649,7 +5269,23 @@ function SuperAdminRoleSection({ user }: { user: User }) {
                   ? `راننده‌ها (${drivers.length})`
                   : `ماشین‌ها (${vehicles.length})`}
               </Typography>
-
+              {/* دکمه تنظیمات پیش‌فرض */}
+              <Button
+                size="small"
+                variant="outlined"
+                disabled={!selectedVehicle}
+                onClick={() => {
+                  preloadDefaultsFromCurrent();
+                  // پیش‌فرض: همین ماشین انتخاب‌شده
+                  setDfTarget('currentVehicle');
+                  setDfSelectedVehicleIds(selectedVehicle ? [selectedVehicle.id] : []);
+                  setDfVehiclesQuery('');
+                  setDefaultsOpen(true);
+                }}
+                sx={{ mb: 1 }}
+              >
+                تنظیمات پیش‌فرض
+              </Button>
               {/* اگر GPS فعال باشد، وضعیت لایو را نشان بده */}
               {tab === 'vehicles' && selectedVehicle && vehicleOptions.includes('gps') && (
                 <Chip
@@ -4836,6 +5472,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
                 <Typography variant="subtitle2" sx={{ mb: 1 }}>
                   امکانات فعال این ماشین
                 </Typography>
+
 
                 {vehicleOptionsLoading ? (
                   <Box display="flex" alignItems="center" gap={1} color="text.secondary">
@@ -5581,6 +6218,355 @@ function SuperAdminRoleSection({ user }: { user: User }) {
               )
             )}
           </Paper>
+          <Dialog open={defaultsOpen} onClose={() => setDefaultsOpen(false)} fullWidth maxWidth="md">
+            <DialogTitle>تنظیمات پیش‌فرض</DialogTitle>
+            <DialogContent dividers sx={{ p: 0 }}>
+              <Grid2 container>
+                {/* نقشه سمت چپ */}
+                <Grid2 xs={12} md={7} sx={{ height: { xs: 360, md: 520 } }}>
+                  <Box sx={{ height: '100%' }}>
+                    <MapContainer
+                      center={INITIAL_CENTER}
+                      zoom={INITIAL_ZOOM}
+                      minZoom={MIN_ZOOM}
+                      maxZoom={MAX_ZOOM}
+                      style={{ width: '100%', height: '100%' }}
+                      whenCreated={(m) => {
+                        mapDefaultsRef.current = m;
+                        setTimeout(() => m.invalidateSize(), 0);
+                      }}
+                    >
+                      <TileLayer url={tileUrl} {...({ attribution: '&copy; OpenStreetMap | © MapTiler' } as any)} />
+
+                      {/* کلیک‌گیرها */}
+                      <PickPointsDF
+                        enabled={dfDrawing && dfGfMode === 'circle'}
+                        onPick={(lat, lng) => setDfGfCircle(s => ({ ...s, center: { lat, lng } }))}
+                      />
+                      <PickPointsDF
+                        enabled={dfDrawing && dfGfMode === 'polygon'}
+                        onPick={(lat, lng) => setDfGfPoly(prev => ({ ...prev, points: [...prev.points, { lat, lng }] }))}
+                      />
+                      <PickPointsDF
+                        enabled={!dfDrawing} // وقتی درحال رسم نیستیم: کلیک = افزودن ایستگاه موقت
+                        onPick={(lat, lng) => setDfTempSt({ name: `ایستگاه ${dfAuto}`, lat, lng, radius_m: 60 })}
+                      />
+
+                      {/* پیش‌نمایش ژئوفنس */}
+                      {dfGfMode === 'circle' && dfGfCircle.center && (
+                        <Circle center={[dfGfCircle.center.lat, dfGfCircle.center.lng]} radius={dfGfCircle.radius_m} />
+                      )}
+                      {dfGfMode === 'polygon' && (dfGfPoly.points?.length ?? 0) >= 2 && (
+                        <Polygon
+                          positions={dfGfPoly.points.map(p => [p.lat, p.lng] as [number, number])}
+                          pathOptions={{ dashArray: '6 6' }}
+                        />
+                      )}
+
+                      {/* ایستگاه‌های انتخاب‌شده */}
+                      {dfStations.map((st, i) => (
+                        <React.Fragment key={`dfst-${i}`}>
+                          <Circle center={[st.lat, st.lng]} radius={st.radius_m} />
+                          <Marker position={[st.lat, st.lng]}>
+                            <Popup><b>{st.name}</b><br />{st.lat.toFixed(5)}, {st.lng.toFixed(5)}</Popup>
+                          </Marker>
+                        </React.Fragment>
+                      ))}
+
+                      {/* مارکر موقت ایستگاه */}
+                      {dfTempSt && (
+                        <>
+                          <Circle center={[dfTempSt.lat, dfTempSt.lng]} radius={dfTempSt.radius_m} />
+                          <Marker
+                            position={[dfTempSt.lat, dfTempSt.lng]}
+                            draggable
+                            eventHandlers={{
+                              add: (e: any) => e.target.openPopup(),
+                              dragend: (e: any) => {
+                                const ll = e.target.getLatLng();
+                                setDfTempSt(s => s ? ({ ...s, lat: ll.lat, lng: ll.lng }) : s);
+                              },
+                            }}
+                          >
+                            <Popup autoClose={false} closeOnClick={false} autoPan>
+                              <div style={{ minWidth: 220 }}>
+                                <strong>ایجاد ایستگاه</strong>
+                                <div style={{ marginTop: 8 }}>
+                                  <input
+                                    style={{ width: '100%', padding: 6 }}
+                                    placeholder="نام ایستگاه"
+                                    value={dfTempSt.name}
+                                    onChange={(e) => setDfTempSt(s => s ? ({ ...s, name: e.target.value }) : s)}
+                                  />
+                                </div>
+                                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                                  <button onClick={() => {
+                                    if (!dfTempSt) return;
+                                    setDfStations(p => [...p, dfTempSt]);
+                                    setDfAuto(a => a + 1);
+                                    setDfTempSt(null);
+                                  }}>تایید</button>
+                                  <button onClick={() => setDfTempSt(null)}>لغو</button>
+                                </div>
+                              </div>
+                            </Popup>
+                          </Marker>
+                        </>
+                      )}
+                    </MapContainer>
+                  </Box>
+                </Grid2>
+
+                {/* فرم‌ها سمت راست */}
+                <Grid2 xs={12} md={5} sx={{ p: 2 }}>
+                  <Stack spacing={2}>
+                    {/* هدف اعمال */}
+                    <FormControl size="small">
+                      <InputLabel id="df-target-lbl">اعمال روی</InputLabel>
+                      <Select
+                        labelId="df-target-lbl"
+                        label="اعمال روی"
+                        value={dfTarget}
+                        onChange={(e) => setDfTarget(e.target.value as any)}
+                      >
+                        <MenuItem value="currentSA">همه‌ی ماشین‌های مدیر انتخاب‌شده</MenuItem>
+                        <MenuItem value="currentVehicle" disabled={!selectedVehicle}>فقط ماشین انتخاب‌شده</MenuItem>
+                      </Select>
+                    </FormControl>
+
+                    {/* لیست ماشین‌های SA (وقتی currentSA) */}
+                    {dfTarget === 'currentSA' && (
+                      <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 2 }}>
+                        <Stack direction="row" alignItems="center" justifyContent="space-between">
+                          <Typography fontWeight={700}>ماشین‌های مدیر انتخاب‌شده</Typography>
+                          <FormControlLabel
+                            control={<Checkbox checked={selectAll} onChange={(_, ch) => handleSelectAll(ch)} />}
+                            label="انتخاب همه"
+                          />
+                        </Stack>
+
+                        {selectedSAId && (vehiclesBySA[selectedSAId]?.length ?? 0) ? (
+                          <List dense sx={{ maxHeight: 220, overflow: 'auto', mt: 1 }}>
+                            {vehiclesBySA[selectedSAId]!.map(v => {
+                              const checked = selectedVehicleIds.has(v.id);
+                              return (
+                                <ListItem
+                                  key={v.id}
+                                  secondaryAction={
+                                    <Checkbox edge="end" checked={checked} onChange={() => toggleVehiclePick(v.id)} />
+                                  }
+                                >
+                                  <ListItemText primary={v.plate_no} secondary={v.vehicle_type_code || '—'} />
+                                </ListItem>
+                              );
+                            })}
+                          </List>
+                        ) : (
+                          <Typography sx={{ mt: 1 }} color="text.secondary" variant="body2">
+                            برای این SA ماشینی نداریم.
+                          </Typography>
+                        )}
+
+                        <Typography variant="caption" color="text.secondary">
+                          {selectedVehicleIds.size.toLocaleString('fa-IR')} ماشین انتخاب شده‌اند.
+                        </Typography>
+                      </Paper>
+                    )}
+
+                    {/* ژئوفنس */}
+                    {dfShowGeofence && (
+
+                      <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 2 }}>
+                        <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                          <Typography fontWeight={700}>ژئوفنس</Typography>
+                          <Button size="small" onClick={() => setDfDrawing(v => !v)} variant={dfDrawing ? 'contained' : 'outlined'}>
+                            {dfDrawing ? 'پایان ترسیم' : 'ترسیم روی نقشه'}
+                          </Button>
+                        </Stack>
+                        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 1 }}>
+                          <FormControl size="small" sx={{ minWidth: 140 }}>
+                            <InputLabel id="df-gf-mode">حالت</InputLabel>
+                            <Select
+                              labelId="df-gf-mode"
+                              value={dfGfMode}
+                              label="حالت"
+                              onChange={(e) => {
+                                setDfGfMode(e.target.value as any);
+                                setDfGfPoly(p => ({ ...p, points: [] }));
+                                // اگر خواستی مرکز دایره رو پاک کنی، تایپ center رو optional کن
+                                // setDfGfCircle(c => ({ ...c, center: { lat: 0, lng: 0 } }));
+                              }}
+                            >
+                              <MenuItem value="circle">دایره‌ای</MenuItem>
+                              <MenuItem value="polygon">چندضلعی</MenuItem>
+                            </Select>
+                          </FormControl>
+                          <TextField
+                            size="small"
+                            label="تلورانس (m)"
+                            type="number"
+                            value={dfGfCircle.tolerance_m ?? 0}
+                            onChange={(e) => setDfGfCircle(c => ({ ...c, tolerance_m: Math.max(0, Number(e.target.value || 0)) }))}
+                            sx={{ width: 140 }}
+                          />
+                          {dfGfMode === 'circle' && (
+                            <TextField
+                              size="small"
+                              label="شعاع (m)"
+                              type="number"
+                              value={dfGfCircle.radius_m}
+                              onChange={(e) => setDfGfCircle(c => ({ ...c, radius_m: Math.max(1, Number(e.target.value || 0)) }))}
+                              sx={{ width: 140 }}
+                            />
+                          )}
+                          {dfGfMode === 'polygon' && (
+                            <Stack direction="row" spacing={1}>
+                              <Button size="small" onClick={() => setDfGfPoly(pts => ({ ...pts, points: pts.points.slice(0, -1) }))} disabled={!dfGfPoly.points?.length}>برگشت نقطه</Button>
+                              <Button size="small" onClick={() => setDfGfPoly({ ...dfGfPoly, points: [] })} disabled={!dfGfPoly.points?.length}>پاک‌کردن نقاط</Button>
+                            </Stack>
+                          )}
+                        </Stack>
+                      </Paper>
+                    )}
+
+                    {/* ایستگاه‌ها */}
+                    {dfShowStations && (
+
+                      <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 2 }}>
+                        <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                          <Typography fontWeight={700}>ایستگاه‌ها</Typography>
+                          <Chip size="small" label={`${dfStations.length} مورد`} />
+                        </Stack>
+                        {dfStations.length ? (
+                          <List dense sx={{ maxHeight: 180, overflow: 'auto', mt: 1 }}>
+                            {dfStations.map((s, i) => (
+                              <ListItem
+                                key={i}
+                                secondaryAction={
+                                  <Stack direction="row" spacing={0.5}>
+                                    <IconButton size="small" onClick={() => setDfStations(arr => arr.filter((_, idx) => idx !== i))}>🗑️</IconButton>
+                                  </Stack>
+                                }
+                              >
+                                <ListItemText
+                                  primary={s.name || `ایستگاه ${i + 1}`}
+                                  secondary={`${s.lat.toFixed(5)}, ${s.lng.toFixed(5)} — r=${s.radius_m}m`}
+                                />
+                              </ListItem>
+                            ))}
+                          </List>
+                        ) : (
+                          <Typography sx={{ mt: 1 }} color="text.secondary" variant="body2">
+                            روی نقشه کلیک کن تا ایستگاه اضافه شود.
+                          </Typography>
+                        )}
+                      </Paper>
+                    )}
+                    {/* لاگ اجرا */}
+                    {!!dfApplyLog.length && (
+                      <Paper variant="outlined" sx={{ p: 1, borderRadius: 2, maxHeight: 140, overflow: 'auto' }}>
+                        <Typography variant="caption" color="text.secondary">نتیجه اعمال:</Typography>
+                        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', direction: 'ltr' }}>{dfApplyLog.join('\n')}</pre>
+                      </Paper>
+                    )}
+                  </Stack>
+                </Grid2>
+              </Grid2>
+            </DialogContent>
+
+
+            <DialogActions>
+              <Button onClick={() => setDefaultsOpen(false)}>بستن</Button>
+              <Button
+                variant="contained"
+                disabled={
+                  dfTarget === 'currentVehicle'
+                    ? !selectedVehicle
+                    : selectedVehicleIds.size === 0
+                }
+                onClick={async () => {// 1) ساخت پروفایل با منطق "جایگزینی کامل"
+                  const profile: VehicleProfile = {};
+
+                  // ایستگاه‌ها: اگر پنلش نمایش داده می‌شود
+                  if (dfShowStations) {
+                    profile.stations = dfStations.length
+                      ? dfStations.map(s => ({
+                        name: (s.name || '').trim(),
+                        lat: +s.lat,
+                        lng: +s.lng,
+                        radius_m: Math.max(1, +s.radius_m || 60),
+                      }))
+                      : []; // خالی = حذف همه
+                  }
+
+                  // ژئوفنس: اگر پنلش نمایش داده می‌شود
+                  if (dfShowGeofence) {
+                    if (dfGfMode === 'circle') {
+                      const c = dfGfCircle;
+                      profile.geofence =
+                        (c?.center && Number.isFinite(+c.center.lat) && Number.isFinite(+c.center.lng))
+                          ? {
+                            type: 'circle',
+                            center: { lat: +c.center.lat, lng: +c.center.lng },
+                            radius_m: Math.max(1, +c.radius_m || 1),
+                            tolerance_m: Math.max(0, +(c.tolerance_m ?? 0)),
+                          }
+                          : null; // حذف ژئوفنس
+                    } else {
+                      const pts = (dfGfPoly.points || []).filter(p => Number.isFinite(+p.lat) && Number.isFinite(+p.lng));
+                      profile.geofence =
+                        pts.length >= 3
+                          ? {
+                            type: 'polygon',
+                            points: pts.map(p => ({ lat: +p.lat, lng: +p.lng })),
+                            tolerance_m: Math.max(0, +(dfGfPoly.tolerance_m ?? 0)),
+                          }
+                          : null; // حذف ژئوفنس
+                    }
+                  }
+
+                  // 2) تعیین ماشین‌های هدف
+                  const targetIds: number[] =
+                    dfTarget === 'currentVehicle'
+                      ? [selectedVehicle!.id]
+                      : Array.from(selectedVehicleIds);
+
+                  if (!targetIds.length) {
+                    alert('هیچ ماشینی انتخاب نشده.');
+                    return;
+                  }
+
+                  // 3) اجرای اعمال + لاگ و رفرش UI برای ماشین انتخاب‌شده
+                  setDfApplyLog([]);
+                  for (const vid of targetIds) {
+                    try {
+                      await applyVehicleProfile(api, vid, profile, user.id, user.role_level);
+                      setDfApplyLog(log => [...log, `✓ vehicle#${vid}: اعمال شد`]);
+
+                      if (selectedVehicle?.id === vid) {
+                        if (profile.stations !== undefined) {
+                          const { data } = await api.get(`/vehicles/${vid}/stations`).catch(() => ({ data: [] }));
+                          setVehicleStations(Array.isArray(data) ? data : []);
+                        }
+                        if (profile.geofence !== undefined) {
+                          await loadVehicleGeofence(vid);
+                        }
+                      }
+                    } catch (e: any) {
+                      setDfApplyLog(log => [
+                        ...log,
+                        `✗ vehicle#${vid}: ${e?.response?.data?.message || 'خطا در اعمال'}`,
+                      ]);
+                    }
+                  }
+
+                }}
+              >
+                اعمال
+              </Button>
+
+            </DialogActions>
+          </Dialog>
 
 
         </Grid2>
@@ -5598,6 +6584,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
         </Snackbar>
       )}
     </Grid2>
+
   );
 }
 
@@ -12246,3 +13233,189 @@ export const VEHICLE_TYPES = [
   { code: "sedan", label: "سواری" },
   { code: "pickup", label: "وانت" }
 ] as const;
+
+
+
+
+
+
+
+type RoleLevel = 1 | 2 | 3 | 4 | 5 | 6;
+
+type Station = { name: string; lat: number; lng: number; radius_m: number; order_no?: number };
+type LatLng = { lat: number; lng: number };
+type Geofence =
+  | { type: 'circle'; center: LatLng; radius_m: number; tolerance_m?: number }
+  | { type: 'polygon'; points: LatLng[]; tolerance_m?: number };
+type ConsumableItem =
+  | { mode: 'time'; note?: string; start_at: string }
+  | { mode: 'km'; note?: string; base_odometer_km: number };
+
+type VehicleSettingsProfile = {
+  stations?: Station[];
+  geofence?: Geofence | null;
+  consumables?: ConsumableItem[];
+};
+
+// اینو هرجا خواستی از بک‌اند بگیری
+async function getUserPermissions(api: typeof import('../services/api').default, userId: number): Promise<string[]> {
+  const { data } = await api.get(`/role-permissions/user/${userId}`);
+  return (data || []).filter((p: any) => p.is_allowed).map((p: any) => p.action);
+}
+
+export async function applyVehicleProfile(
+  api: typeof import('../services/api').default,
+  vehicleId: number,
+  profile: VehicleSettingsProfile,
+  userId: number,
+  roleLevel: RoleLevel,
+  _opts?: { stationsMode?: 'replace' | 'append' } // عملاً نادیده می‌گیریم: همیشه replace
+) {
+  const result: any = { ok: true, applied: {}, errors: [] };
+
+  // رول 1 = همه مجاز؛ بقیه = دریافت پرمیشن‌ها
+  let permissions: string[] = [];
+  if (roleLevel !== 1) {
+    try {
+      permissions = await getUserPermissions(api, userId);
+    } catch {
+      return { ok: false, applied: {}, errors: ['خطا در دریافت پرمیشن‌ها'] };
+    }
+  }
+
+  // کمکی‌ها
+  const getList = (data: any): any[] => {
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data?.items)) return data.items;
+    if (Array.isArray(data?.data?.items)) return data.data.items;
+    if (Array.isArray(data?.data)) return data.data;
+    if (Array.isArray(data?.rows)) return data.rows;
+    if (Array.isArray(data?.list)) return data.list;
+    if (Array.isArray(data?.result)) return data.result;
+    return [];
+  };
+
+  const deleteAllStations = async () => {
+    // 404 را خطا حساب نکن
+    const res = await api.get(`/vehicles/${vehicleId}/stations`, {
+      validateStatus: s => s < 500,
+      params: { _: Date.now() },
+      headers: { 'Cache-Control': 'no-store' },
+    });
+    if (res.status === 404) return 0;
+
+    const items = getList(res.data).filter((s: any) => s?.id != null);
+    await Promise.allSettled(
+      items.map((s: any) => api.delete(`/vehicles/${vehicleId}/stations/${s.id}`))
+    );
+    return items.length;
+  };
+
+  const createStations = async (stations: any[]) => {
+    let created = 0;
+    for (const s of stations) {
+      try {
+        await api.post(`/vehicles/${vehicleId}/stations`, {
+          id: undefined, // اگر بک‌اند حساس است
+          name: s.name,
+          lat: Number(s.lat ?? s.latitude ?? s.location?.lat ?? (Array.isArray(s) ? s[1] : NaN)),
+          lng: Number(s.lng ?? s.lon ?? s.longitude ?? s.location?.lng ?? (Array.isArray(s) ? s[0] : NaN)),
+          radius_m: Number(s.radius_m ?? s.radiusM ?? s.radius ?? 60),
+          order_no: s.order_no ?? s.orderNo ?? s.order,
+        });
+        created++;
+      } catch (e) {
+        result.errors.push(`ثبت ایستگاه ناموفق: ${s?.name ?? ''}`);
+      }
+    }
+    return created;
+  };
+
+  const clearGeofence = async () => {
+    await api
+      .delete(`/vehicles/${vehicleId}/geofence`, { validateStatus: s => s < 500 })
+      .catch(() => { });
+  };
+
+  try {
+    // ---------- ژئوفنس: همیشه اول پاک ----------
+    if (roleLevel === 1 || permissions.includes('geo_fence')) {
+      await clearGeofence();
+      if (profile.geofence) {
+        // پذیرش هر دو شکل circle / polygon
+        const gf = profile.geofence as any;
+        if (gf.type === 'circle') {
+          await api.post(`/vehicles/${vehicleId}/geofence`, {
+            type: 'circle',
+            centerLat: Number(gf.center?.lat),
+            centerLng: Number(gf.center?.lng),
+            radiusM: Math.max(1, Number(gf.radius_m)),
+            toleranceM: Math.max(0, Number(gf.tolerance_m ?? gf.toleranceM ?? 0)),
+          });
+        } else if (gf.type === 'polygon') {
+          const pts = (gf.points || []).map((p: any) => ({
+            lat: Number(p.lat ?? p[1]),
+            lng: Number(p.lng ?? p[0]),
+          }));
+          if (pts.length >= 3) {
+            await api.post(`/vehicles/${vehicleId}/geofence`, {
+              type: 'polygon',
+              polygonPoints: pts,
+              toleranceM: Math.max(0, Number(gf.tolerance_m ?? gf.toleranceM ?? 0)),
+            });
+          } else {
+            result.errors.push('ژئوفنس چندضلعی کمتر از ۳ نقطه دارد.');
+          }
+        } else {
+          result.errors.push('نوع ژئوفنس نامعتبر است.');
+        }
+        result.applied.geofence = true;
+      } else {
+        // فقط پاک شد و چیزی نساختیم
+        result.applied.geofence = 'cleared';
+      }
+    }
+
+    // ---------- ایستگاه‌ها: همیشه replace ----------
+    if (roleLevel === 1 || permissions.includes('stations')) {
+      const removed = await deleteAllStations();
+      if (profile.stations?.length) {
+        const created = await createStations(profile.stations);
+        result.applied.stations = { removed, created };
+      } else {
+        result.applied.stations = { removed, created: 0 };
+      }
+    }
+
+    // ---------- مصرفی‌ها: (اگر می‌خواهی این هم replace باشد) ----------
+    if (profile.consumables && (roleLevel === 1 || permissions.includes('consumables'))) {
+      // پاک‌کردن همه
+      const res = await api.get(`/vehicles/${vehicleId}/consumables`, {
+        validateStatus: s => s < 500,
+        params: { _: Date.now() },
+        headers: { 'Cache-Control': 'no-store' },
+      });
+      const exist = res.status === 404 ? [] : getList(res.data);
+      await Promise.allSettled(
+        exist.filter((c: any) => c?.id != null).map((c: any) => api.delete(`/vehicles/${vehicleId}/consumables/${c.id}`))
+      );
+
+      // ساختن جدیدها
+      let created = 0;
+      for (const c of profile.consumables) {
+        try {
+          await api.post(`/vehicles/${vehicleId}/consumables`, c);
+          created++;
+        } catch {
+          result.errors.push('ثبت آیتم مصرفی ناموفق بود');
+        }
+      }
+      result.applied.consumables = { removed: exist.length, created };
+    }
+  } catch (e: any) {
+    result.ok = false;
+    result.errors.push(e?.response?.data?.message ?? e?.message ?? 'خطای نامشخص هنگام اعمال پروفایل');
+  }
+
+  return result;
+}

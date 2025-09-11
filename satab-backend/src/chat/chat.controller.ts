@@ -23,7 +23,7 @@ export class ChatController {
   constructor(
     private readonly chat: ChatService,
     @InjectRepository(Users) private readonly usersRepo: Repository<Users>,
-  ) {}
+  ) { }
 
   // ——— لیست همهٔ کاربرها برای استارت چت (بدون هیچ فیلتر نقشی/دامنه‌ای)
   @Get('visible-users')
@@ -56,6 +56,16 @@ export class ChatController {
       limit ? +limit : 50,
       beforeId ? +beforeId : undefined,
     );
+  }
+  // ChatController
+  @Post('rooms/:id/readers-map')
+  async readersMapPost(
+    @Param('id', ParseIntPipe) roomId: number,
+    @Body() body: { ids: number[] },
+    @CurrentUser() me: Users,
+  ) {
+    const ids = Array.isArray(body.ids) ? body.ids.map(Number).filter(Number.isFinite) : [];
+    return this.chat.readersMap(roomId, me.id, ids);
   }
 
   // ——— ارسال متن به اتاق (بدون شرط نقش/دامنه)

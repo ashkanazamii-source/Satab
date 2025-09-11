@@ -17,12 +17,12 @@ import { TracksModule } from './tracks/tracks.module';
 import { ConsumablesModule } from './consumables/consumables.module';
 import { DriverVehicleAssignmentModule } from './driver-vehicle-assignment/driver-vehicle-assignment.module';
 import { GeofenceModule } from './geofence/geofence.module';
-
 import { AuditModule } from './audit/audit.module';
 import { HttpAuditInterceptor } from './audit/http-audit.interceptor';
 import { GlobalExceptionFilter } from './audit/global-exception.filter';
 import { ChatModule } from './chat/chat.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { AnalyticsModule } from './analytics/analytics.module';
 
 import { ContextMiddleware } from './common/context.middleware';
 
@@ -49,7 +49,7 @@ import { ContextMiddleware } from './common/context.middleware';
       }),
     }),
 
-    // Feature modules
+    RolePermissionModule,
     TracksModule,
     AllowedCountriesModule,
     VehiclePoliciesModule,
@@ -59,13 +59,12 @@ import { ContextMiddleware } from './common/context.middleware';
     DashboardModule,
     VehiclesModule,
     DriverRouteModule,
-    RolePermissionModule,
     ConsumablesModule,
     DriverVehicleAssignmentModule,
     GeofenceModule,
     ChatModule,
-    // Audit (Global providers inside)
     AuditModule,
+    AnalyticsModule,
   ],
   providers: [
     // لاگ همهٔ درخواست‌های HTTP

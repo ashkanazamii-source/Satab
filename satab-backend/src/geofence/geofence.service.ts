@@ -47,7 +47,7 @@ export class GeofenceService {
             centerLng: dto.type === 'circle' ? dto.centerLng! : null,
             radiusM: dto.type === 'circle' ? dto.radiusM! : null,
             toleranceM: dto.toleranceM ?? prev?.toleranceM ?? 5,
-            outsideN: dto.outsideN ?? prev?.outsideN ?? 3,
+            outsideN: dto.outsideN ?? prev?.outsideN ?? 1,
             cooldownMs: dto.cooldownMs ?? prev?.cooldownMs ?? 60000,
             active: dto.active ?? prev?.active ?? true,
         });

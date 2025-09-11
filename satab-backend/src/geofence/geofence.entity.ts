@@ -36,8 +36,9 @@ export class GeofenceEntity {
   @Column({ type: 'int', default: 5 })
   toleranceM!: number; // حاشیه اطمینان (متر)
 
-  @Column({ type: 'int', default: 3 })
-  outsideN!: number;   // چند آپدیت پیاپی بیرون باشد = تخلف
+  // ⬇️ قبلاً 3 بود؛ برای ثبت با اولین خروج می‌گذاریم 1
+  @Column({ type: 'int', default: 1 })
+  outsideN!: number;
 
   @Column({ type: 'int', default: 60000 })
   cooldownMs!: number; // فاصله بین ثبت تخلف (ms)

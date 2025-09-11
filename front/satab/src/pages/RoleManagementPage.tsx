@@ -1,10 +1,12 @@
 import { useEffect, useState, useMemo } from 'react';
 import api from '../services/api';
+import { Portal, } from '@mui/material';
 import {
   Dialog, DialogTitle, DialogContent, DialogActions,
   TextField, Checkbox, FormGroup, FormControlLabel, Grid,
   IconButton, Button, Collapse, List, ListItem, ListItemText, Box
 } from '@mui/material';
+import type { VirtualElement } from '@popperjs/core';
 import EditIcon from '@mui/icons-material/Edit';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
@@ -14,10 +16,179 @@ import { Chip } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
 import PublicIcon from '@mui/icons-material/Public';
 import { alpha, keyframes } from '@mui/material/styles';
-import { Paper, Typography, Avatar, Tooltip } from '@mui/material';
-// ثوابت یکجا
+import { Paper, Typography, Avatar, Tooltip, Popper, Fade, LinearProgress } from '@mui/material';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 export const NODE_W = 200;   // عرض ثابت کارت
 export const NODE_H = 76;    // ارتفاع ثابت کارت
+// ==== Hover Summary Bus ====
+
+// یجا نزدیک بالای فایل بگذار
+const makeCursorVirtualEl = (x: number, y: number): VirtualElement => ({
+  getBoundingClientRect: () => ({
+    x, y, top: y, left: x, right: x, bottom: y, width: 0, height: 0,
+    toJSON: () => { }
+  })
+});
+
+
+const SUMMARY_CACHE = new Map<string, any>();
+
+// ==== Hover Summary Bus (by mouse coords) ====
+type HoverAction =
+  | { type: 'show'; userId: number; x: number; y: number }
+  | { type: 'move'; x: number; y: number }
+  | { type: 'hide' };
+
+export const HoverSummaryBus = (() => {
+  let handler: ((a: HoverAction) => void) | null = null;
+  return {
+    setHandler(h: typeof handler) { handler = h; },
+    showAt(userId: number, x: number, y: number) { handler?.({ type: 'show', userId, x, y }); },
+    moveTo(x: number, y: number) { handler?.({ type: 'move', x, y }); },
+    hide() { handler?.({ type: 'hide' }); },
+  };
+})();
+
+
+
+
+
+function AnalyticsHoverPortal({ from, to }: { from?: string; to?: string }) {
+  const [open, setOpen] = useState(false);
+  const [xy, setXy] = useState({ x: 0, y: 0 });
+  const [userId, setUserId] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+  const [data, setData] = useState<{
+    nodeId: number; drivers: number; totalDistanceKm: number; engineHours: number; totalViolations: number;
+  } | null>(null);
+  const [timer, setTimer] = useState<any>(null);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+
+  // همگام با اندازه کارت، مختصات را داخل ویوپورت کلمپ کن، ولی «همان نقطه‌ی موس» را ملاک بگیر
+  useLayoutEffect(() => {
+    if (!open) return;
+    const w = cardRef.current?.offsetWidth ?? 0;
+    const h = cardRef.current?.offsetHeight ?? 0;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const clampedX = Math.min(Math.max(xy.x, 0), Math.max(vw - w, 0));
+    const clampedY = Math.min(Math.max(xy.y, 0), Math.max(vh - h, 0));
+    if (clampedX !== xy.x || clampedY !== xy.y) setXy({ x: clampedX, y: clampedY });
+  }, [open, xy.x, xy.y]);
+
+  useEffect(() => {
+    HoverSummaryBus.setHandler(async (a) => {
+      if (a.type === 'hide') {
+        setOpen(false);
+        setUserId(null);
+        setErr('');
+        if (timer) clearTimeout(timer);
+        return;
+      }
+      if (a.type === 'move') {
+        if (open) setXy({ x: a.x, y: a.y });
+        return;
+      }
+      // show
+      setOpen(true);
+      setErr('');
+      setUserId(a.userId);
+      setXy({ x: a.x, y: a.y });
+
+      if (timer) clearTimeout(timer);
+      const t = setTimeout(async () => {
+        const key = `${a.userId}|${from ?? ''}|${to ?? ''}`;
+        if (SUMMARY_CACHE.has(key as any)) {
+          setData(SUMMARY_CACHE.get(key as any));
+          setLoading(false);
+          return;
+        }
+        try {
+          setLoading(true);
+          const { data } = await api.get('/analytics/node-summary', { params: { userId: a.userId, from, to } });
+          SUMMARY_CACHE.set(key as any, data);
+          setData(data);
+        } catch (e: any) {
+          setErr(e?.response?.data?.message || 'خطا در دریافت سامری');
+          setData(null);
+        } finally {
+          setLoading(false);
+        }
+      }, 140);
+      setTimer(t);
+    });
+    return () => HoverSummaryBus.setHandler(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [from, to]);
+
+  if (!open) return null;
+
+  return (
+    <Portal>
+      <Fade in={open} timeout={120}>
+        <Paper
+          ref={cardRef}
+          elevation={3}
+          sx={{
+            position: 'fixed',       // مستقل از هر والد
+            left: xy.x,              // ⟵ دقیقاً نقطه‌ی موس
+            top: xy.y,               // ⟵ دقیقاً نقطه‌ی موس
+            // هیچ translate و offsetی اعمال نمی‌کنیم
+            zIndex: (t) => t.zIndex.modal + 1000,
+            p: 1.25,
+            borderRadius: 2,
+            minWidth: 260,
+            maxWidth: 320,
+            border: '1px solid',
+            borderColor: 'divider',
+            boxShadow: `0 10px 24px rgba(0,0,0,.16)`,
+            background: `linear-gradient(180deg,#fff, #fafafa)`,
+            pointerEvents: 'none',   // ⟵ تا هاور کارت قطع نشه و چشمک نزنه
+          }}
+        >
+          <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: .5 }}>
+            <Typography fontWeight={700} fontSize={13}>خلاصهٔ آنالیز</Typography>
+            <Chip size="small" label={userId ? `#${userId}` : ''} />
+          </Stack>
+
+          {loading ? (
+            <Box sx={{ py: 1 }}><LinearProgress /></Box>
+          ) : err ? (
+            <Typography color="error" fontSize={12}>{err}</Typography>
+          ) : data ? (
+            <Grid container spacing={1} sx={{ mt: .5 }}>
+              <Grid item xs={6}><Metric label="راننده" value={data.drivers} /></Grid>
+              <Grid item xs={6}><Metric label="تخلف" value={data.totalViolations} /></Grid>
+              <Grid item xs={12}>
+                <Metric label="مسافت" value={`${Number(data.totalDistanceKm || 0).toLocaleString('fa-IR')} km`} />
+              </Grid>
+              <Grid item xs={12}>
+                <Metric label="ساعت موتور" value={`${Number(data.engineHours || 0).toLocaleString('fa-IR')} h`} />
+              </Grid>
+            </Grid>
+          ) : (
+            <Typography fontSize={12} color="text.secondary">داده‌ای نیست.</Typography>
+          )}
+        </Paper>
+      </Fade>
+    </Portal>
+  );
+}
+
+
+
+
+function Metric({ label, value }: { label: string; value: any }) {
+  return (
+    <Box sx={{ p: .5, borderRadius: 1 }}>
+      <Typography variant="caption" sx={{ color: '#64748b' }}>{label}</Typography>
+      <Typography fontWeight={700} sx={{ lineHeight: 1 }}>{value}</Typography>
+    </Box>
+  );
+}
+
+
 function UserCard({
   u,
   isRoot = false,
@@ -48,6 +219,10 @@ function UserCard({
           boxShadow: `0 16px 28px ${alpha(royal.c2, .18)}`,
         },
       })}
+      onMouseEnter={(e) => HoverSummaryBus.showAt(u.id, e.clientX, e.clientY)}
+      onMouseMove={(e) => HoverSummaryBus.moveTo(e.clientX, e.clientY)}
+      onMouseLeave={() => HoverSummaryBus.hide()}
+
     >
       <Stack direction="row" alignItems="center" spacing={1.25} sx={{ width: '100%', minWidth: 0 }}>
         <Avatar
@@ -59,12 +234,12 @@ function UserCard({
             flexShrink: 0,
           }}
         >
-          {String(u.full_name || '?').slice(0, 1)}
+          {displayName(u).slice(0, 1)}
         </Avatar>
 
         <Box sx={{ minWidth: 0, flex: 1 }}>
           <Typography noWrap fontWeight={700} sx={{ lineHeight: 1.1, maxWidth: '100%' }}>
-            {u.full_name}
+            {displayName(u)}
           </Typography>
           <Typography noWrap variant="caption" sx={{ color: roleColor, lineHeight: 1.1, maxWidth: '100%' }}>
             ({roleNameFa(u.role_level)})
@@ -205,95 +380,215 @@ function NodeCard({
     <Paper
       elevation={0}
       sx={{
-        // ⬇️ ابعاد ثابت
-        width: NODE_W,
-        height: NODE_H,
-        borderRadius: 12,
-        px: 1,
-        py: 0.75,
+        width: Math.max(NODE_W, 320), // حداقل عرض 320px
+        minHeight: NODE_H,
+        maxHeight: NODE_H + 40,
+        borderRadius: 16,
+        p: 2,
         display: 'flex',
-        alignItems: 'center',
-        overflow: 'hidden',
-        bgcolor: 'background.paper',
-        background: `linear-gradient(135deg, ${royal.c1}22, ${royal.c2}22)`,
-        border: `1px solid ${royal.c2}44`,
-        boxShadow: `0 12px 24px ${royal.c2}1f`,
-        transition: 'transform .18s ease, box-shadow .18s ease',
-        '&:hover': { transform: 'translateY(-2px)', boxShadow: `0 16px 32px ${royal.c2}2a` },
+        flexDirection: 'column',
+        justifyContent: 'space-between',
+        overflow: 'hidden', // مهم: جلوگیری از خروج محتوا
+        bgcolor: 'transparent',
+        background: `
+        linear-gradient(145deg, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0.85) 100%),
+        linear-gradient(135deg, ${royal.c1}15, ${royal.c2}25)
+      `,
+        backdropFilter: 'blur(15px) saturate(180%)',
+        border: `2px solid rgba(255,255,255,0.3)`,
+        boxShadow: `
+        0 8px 32px rgba(0,0,0,0.1),
+        0 4px 16px ${royal.c2}25,
+        inset 0 1px 0 rgba(255,255,255,0.6)
+      `,
+        position: 'relative',
+        transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+        cursor: 'pointer',
+        '&:hover': {
+          transform: 'translateY(-4px)',
+          boxShadow: `
+          0 16px 48px rgba(0,0,0,0.15),
+          0 8px 32px ${royal.c2}30,
+          inset 0 1px 0 rgba(255,255,255,0.8)
+        `,
+        },
+
       }}
+      onMouseEnter={(e) => HoverSummaryBus.showAt(u.id, e.clientX, e.clientY)}
+      onMouseMove={(e) => HoverSummaryBus.moveTo(e.clientX, e.clientY)}
+      onMouseLeave={() => HoverSummaryBus.hide()}
+
     >
-      <Stack direction="row" alignItems="center" spacing={1.25} sx={{ width: '100%', minWidth: 0 }}>
-        <Avatar
+      {/* بخش بالا: آواتار و اطلاعات کاربر */}
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={1.5}
+        sx={{
+          width: '100%',
+          minWidth: 0,
+          flex: 1,
+          overflow: 'hidden', // جلوگیری از overflow
+        }}
+      >
+        {/* آواتار */}
+        <Box sx={{ flexShrink: 0 }}>
+          <Avatar
+            sx={{
+              width: 44,
+              height: 44,
+              background: `linear-gradient(135deg, ${royal.c1}, ${royal.c2})`,
+              color: '#fff',
+              fontWeight: 700,
+              fontSize: '1.1rem',
+              border: '2px solid rgba(255,255,255,0.8)',
+              boxShadow: `0 4px 16px ${royal.c2}40`,
+              transition: 'all 0.3s ease',
+            }}
+          >
+            {displayName(u).slice(0, 1)}
+          </Avatar>
+        </Box>
+
+        {/* اطلاعات کاربر - با محدودیت عرض */}
+        <Box
           sx={{
-            width: 34, height: 34,
-            background: `linear-gradient(135deg, ${royal.c1}, ${royal.c2})`,
-            color: '#fff', fontWeight: 700,
-            border: '2px solid #fff',
-            flexShrink: 0,
+            flex: 1,
+            minWidth: 0, // اجازه shrink شدن
+            maxWidth: '65%', // محدودیت عرض
+            overflow: 'hidden',
           }}
         >
-          {String(u.full_name || '?').slice(0, 1)}
-        </Avatar>
-
-        <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Typography noWrap fontWeight={700} sx={{ lineHeight: 1.1, maxWidth: '100%' }}>
-            {u.full_name}
+          <Typography
+            variant="subtitle1"
+            sx={{
+              fontWeight: 600,
+              fontSize: '0.95rem',
+              lineHeight: 1.2,
+              color: '#2c3e50',
+              mb: 0.25,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap', // یک خط
+            }}
+          >
+            {displayName(u)}
           </Typography>
-          <Typography noWrap variant="caption" sx={{ color: roleColor, lineHeight: 1.1, maxWidth: '100%' }}>
+          <Typography
+            variant="caption"
+            sx={{
+              color: roleColor,
+              fontSize: '0.75rem',
+              fontWeight: 500,
+              lineHeight: 1.1,
+              opacity: 0.8,
+              display: 'block',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap', // یک خط
+            }}
+          >
             ({roleNameFa(u.role_level)})
           </Typography>
         </Box>
+      </Stack>
 
-        <Stack
-          direction="row"
-          gap={0.5}
-          sx={{
-            ml: 'auto',
-            flexShrink: 0,
-            '& .MuiIconButton-root': { width: 28, height: 28, p: 0.25 },
-          }}
-        >
-          {/* مدیرکل → سیاست/سهمیه خودرو برای SA */}
-          {onEditVehiclePolicy && currentUserRoleLevel === 1 && u.role_level === 2 && (
-            <Tooltip title="سهمیه و مجوز ماشین‌ها">
-              <IconButton size="small" onClick={(e) => { e.stopPropagation(); onEditVehiclePolicy(u); }}>
-                <DirectionsBusIcon fontSize="small" />
+      {/* بخش پایین: دکمه‌های عملیات */}
+      <Stack
+        direction="row"
+        justifyContent="flex-end"
+        alignItems="center"
+        spacing={0.5}
+        sx={{
+          width: '100%',
+          mt: 1,
+          flexShrink: 0, // عدم کوچک شدن
+          '& .MuiIconButton-root': {
+            width: 32,
+            height: 32,
+            borderRadius: 8,
+            bgcolor: 'rgba(255,255,255,0.7)',
+            border: '1px solid rgba(255,255,255,0.5)',
+            transition: 'all 0.2s ease',
+            '&:hover': {
+              transform: 'translateY(-1px)',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+            },
+          },
+        }}
+      >
+        {/* مدیرکل → سیاست/سهمیه خودرو برای SA */}
+        {onEditVehiclePolicy && currentUserRoleLevel === 1 && u.role_level === 2 && (
+          <Tooltip title="سهمیه و مجوز ماشین‌ها" arrow>
+            <IconButton
+              size="small"
+              onClick={(e) => { e.stopPropagation(); onEditVehiclePolicy(u); }}
+              sx={{
+                bgcolor: `${royal.c1}20`,
+                '&:hover': { bgcolor: `${royal.c1}30` },
+              }}
+            >
+              <DirectionsBusIcon fontSize="small" sx={{ color: royal.c1 }} />
+            </IconButton>
+          </Tooltip>
+        )}
+
+        {/* حذف */}
+        {onDelete && u.id !== currentUserId && (
+          ((currentUserRoleLevel === 1 && u.role_level > 1) ||
+            (currentUserRoleLevel === 2 && canDelete && u.role_level > 2)) && (
+            <Tooltip title="حذف کاربر" arrow>
+              <IconButton
+                size="small"
+                onClick={(e) => { e.stopPropagation(); onDelete(u); }}
+                sx={{
+                  bgcolor: 'rgba(244, 67, 54, 0.1)',
+                  '&:hover': {
+                    bgcolor: 'rgba(244, 67, 54, 0.2)',
+                  },
+                }}
+              >
+                <DeleteIcon fontSize="small" sx={{ color: '#f44336' }} />
+              </IconButton>
+            </Tooltip>
+          )
+        )}
+
+        {/* مانیتورینگ برای زیرمجموعه‌های SA */}
+        {onGrantMonitors && currentUserRoleLevel === 2 && u.role_level > 2 && (
+          <Tooltip title="واگذاری پرمیشن‌های مانیتورینگ" arrow>
+            <IconButton
+              size="small"
+              onClick={(e) => { e.stopPropagation(); onGrantMonitors(u); }}
+              sx={{
+                bgcolor: `${royal.c2}20`,
+                '&:hover': { bgcolor: `${royal.c2}30` },
+              }}
+            >
+              <DirectionsBusIcon fontSize="small" sx={{ color: royal.c2 }} />
+            </IconButton>
+          </Tooltip>
+        )}
+
+        {/* ویرایش */}
+        {onEdit &&
+          ((currentUserRoleLevel === 2 && u.role_level > 2 && u.id !== currentUserId) ||
+            (currentUserRoleLevel === 1 && u.role_level === 2)) && (
+            <Tooltip title="ویرایش کاربر" arrow>
+              <IconButton
+                size="small"
+                onClick={(e) => { e.stopPropagation(); onEdit(u); }}
+                sx={{
+                  bgcolor: 'rgba(76, 175, 80, 0.1)',
+                  '&:hover': {
+                    bgcolor: 'rgba(76, 175, 80, 0.2)',
+                  },
+                }}
+              >
+                <EditIcon fontSize="small" sx={{ color: '#4caf50' }} />
               </IconButton>
             </Tooltip>
           )}
-
-          {/* حذف */}
-          {onDelete && u.id !== currentUserId && (
-            ((currentUserRoleLevel === 1 && u.role_level > 1) ||
-              (currentUserRoleLevel === 2 && canDelete && u.role_level > 2)) && (
-              <Tooltip title="حذف کاربر">
-                <IconButton size="small" color="error" onClick={(e) => { e.stopPropagation(); onDelete(u); }}>
-                  <DeleteIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            )
-          )}
-
-          {/* مانیتورینگ برای زیرمجموعه‌های SA */}
-          {onGrantMonitors && currentUserRoleLevel === 2 && u.role_level > 2 && (
-            <Tooltip title="واگذاری پرمیشن‌های مانیتورینگ">
-              <IconButton size="small" onClick={(e) => { e.stopPropagation(); onGrantMonitors(u); }}>
-                <DirectionsBusIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
-          )}
-
-          {/* ویرایش */}
-          {onEdit &&
-            ((currentUserRoleLevel === 2 && u.role_level > 2 && u.id !== currentUserId) ||
-              (currentUserRoleLevel === 1 && u.role_level === 2)) && (
-              <Tooltip title="ویرایش کاربر">
-                <IconButton size="small" onClick={(e) => { e.stopPropagation(); onEdit(u); }}>
-                  <EditIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            )}
-        </Stack>
       </Stack>
     </Paper>
   );
@@ -357,6 +652,7 @@ const orgTreeSx = {
   // 👇 توجه: عمودیِ قدیمی را حذف کردیم تا اتصال دقیق را خودِ نود بکشد
   // '& ul ul::before':  << اینو نداشته باش
 };
+
 
 // ——— نود بازگشتی درخت
 function OrgTreeNode({
@@ -441,6 +737,7 @@ export default function RoleManagementPage() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [tree, setTree] = useState<UserNode[]>([]);
+  // اگر لازم نیست، می‌تونی flatUsers رو حذف کنی
   const [flatUsers, setFlatUsers] = useState<{ id: number; full_name: string; role_level: number }[]>([]);
 
   useEffect(() => {
@@ -453,7 +750,6 @@ export default function RoleManagementPage() {
         if (me.role_level === 1) {
           const { data } = await api.get('/users/my-subordinates-flat');
           setTree(buildTree(data, { id: me.id, full_name: me.full_name, role_level: me.role_level }));
-
         }
       } catch {
         setUser(null);
@@ -467,23 +763,38 @@ export default function RoleManagementPage() {
   if (loading) return <div>در حال بارگذاری...</div>;
   if (!user) return <div>مشکل در دریافت اطلاعات کاربر</div>;
 
+  // ⬇️ به‌جای return داخل switch، فقط body را مقداردهی کن
+  let body: React.ReactNode;
   switch (user.role_level) {
     case 1:
-      return <ManagerRoleSection user={user} tree={tree} setTree={setTree} />
-
+      body = <ManagerRoleSection user={user} tree={tree} setTree={setTree} />;
+      break;
     case 2:
-      return <SuperAdminRoleSection user={user} />;
+      body = <SuperAdminRoleSection user={user} />;
+      break;
     case 3:
-      return <BranchManagerRoleSection user={user} />;
+      body = <BranchManagerRoleSection user={user} />;
+      break;
     case 4:
-      return <OwnerRoleSection user={user} />;
+      body = <OwnerRoleSection user={user} />;
+      break;
     case 5:
-      return <TechnicianRoleSection user={user} />;
+      body = <TechnicianRoleSection user={user} />;
+      break;
     case 6:
-      return <DriverRoleSection user={user} />;
+      body = <DriverRoleSection user={user} />; // اگر برای راننده هم لازم داشتی بعداً همین الگو
+      break;
     default:
-      return <div>نقش کاربر شناسایی نشد.</div>;
+      body = <div>نقش کاربر شناسایی نشد.</div>;
   }
+
+  return (
+    <>
+      {/* فقط یک‌بار اینجا؛ برای همهٔ نقش‌ها فعال است و بالای کارت نمایش می‌آید */}
+      <AnalyticsHoverPortal />
+      {body}
+    </>
+  );
 }
 
 interface UserNode {
@@ -689,7 +1000,7 @@ function VehicleQuotaDialog({
 
   return (
     <Dialog open={open} onClose={() => onClose(false)} fullWidth>
-      <DialogTitle>سهمیه و مجوز — {superAdmin?.full_name}</DialogTitle>
+      <DialogTitle>سهمیه و مجوز — {superAdmin && displayName(superAdmin)}</DialogTitle>
       <DialogContent dividers>
         {loading ? (
           <div>در حال بارگذاری...</div>
@@ -811,6 +1122,8 @@ function SuperAdminStrip({
         <Paper
           key={sa.id}
           onClick={() => onSelect(sa.id)}
+
+
           sx={(t) => ({
             cursor: 'pointer',
             px: 1.25, py: 1,
@@ -825,10 +1138,10 @@ function SuperAdminStrip({
           })}
         >
           <Avatar sx={{ width: 34, height: 34, background: `linear-gradient(135deg, ${royal.c1}, ${royal.c2})`, color: '#fff' }}>
-            {String(sa.full_name || '?').slice(0, 1)}
+            {displayName(sa).slice(0, 1)}
           </Avatar>
           <Box sx={{ minWidth: 0 }}>
-            <Typography noWrap fontWeight={700}>{sa.full_name}</Typography>
+            <Typography noWrap fontWeight={700}>{displayName(sa)}</Typography>
             <Typography noWrap variant="caption" sx={{ color: royal.c2 }}>
               (سوپرادمین)
             </Typography>
@@ -1019,7 +1332,7 @@ function UserTreeList({
           <ListItemText
             primary={
               <span style={{ fontWeight: u.role_level <= 2 ? 'bold' : 'normal' }}>
-                {u.full_name} <small>({roleNameFa(u.role_level)})</small>
+                {displayName(u)} <small>({roleNameFa(u.role_level)})</small>
               </span>
             }
           />
@@ -1281,8 +1594,7 @@ function ManagerRoleSection({
     setTreeLoading(true);
     const { data } = await api.get('/users/my-subordinates-flat');
     setTree(
-      buildTree(data, { id: user.id, full_name: user.full_name, role_level: user.role_level })
-    );
+      buildTree(data, { id: user.id, full_name: displayName(user), role_level: user.role_level }));
     setTreeLoading(false);
   };
 
@@ -1541,20 +1853,30 @@ function SuperAdminRoleSection({ user }: { user: User }) {
 
       <h3>زیرمجموعه‌ها:</h3>
       {tree.length > 0 ? (
-        <UserTreeList
-          users={tree}
-          onEdit={handleEditUser}
-          currentUserRoleLevel={user.role_level}
-          currentUserId={user.id}
-          onAddVehicle={handleAddVehicleFromTree}   // ⬅️ اینو اضافه کن
-          onGrantMonitors={(u) => { setGrantTarget(u); setGrantOpen(true); }}
-          onManageVehicles={openVehAccess}     // 👈 این
-          onDelete={handleDeleteUser}             // ⬅️ لازم تا آیکن حذف نمایش داده شود
-          canDelete={canDelete} />
-
+        <ScrollViewport height="calc(100vh - 240px)">
+          <Box sx={orgTreeSx}>
+            <Box component="ul">
+              <OrgTreeNode
+                node={tree[0]}                        // ریشه = خودِ سوپرادمین
+                onEdit={handleEditUser}               // ✏️ ویرایش همان قبلی
+                onDelete={handleDeleteUser}           // 🗑️ حذف
+                onGrantMonitors={(u) => {             // 🚌 واگذاری مانیتورینگ/ماشین
+                  setGrantTarget(u);
+                  setGrantOpen(true);
+                }}
+                // اگر برای SA هم دیالوگ مدیریت ماشین/پالیسی داری و میخوای روی کارت نشان بدهی:
+                onEditVehiclePolicy={undefined}       // معمولاً برای Manager روی SAهاست؛ برای SA میتونی undefined بگذاری
+                currentUserId={user.id}
+                currentUserRoleLevel={user.role_level}
+                canDelete={canDelete}
+              />
+            </Box>
+          </Box>
+        </ScrollViewport>
       ) : (
         <div style={{ color: '#aaa' }}>هیچ زیرمجموعه‌ای ثبت نشده است.</div>
       )}
+
       {/* دیالوگ مدیریت دسترسیِ ماشین برای زیرمجموعه */}
       <SubUserVehicleAccessDialog
         open={vehAccessOpen}
@@ -1678,7 +2000,7 @@ function GrantMonitorDialog({
   return (
     <Dialog open={open} onClose={() => onClose(false)} fullWidth>
       <DialogTitle>
-        واگذاری دسترسی مانیتورینگ — {targetUser?.full_name}
+        واگذاری دسترسی مانیتورینگ — {targetUser && displayName(targetUser)}
       </DialogTitle>
       <DialogContent dividers>
         {loading ? 'در حال بارگذاری...' : (
@@ -2337,16 +2659,16 @@ function AddUserDialog({
 
 
 function BranchManagerRoleSection({ user }: { user: User }) {
-  return <div>مدیر شعبه</div>;
+  return <ScopedSubtreeSection user={user} />;
 }
 function OwnerRoleSection({ user }: { user: User }) {
-  return <div>مالک</div>;
+  return <ScopedSubtreeSection user={user} />;
 }
 function TechnicianRoleSection({ user }: { user: User }) {
-  return <div>تکنسین</div>;
+  return <ScopedSubtreeSection user={user} />;
 }
 function DriverRoleSection({ user }: { user: User }) {
-  return <div>راننده</div>;
+  return <ScopedSubtreeSection user={user} />;
 }
 function EditUserDialog({
   open,
@@ -2686,7 +3008,7 @@ function SubUserVehicleAccessDialog({
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
       <DialogTitle>
-        ماشین‌ها و مجوزهای «{subUser?.full_name}»
+        ماشین‌ها و مجوزهای «{subUser && displayName(subUser)}»
       </DialogTitle>
       <DialogContent dividers>
         {loading ? 'در حال بارگذاری...' : (
@@ -2939,3 +3261,142 @@ function ScrollViewport({
     </Box>
   );
 }
+function ScopedSubtreeSection({ user }: { user: User }) {
+  const [tree, setTree] = useState<UserNode[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const [canCreate, setCanCreate] = useState(false);
+  const [canEdit, setCanEdit] = useState(false);
+  const [canDelete, setCanDelete] = useState(false);
+  const [canGrant, setCanGrant] = useState(false);
+
+  const [addOpen, setAddOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editUser, setEditUser] = useState<any>(null);
+
+  // فقط زیرمجموعه‌های خود کاربر
+  const refreshTree = async () => {
+    const { data } = await api.get('/users/my-subordinates-flat');
+    setTree(buildTree(data, { id: user.id, full_name: user.full_name, role_level: user.role_level }));
+  };
+
+  const loadMyPerms = async () => {
+    try {
+      const { data: mine } = await api.get(`/role-permissions/user/${user.id}`);
+      const allowed = (mine || []).filter((p: any) => p.is_allowed);
+      const has = (a: string) => !!allowed.find((p: any) => p.action === a);
+
+      const _canCreate = has('create_user');
+      const _canEdit = has('edit_user') || _canCreate;
+      const _canDelete = has('delete_user') || _canCreate;
+      const _canGrant = has('grant_sub_permissions');
+
+      setCanCreate(_canCreate);
+      setCanEdit(_canEdit);
+      setCanDelete(_canDelete);
+      setCanGrant(_canGrant);
+    } catch {
+      setCanCreate(false); setCanEdit(false); setCanDelete(false); setCanGrant(false);
+    }
+  };
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      await Promise.all([refreshTree(), loadMyPerms()]);
+      setLoading(false);
+    })();
+  }, []);
+
+  const handleDeleteUser = async (u: UserNode) => {
+    if (!canDelete) return;
+    if (u.id === user.id) return alert('حذف خودتان مجاز نیست.');
+    if (u.role_level <= user.role_level) return alert('فقط نقش‌های پایین‌تر قابل حذف‌اند.');
+    if (!confirm(`کاربر «${displayName(u)}» حذف شود؟`)) return;
+    await api.delete(`/users/${u.id}`);
+    await refreshTree();
+  };
+
+  const handleEditUser = async (u: UserNode) => {
+    if (!canEdit) return;
+    try {
+      const { data: row } = await api.get(`/users/${u.id}`);
+      setEditUser({ ...u, ...row });
+      setEditOpen(true);
+    } catch (e) { console.error(e); }
+  };
+
+  if (loading) return <div>در حال بارگذاری...</div>;
+
+  return (
+    <div>
+      <h2>مدیریت نقش‌ها ({roleNameFa(user.role_level)})</h2>
+
+      <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 2 }}>
+        {canCreate && (
+          <Button variant="contained" onClick={() => setAddOpen(true)}>
+            افزودن کاربر جدید
+          </Button>
+        )}
+      </Box>
+
+      {tree.length > 0 ? (
+        <ScrollViewport height="calc(100vh - 240px)">
+          <Box sx={orgTreeSx}>
+            <Box component="ul">
+              <OrgTreeNode
+                node={tree[0]}                       // ریشه = خودِ کاربر
+                onEdit={canEdit ? handleEditUser : undefined}
+                onDelete={canDelete ? handleDeleteUser : undefined}
+                onEditVehiclePolicy={undefined}      // این دکمه مخصوص مدیرکل روی SA است
+                onGrantMonitors={undefined}          // اگر برای نقش‌های ۳..۵ لازم شد بعداً وصل کن
+                currentUserId={user.id}
+                currentUserRoleLevel={user.role_level}
+                canDelete={canDelete}
+              />
+            </Box>
+          </Box>
+        </ScrollViewport>
+      ) : (
+        <div style={{ color: '#888' }}>هیچ زیرمجموعه‌ای ثبت نشده است.</div>
+      )}
+
+      {/* افزودن کاربر (فقط وقتی create_user دارد) */}
+      {canCreate && (
+        <AddUserDialog
+          open={addOpen}
+          onClose={() => setAddOpen(false)}
+          parentId={user.id}               // والد = همین کاربر
+          onCreated={refreshTree}
+          canGrant={canGrant}              // اگر اجازهٔ واگذاری مجوز دارد
+          grantableMap={EMPTY_GRANT_MAP}
+        />
+      )}
+
+      {/* ویرایش کاربر (اگر اجازه دارد) */}
+      <EditUserDialog
+        open={editOpen}
+        onClose={() => setEditOpen(false)}
+        data={editUser}
+        canGrant={canGrant}
+        grantableMap={EMPTY_GRANT_MAP}
+        onSaved={async () => { setEditOpen(false); await refreshTree(); }}
+      />
+    </div>
+  );
+}
+// جایی بالاتر از کامپوننت
+const EMPTY_GRANT_MAP = {
+  bus: [], minibus: [], van: [], tanker: [],
+  truck: [], khavar: [], sedan: [], pickup: [],
+} satisfies Record<VehicleTypeCode, MonitorKey[]>;
+
+
+
+function displayName(u: { full_name?: string; name?: string; username?: string }) {
+  const n = (u.full_name ?? u.name ?? u.username ?? '').trim();
+  return n || 'بدون‌نام'; // هیچ‌وقت phone یا id نشون نده
+}
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
