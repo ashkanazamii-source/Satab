@@ -127,14 +127,12 @@ export class VehiclesService {
   ) {
     const ts = data.ts ? new Date(data.ts) : new Date();
 
-    // اگر ignition آمد، قبل از update معمولی، جمع زمان را به‌روز کن
     if (data.ignition !== undefined) {
       await this.applyIgnitionAccum(vehicleId, data.ignition, ts);
       this.gw.emitIgnition(vehicleId, data.ignition, ts.toISOString());
     }
 
-    // مپ‌کردن به ستون‌های واقعی
-    const patch: any = { last_telemetry_at: ts };
+    const patch: any = {}; // ⬅️ last_telemetry_at حذف شد
     if (data.idle_time !== undefined) {
       patch.idle_time_sec = data.idle_time;
       this.gw.emitIdle(vehicleId, data.idle_time, ts.toISOString());
@@ -148,6 +146,7 @@ export class VehiclesService {
       await this.repo.update({ id: vehicleId }, patch);
     }
   }
+
   // vehicles.service.ts
   async updateVehicleStation(vehicleId: number, id: number, dto: { name?: string; radius_m?: number; lat?: number; lng?: number }) {
     const st = await this.stationRepo.findOne({ where: { id, vehicle_id: vehicleId } });
@@ -254,9 +253,20 @@ export class VehiclesService {
   }
 
   async create(dto: CreateVehicleDto) {
-    if (dto.tracker_imei) {
-      dto.tracker_imei = dto.tracker_imei.trim().replace(/\s/g, '').toUpperCase();
+    // نام اجباری
+    if (!dto.name || !dto.name.trim()) {
+      throw new BadRequestException('نام ماشین الزامی است.');
     }
+
+    // IMEI اختیاری: فقط اگر داده شد چک یکتا
+    if (dto.tracker_imei && dto.tracker_imei.trim()) {
+      dto.tracker_imei = dto.tracker_imei.trim().replace(/\s/g, '').toUpperCase();
+      const dup = await this.repo.findOne({ where: { tracker_imei: dto.tracker_imei } });
+      if (dup) throw new BadRequestException('این UID/IMEI قبلاً ثبت شده است.');
+    } else {
+      dto.tracker_imei = null as any;
+    }
+
     // 1) کشور مجاز؟
     const allowed = await this.ds.getRepository('user_allowed_countries')
       .createQueryBuilder('c')
@@ -266,30 +276,22 @@ export class VehiclesService {
     const allowedSet = new Set(allowed.map((r: any) => r.country_code));
     if (!allowedSet.has(dto.country_code)) {
       throw new BadRequestException('کشور انتخاب‌شده برای این کاربر مجاز نیست.');
+    }
 
-    }
-    if (await this.repo.findOne({ where: { tracker_imei: dto.tracker_imei } })) {
-      throw new BadRequestException('این UID/IMEI قبلاً ثبت شده است.');
-    }
-    // 2) نوع خودرو مجاز و سقف؟
+    // 2) سقف نوع خودرو
     const vpRows = await this.ds.getRepository('vehicle_policies')
       .createQueryBuilder('p')
       .where('p.user_id = :uid AND p.vehicle_type_code = :t', {
         uid: dto.owner_user_id, t: dto.vehicle_type_code
       })
       .getMany();
-
     const policy: any = vpRows[0];
     if (!policy || !policy.is_allowed) {
       throw new BadRequestException('این نوع خودرو برای شما مجاز نیست.');
     }
 
-    // ⬅️⬅️ این خط رو اصلاح کن: فیلتر روی relation، نه owner_user_id
     const usedCount = await this.repo.count({
-      where: {
-        owner_user: { id: dto.owner_user_id },
-        vehicle_type_code: dto.vehicle_type_code as any,
-      },
+      where: { owner_user: { id: dto.owner_user_id }, vehicle_type_code: dto.vehicle_type_code as any },
     });
     if (usedCount >= (policy.max_count || 0)) {
       throw new BadRequestException('سهمیه این نوع خودرو تمام شده است.');
@@ -304,17 +306,20 @@ export class VehiclesService {
     try {
       const v = this.repo.create({
         ...dto,
-        // ⬅️⬅️ relation رو صراحتاً ست کن
         owner_user: { id: dto.owner_user_id } as any,
+        name: dto.name.trim(),
       });
-      // اگه @BeforeInsert داری نیازی نیست؛ ولی برای اطمینان:
       (v as any).plate_norm = normalizePlate(dto.plate_no);
       return await this.repo.save(v);
     } catch (e: any) {
-      if (e.code === '23505') throw new BadRequestException('این پلاک در این کشور قبلاً ثبت شده است.');
+      if (e.code === '23505') {
+        throw new BadRequestException('این پلاک در این کشور قبلاً ثبت شده است.');
+      }
       throw e;
     }
   }
+
+
   private async getPerVehicleOptions(vehicleId: number): Promise<string[] | null> {
     // اگه جدول/فیلدی برای آپشن اختصاصی هر ماشین داری، اینجا بخون
     return null;
@@ -439,12 +444,12 @@ export class VehiclesService {
     const [items, total] = await qb.getManyAndCount();
 
     // ===== ایستگاه‌ها را برای همه‌ی وسایل با یک کوئری بگیر و ضمیمه کن
-    const ids = items.map(v => v.id);
+    const vehIds = items.map(v => v.id);  // ⬅️ قبلاً const ids بود
     let itemsWithStations: any[] = items.map(v => ({ ...v, stations: [] }));
 
-    if (ids.length) {
+    if (vehIds.length) {
       const stRows = await this.stationRepo.find({
-        where: { vehicle_id: In(ids) as any },
+        where: { vehicle_id: In(vehIds) as any },
         order: { id: 'ASC' },
       });
 

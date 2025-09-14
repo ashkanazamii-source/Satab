@@ -1,3 +1,4 @@
+// src/vehicles/vehicles.controller.ts
 import {
   Body,
   Controller,
@@ -13,10 +14,11 @@ import {
   UsePipes,
   ValidationPipe,
   BadRequestException,
-  UseGuards
+  UseGuards,
 } from '@nestjs/common';
 import { VehiclesService } from './vehicles.service';
 import { CreateVehicleDto } from '../dto/create-vehicle.dto';
+// ⬇️ مسیر درست برای DTO آپدیت (داخل همین ماژول)
 import { UpdateVehicleDto } from '../dto/create-vehicle.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AclGuard } from '../acl/acl.guard';
@@ -27,123 +29,23 @@ import { ACL } from '../acl/acl.decorator';
 @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 export class VehiclesController {
   constructor(private readonly service: VehiclesService) { }
-  @Get(':id/options')
-  async getOptions(@Param('id', ParseIntPipe) id: number) {
-    const options = await this.service.getEffectiveOptions(id);
-    return { options }; // خروجی استاندارد برای فرانت
-  }
-  // ایجاد وسیله
-  @Post()
-  create(@Body() dto: CreateVehicleDto) {
-    return this.service.create(dto);
-  }
-  // vehicles.controller.ts
-  @Get(':id/telemetry')
-  async getTelemetry(
-    @Param('id', ParseIntPipe) id: number,
-    @Query('keys') keys?: string | string[]
-  ) {
-    const ks = Array.isArray(keys) ? keys : (keys ? String(keys).split(',') : []);
-    return this.service.readVehicleTelemetry(id, ks);
-  }
 
-  @Get(':id/stations')
-  getStations(@Req() req: any, @Param('id', ParseIntPipe) id: number) {
-    return this.service.listStationsByVehicleForUser(id, +req.user.id); // ✅
-  }
-  @Put(':vehicleId/stations/:id')
-  updateStation(
-    @Param('vehicleId', ParseIntPipe) vehicleId: number,
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: { name?: string; radius_m?: number; lat?: number; lng?: number },
-  ) {
-    return this.service.updateVehicleStation(vehicleId, id, dto);
-  }
-
-  @Delete(':vehicleId/stations/:id')
-  async deleteStation(
-    @Param('vehicleId', ParseIntPipe) vehicleId: number,
-    @Param('id', ParseIntPipe) id: number,
-  ) {
-    await this.service.deleteVehicleStation(vehicleId, id);
-    return { ok: true };
-  }
-
-@ACL({ roles: [1, 2, 3, 4, 5] })               // ⬅️ فقط همین متد نیاز دارد
-@Post(':id/stations')
-createStation(
-  @Req() req: any,
-  @Param('id', ParseIntPipe) id: number,
-  @Body() body: { name: string; lat: number; lng: number; radius_m?: number },
-) {
-  return this.service.createStation(id, +req.user.id, body);
-}
-
-  @Delete('stations/:sid')
-  removeStation(@Req() req: any, @Param('sid', ParseIntPipe) sid: number) {
-    return this.service.deleteStation(sid, +req.user.id); // ✅
-  }
-
-  @Get(':id/routes/current')
-  getCurrentRoute(@Param('id', ParseIntPipe) id: number) {
-    return this.service.getCurrentRouteWithMeta(id); // { route_id, name }
-  }
-
-
-  @Get(':id/routes')
-  async listRoutes(@Param('id', ParseIntPipe) id: number) {
-    return this.service.listVehicleRoutes(id);
-  }
-
-  @Post(':id/routes')
-  async createRouteAndAssign(
-    @Req() req: any,
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: {
-      name: string;
-      threshold_m?: number;
-      points: { lat: number; lng: number; name?: string; radius_m?: number }[];
-    }
-  ) {
-    return this.service.createRouteForVehicle(id, +req.user.id, dto);
-  }
-
-  @Put(':id/routes/current')
-  async setOrUpdateCurrentRoute(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() body: { route_id?: number; threshold_m?: number }
-  ) {
-    return this.service.setOrUpdateCurrentRoute(id, body);
-  }
-
-  @Delete(':id/routes/current')
-  async unassignCurrentRoute(@Param('id', ParseIntPipe) id: number) {
-    return this.service.unassignCurrentRoute(id);
-  }
-
-
-  // بروزرسانی وسیله
-  @Put(':id')
-  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateVehicleDto) {
-    return this.service.update(id, dto);
-  }
-
-  // دریافت با شناسه
-  @Get(':id')
-  findOne(@Param('id', ParseIntPipe) id: number) {
-    return this.service.findOne(id);
-  }
-
-  // حذف
-  @Delete(':id')
-  remove(@Param('id', ParseIntPipe) id: number) {
-    return this.service.remove(id);
-  }
+  // ⚠️ روت‌های استاتیک را قبل از پارامتریک بگذار تا تداخل پیش نیاید
 
   // جستجو بر اساس کشور + پلاک (خام یا هر فرمتی)
   @Get('by-plate/search')
   findByPlate(@Query('country') country: string, @Query('plate') plate: string) {
     return this.service.findByPlate(country, plate);
+  }
+
+  @Get('accessible')
+  @ACL({ roles: [1, 2, 3] }) // BM هم مجاز
+  async getAccessible(
+    @Query('user_id', ParseIntPipe) userId: number,
+    @Query('vehicle_type_code') vehicleTypeCode?: string,
+    @Query('limit', new DefaultValuePipe(1000), ParseIntPipe) limit?: number,
+  ) {
+    return this.service.listAccessible({ userId, vehicleTypeCode, limit });
   }
 
   // لیست وسایل در زیرمجموعه کاربر جاری (درخت کامل)
@@ -166,11 +68,130 @@ createStation(
       limit,
     });
   }
+
+  // ایجاد وسیله (با DTO جدید که name را می‌گیرد و tracker_imei اختیاری است)
+  @Post()
+  create(@Body() dto: CreateVehicleDto) {
+    return this.service.create(dto);
+  }
+
+  // ====== روت‌های پارامتریک ======
+
+  @Get(':id/options')
+  async getOptions(@Param('id', ParseIntPipe) id: number) {
+    const options = await this.service.getEffectiveOptions(id);
+    return { options }; // خروجی استاندارد برای فرانت
+  }
+
+  // تله‌متری خواندن
+  @Get(':id/telemetry')
+  async getTelemetry(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('keys') keys?: string | string[],
+  ) {
+    const ks = Array.isArray(keys) ? keys : keys ? String(keys).split(',') : [];
+    return this.service.readVehicleTelemetry(id, ks);
+  }
+
+  // ایستگاه‌ها
+  @Get(':id/stations')
+  getStations(@Req() req: any, @Param('id', ParseIntPipe) id: number) {
+    return this.service.listStationsByVehicleForUser(id, +req.user.id);
+  }
+
+  @Put(':vehicleId/stations/:id')
+  updateStation(
+    @Param('vehicleId', ParseIntPipe) vehicleId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: { name?: string; radius_m?: number; lat?: number; lng?: number },
+  ) {
+    return this.service.updateVehicleStation(vehicleId, id, dto);
+  }
+
+  @Delete(':vehicleId/stations/:id')
+  async deleteStation(
+    @Param('vehicleId', ParseIntPipe) vehicleId: number,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    await this.service.deleteVehicleStation(vehicleId, id);
+    return { ok: true };
+  }
+
+  // ⬇️ فقط همین متد ACL می‌خواهد (1..5)
+  @ACL({ roles: [1, 2, 3, 4, 5] })
+  @Post(':id/stations')
+  createStation(
+    @Req() req: any,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { name: string; lat: number; lng: number; radius_m?: number },
+  ) {
+    return this.service.createStation(id, +req.user.id, body);
+  }
+
+  // حذف ایستگاه با sid (مالک‌محور)
+  @Delete('stations/:sid')
+  removeStation(@Req() req: any, @Param('sid', ParseIntPipe) sid: number) {
+    return this.service.deleteStation(sid, +req.user.id);
+  }
+
+  // مسیر جاری و مدیریت مسیرها
+  @Get(':id/routes/current')
+  getCurrentRoute(@Param('id', ParseIntPipe) id: number) {
+    return this.service.getCurrentRouteWithMeta(id); // { route_id, name }
+  }
+
+  @Get(':id/routes')
+  async listRoutes(@Param('id', ParseIntPipe) id: number) {
+    return this.service.listVehicleRoutes(id);
+  }
+
+  @Post(':id/routes')
+  async createRouteAndAssign(
+    @Req() req: any,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: {
+      name: string;
+      threshold_m?: number;
+      points: { lat: number; lng: number; name?: string; radius_m?: number }[];
+    },
+  ) {
+    return this.service.createRouteForVehicle(id, +req.user.id, dto);
+  }
+
+  @Put(':id/routes/current')
+  async setOrUpdateCurrentRoute(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { route_id?: number; threshold_m?: number },
+  ) {
+    return this.service.setOrUpdateCurrentRoute(id, body);
+  }
+
+  @Delete(':id/routes/current')
+  async unassignCurrentRoute(@Param('id', ParseIntPipe) id: number) {
+    return this.service.unassignCurrentRoute(id);
+  }
+
+  // بروزرسانی/نمایش/حذف وسیله
+  @Put(':id')
+  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateVehicleDto) {
+    return this.service.update(id, dto);
+  }
+
+  @Get(':id')
+  findOne(@Param('id', ParseIntPipe) id: number) {
+    return this.service.findOne(id);
+  }
+
+  @Delete(':id')
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.service.remove(id);
+  }
+
   // پوزیشن لحظه‌ای (سیو در DB + برادکست)
   @Post(':id/pos')
   async ingestPos(
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { lat: number; lng: number; ts?: string }
+    @Body() body: { lat: number; lng: number; ts?: string },
   ) {
     if (typeof body?.lat !== 'number' || typeof body?.lng !== 'number') {
       throw new BadRequestException('lat/lng الزامی و عددی هستند');
@@ -183,22 +204,9 @@ createStation(
   @Post(':id/telemetry')
   async ingestTelemetry(
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { ignition?: boolean; idle_time?: number; odometer?: number; ts?: string }
+    @Body() body: { ignition?: boolean; idle_time?: number; odometer?: number; ts?: string },
   ) {
     await this.service.ingestVehicleTelemetry(id, body);
     return { ok: true };
   }
-  @Get('accessible')
-  @ACL({ roles: [1, 2, 3] }) // BM هم مجاز
-  async getAccessible(
-    @Query('user_id', ParseIntPipe) userId: number,
-    @Query('vehicle_type_code') vehicleTypeCode?: string,
-    @Query('limit', new DefaultValuePipe(1000), ParseIntPipe) limit?: number,
-  ) {
-    return this.service.listAccessible({ userId, vehicleTypeCode, limit });
-  }
 }
-
-
-
-

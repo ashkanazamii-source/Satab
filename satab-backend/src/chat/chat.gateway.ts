@@ -284,8 +284,6 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         }
     }
 
-
-    // ChatGateway.wsRead
     @SubscribeMessage('chat.message.read')
     async wsRead(
         @ConnectedSocket() socket: Socket,
@@ -294,36 +292,78 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const u = this.socketUser.get(socket.id);
         if (!u) throw new WsException('Unauthorized');
 
-        console.log('[GW] READ_IN', { sid: socket.id, userId: u.id, body: b }); // ⬅️
+        console.log('[GW] READ_IN', { sid: socket.id, userId: u.id, body: b });
 
+        // 1. پیام را به عنوان خوانده شده علامت بزن (مثل قبل)
         await this.chatService.markRead(b.messageId, u.id);
+
+        // 2. اطلاعات پیام را برای پیدا کردن فرستنده اصلی واکشی کن
+        const message = await this.chatService.findMessageById(b.messageId);
+        if (!message) {
+            console.warn(`[GW] READ_WARN: Message with id ${b.messageId} not found.`);
+            return { ok: false, error: 'Message not found' };
+        }
 
         const evt = { messageId: b.messageId, readerId: u.id };
 
+        // 3. ارسال رویداد به کل اتاق (مثل قبل)
         if (b.kind === 'DIRECT' && b.peerId) {
-            const [a, bPeer] = [Math.min(u.id, b.peerId), Math.max(u.id, b.peerId)];
-            const roomName = this.dmRoom(a, bPeer);
-
+            const roomName = this.dmRoom(u.id, b.peerId);
             this.server.to(roomName).emit('message:read', evt);
-            this.emitToUsers([u.id, b.peerId], 'message:read', evt);
-
-            const socketsInRoom = Array.from(this.server.sockets.adapter.rooms.get(roomName) ?? []);
-            console.log('[GW] READ_OUT_DM', { roomName, evt, socketsInRoom }); // ⬅️
+            console.log(`[GW] READ_OUT_DM to room ${roomName}`);
         } else if (b.kind === 'GROUP' && b.groupId) {
             const roomName = this.groupRoom(b.groupId);
-
             this.server.to(roomName).emit('message:read', evt);
-
-            // ⬅️ فالبک: اگر کاربری به هر دلیل عضو اتاق نشده بود، به U:<id> هم بفرست
-            const memberUserIds = Array.from(this.roomMembers.get(roomName) ?? []);
-            if (memberUserIds.length) this.emitToUsers(memberUserIds, 'message:read', evt);
-
-            const socketsInRoom = Array.from(this.server.sockets.adapter.rooms.get(roomName) ?? []);
-            console.log('[GW] READ_OUT_GRP', { roomName, evt, socketsInRoom, memberUserIds }); // ⬅️
+            console.log(`[GW] READ_OUT_GRP to room ${roomName}`);
         }
+
+        // 4. 🔥 ارسال تضمین شده رویداد به فرستنده پیام و خواننده پیام
+        const audience = new Set<number>([message.sender_id, u.id]);
+        this.emitToUsers(Array.from(audience), 'message:read', evt);
+        console.log(`[GW] READ_OUT_GUARANTEED to users: ${Array.from(audience).join(', ')}`);
 
         return { ok: true };
     }
+
+
+    /* @SubscribeMessage('chat.message.read')
+     async wsRead(
+         @ConnectedSocket() socket: Socket,
+         @MessageBody() b: { messageId: number; kind: 'DIRECT' | 'GROUP'; groupId?: number; peerId?: number },
+     ) {
+         const u = this.socketUser.get(socket.id);
+         if (!u) throw new WsException('Unauthorized');
+ 
+         console.log('[GW] READ_IN', { sid: socket.id, userId: u.id, body: b }); // ⬅️
+ 
+         await this.chatService.markRead(b.messageId, u.id);
+ 
+         const evt = { messageId: b.messageId, readerId: u.id };
+ 
+         if (b.kind === 'DIRECT' && b.peerId) {
+             const [a, bPeer] = [Math.min(u.id, b.peerId), Math.max(u.id, b.peerId)];
+             const roomName = this.dmRoom(a, bPeer);
+ 
+             this.server.to(roomName).emit('message:read', evt);
+             this.emitToUsers([u.id, b.peerId], 'message:read', evt);
+ 
+             const socketsInRoom = Array.from(this.server.sockets.adapter.rooms.get(roomName) ?? []);
+             console.log('[GW] READ_OUT_DM', { roomName, evt, socketsInRoom }); // ⬅️
+         } else if (b.kind === 'GROUP' && b.groupId) {
+             const roomName = this.groupRoom(b.groupId);
+ 
+             this.server.to(roomName).emit('message:read', evt);
+ 
+             // ⬅️ فالبک: اگر کاربری به هر دلیل عضو اتاق نشده بود، به U:<id> هم بفرست
+             const memberUserIds = Array.from(this.roomMembers.get(roomName) ?? []);
+             if (memberUserIds.length) this.emitToUsers(memberUserIds, 'message:read', evt);
+ 
+             const socketsInRoom = Array.from(this.server.sockets.adapter.rooms.get(roomName) ?? []);
+             console.log('[GW] READ_OUT_GRP', { roomName, evt, socketsInRoom, memberUserIds }); // ⬅️
+         }
+ 
+         return { ok: true };
+     }*/
 
 
 

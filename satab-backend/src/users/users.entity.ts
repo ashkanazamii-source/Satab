@@ -11,10 +11,11 @@ import {
 } from 'typeorm';
 import { UserLevel } from '../entities/role.entity';
 import { License } from '../licenses/license.entity';
-import { DriverRoute } from '../drivers/driver-route.entity'; // اگر مسیر درست this: ../driver-route/driver-route.entity
+import { DriverRoute } from '../drivers/driver-route.entity';
 import { Vehicle } from '../vehicles/vehicle.entity';
 import { Device } from '../entities/device.entity';
 import { RolePermission } from '../permissions/role-permission.entity';
+import { VehicleSettingProfile } from '../profiles/profiles.entity'; // ✅ 1. این خط را اضافه کنید
 
 @Entity('users')
 export class Users {
@@ -33,19 +34,19 @@ export class Users {
   @Index()
   @Column({ type: 'enum', enum: UserLevel })
   role_level: UserLevel;
+
   @OneToMany(() => RolePermission, (rp) => rp.user)
   rolePermissions: RolePermission[];
+
   /**
    * والد عمومی (هر نقش می‌تواند والد هر نقش پایین‌تر باشد)
-   * توجه: ستون parent_id به‌صورت خودکار ساخته می‌شود؛
-   * نیاز به @Column جداگانه ندارد.
    */
   @ManyToOne(() => Users, (u) => u.children, {
     nullable: true,
     onDelete: 'SET NULL',
   })
   @JoinColumn({ name: 'parent_id' })
-  @Index() // برای کوئری‌های بازگشتی
+  @Index()
   parent?: Users | null;
 
   /**
@@ -76,6 +77,13 @@ export class Users {
   ownedDevices: Device[];
 
   /**
+   * ✅ 2. این بخش جدید را به انتهای کلاس (قبل از ستون‌های تاریخ) اضافه کنید
+   * پروفایل‌های تنظیمات ذخیره‌شده توسط این کاربر
+   */
+  @OneToMany(() => VehicleSettingProfile, (profile) => profile.user)
+  profiles: VehicleSettingProfile[];
+
+  /**
    * سقف‌های اختیاری (برای نقش‌های بالادستی مثل SA)
    */
   @Column({ type: 'int', nullable: true })
@@ -90,3 +98,4 @@ export class Users {
   @UpdateDateColumn()
   updated_at: Date;
 }
+

@@ -6,7 +6,7 @@ import {
   ConflictException
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DeepPartial, DataSource, } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { Users } from './users.entity';
 import { CreateUserDto } from '../dto/create-user.dto';
 import { RolePermissionService } from '../permissions/role-permission.service';
@@ -18,6 +18,9 @@ import { AuditTopic } from '../audit/audit-topics';
 import { RequestContext } from '../common/request-context';
 import { InjectDataSource } from '@nestjs/typeorm';
 
+// ✅ اضافه شد
+import { EventEmitter2 } from '@nestjs/event-emitter';
+
 const roleFa = (lvl?: number | null) =>
   ({ 1: 'مدیرکل', 2: 'سوپرادمین', 3: 'مدیر شعبه', 4: 'مالک', 5: 'تکنسین', 6: 'راننده' } as const)[lvl ?? -1] ?? 'نامشخص';
 
@@ -27,25 +30,23 @@ export class UserService {
     @InjectRepository(Users)
     private readonly userRepo: Repository<Users>,
     private readonly rolePermissionService: RolePermissionService,
-    private readonly audit: AuditService,           // ← اضافه
-    @InjectDataSource() private readonly dataSource: DataSource, // ← اینو اضافه کن
-
-  ) { }
+    private readonly audit: AuditService,
+    @InjectDataSource() private readonly dataSource: DataSource,
+    // ✅ اضافه شد: برای اعلام رویدادها به ChatService
+    private readonly events: EventEmitter2,
+  ) {}
 
   async findFirstAncestorByLevel(userId: number, level: number): Promise<Users | null> {
-    // اول خود کاربر را با parent بگیر
     let current = await this.userRepo.findOne({
       where: { id: userId },
       relations: ['parent'],
       select: { id: true, role_level: true } as any,
     });
-
     if (!current) return null;
 
     const visited = new Set<number>([current.id]);
 
     while (current?.parent) {
-      // parent را هم با parentِ خودش بگیر تا بتوانیم بالا برویم
       const parent = await this.userRepo.findOne({
         where: { id: current.parent.id },
         relations: ['parent'],
@@ -55,7 +56,7 @@ export class UserService {
 
       if (parent.role_level === level) return parent;
 
-      if (visited.has(parent.id)) break; // جلوگیری از حلقه
+      if (visited.has(parent.id)) break;
       visited.add(parent.id);
       current = parent;
     }
@@ -74,16 +75,11 @@ export class UserService {
     });
     if (!target) throw new NotFoundException('کاربر پیدا نشد');
 
-    // ✅ همون چک‌های سطح دسترسی و اینکه children نداشته باشه
-
     try {
       await this.userRepo.manager.transaction(async (m) => {
-        // با توجه به ON DELETE CASCADE در role_permissions،
-        // فقط حذف user کافیست.
         await m.getRepository(Users).delete(id);
       });
     } catch (e: any) {
-      // اگر هنوز FK دیگری جلوی حذف را بگیرد (مثلاً در جداول دیگر)
       if ((e?.code || e?.driverError?.code) === '23503') {
         throw new ConflictException(
           'حذف ممکن نیست: هنوز رکورد وابسته‌ای به این کاربر وجود دارد (FK). برای آن FK ها CASCADE/SET NULL تنظیم کنید.'
@@ -92,7 +88,6 @@ export class UserService {
       throw e;
     }
 
-    // ✅ لاگ بعد از موفقیت
     const { ip, userAgent } = RequestContext.get();
     await this.audit.log({
       topic: AuditTopic.USER_DELETE,
@@ -110,30 +105,24 @@ export class UserService {
   /**
    * ایجاد کاربر جدید
    */
-  // users.service.ts
   async create(dto: CreateUserDto, currentUser: Users): Promise<Users> {
-    // --- نقش فعلی
-    const isManager = currentUser.role_level === UserLevel.MANAGER;      // 1
-    const isSuperAdmin = currentUser.role_level === UserLevel.SUPER_ADMIN;  // 2
+    const isManager = currentUser.role_level === UserLevel.MANAGER;        // 1
+    const isSuperAdmin = currentUser.role_level === UserLevel.SUPER_ADMIN; // 2
 
-    // --- مجوز ساخت کاربر
-    // مدیرکل فول‌اکسس است؛ سوپرادمین باید پرمیشن create_user داشته باشد.
     if (!isManager) {
       const allowed = await this.rolePermissionService.isAllowed(currentUser.id, 'create_user');
       if (!allowed) throw new ForbiddenException('شما مجاز به ایجاد کاربر نیستید');
     }
 
-    // --- یکتا بودن موبایل
     const existing = await this.userRepo.findOne({ where: { phone: dto.phone } });
     if (existing) throw new BadRequestException('این شماره موبایل قبلاً ثبت شده است.');
 
-    // --- پسورد
     if (!dto.password || !dto.password.trim()) {
       throw new BadRequestException('پسورد الزامی است.');
     }
     const hashedPassword = await bcrypt.hash(dto.password.trim(), 10);
 
-    // --- تعیین والد
+    // تعیین والد
     const parentId = dto.parent_id ?? currentUser.id;
     let parent: Users | null = null;
 
@@ -142,28 +131,20 @@ export class UserService {
       if (!parent) throw new BadRequestException('والد یافت نشد.');
 
       if (isSuperAdmin) {
-        // SA فقط زیر درخت خودش یا خودش را می‌تواند به‌عنوان والد بگذارد
         const okParent = parent.id === currentUser.id || (await this.isDescendantOf(currentUser.id, parent.id));
         if (!okParent) throw new ForbiddenException('والد انتخاب‌شده در دامنهٔ مجاز شما نیست.');
       } else if (!isManager) {
-        // سایر نقش‌ها (غیر از MANAGER/SA) فعلاً فقط می‌توانند خودشان را والد بگذارند
         if (parent.id !== currentUser.id) throw new ForbiddenException('والد نامعتبر است.');
       }
-      // MANAGER محدودیتی ندارد (مطابق منطق فعلی پروژه)
     }
 
-    // --- قانون نقشِ کاربر جدید نسبت به نقش سازنده
-    if (dto.role_level !== undefined) {
-      // مدیرکل میتواند هر سطحی بسازد؛
-      // اما SA فقط می‌تواند سطحی پایین‌تر از خودش بسازد.
-      if (!isManager && dto.role_level <= currentUser.role_level) {
-        throw new ForbiddenException('نقش کاربر جدید باید پایین‌تر از نقش شما باشد.');
-      }
-    } else {
+    if (dto.role_level === undefined) {
       throw new BadRequestException('تعیین role_level الزامی است.');
     }
+    if (!isManager && dto.role_level <= currentUser.role_level) {
+      throw new ForbiddenException('نقش کاربر جدید باید پایین‌تر از نقش شما باشد.');
+    }
 
-    // --- ساخت آبجکت و ذخیره
     const newUser = this.userRepo.create({
       full_name: dto.full_name,
       phone: dto.phone,
@@ -176,7 +157,11 @@ export class UserService {
 
     const saved = await this.userRepo.save(newUser);
 
-    // --- لاگ آدیت
+    // ✅ پس از ساخت، عضویت گروه SA را به‌صورت رویدادی هندل کن
+    // ChatService with @OnEvent('users.created') => ensureSaGroupForUser(saved.id)
+    this.events.emit('users.created', { userId: saved.id });
+
+    // آدیت‌لاگ
     const { ip, userAgent } = RequestContext.get();
     await this.audit.log({
       topic: AuditTopic.USER_CREATE,
@@ -191,12 +176,6 @@ export class UserService {
     return saved;
   }
 
-
-
-
-  /**
-   * دریافت همه کاربران (اختیاری با فیلتر سطح نقش)
-   */
   async findAll(roleLevel?: number): Promise<Users[]> {
     const where = roleLevel ? { role_level: roleLevel } : {};
     return this.userRepo.find({
@@ -206,7 +185,6 @@ export class UserService {
     });
   }
 
-  // --------- خواندنِ آزاد (فقط برای MANAGER از Controller) ---------
   async findOne(id: number): Promise<Users> {
     const user = await this.userRepo.findOne({
       where: { id },
@@ -216,14 +194,11 @@ export class UserService {
     return user;
   }
 
-  // ... (بخش‌های میانی بدون تغییر)
-
-
   async findOneScoped(id: number, currentUser: Users): Promise<Users> {
     const isManager = currentUser.role_level === UserLevel.MANAGER;
     const isSuperAdmin = currentUser.role_level === UserLevel.SUPER_ADMIN;
 
-    const user = await this.findOne(id); // شامل relations لازم
+    const user = await this.findOne(id);
     if (isManager) return user;
 
     if (isSuperAdmin) {
@@ -233,13 +208,9 @@ export class UserService {
       return user;
     }
 
-    // سایر نقش‌ها فعلاً اجازه ندارند
     throw new ForbiddenException('اجازهٔ مشاهده این کاربر را ندارید.');
   }
 
-  /**
-   * دریافت درخت کامل زیرمجموعه‌ها به‌صورت بازگشتی
-   */
   async getUserHierarchy(userId: number): Promise<any> {
     const user = await this.userRepo.findOne({
       where: { id: userId },
@@ -262,13 +233,6 @@ export class UserService {
     };
   }
 
-  /**
-   * دریافت همه زیرمجموعه‌ها به صورت flat
-   */
-
-  // src/users/users.service.ts
-  // src/users/users.service.ts
-
   async getUserHierarchyScoped(userId: number, currentUser: Users): Promise<any> {
     const isManager = currentUser.role_level === UserLevel.MANAGER;
     const isSuperAdmin = currentUser.role_level === UserLevel.SUPER_ADMIN;
@@ -285,9 +249,9 @@ export class UserService {
 
     throw new ForbiddenException('اجازهٔ مشاهده این درخت را ندارید.');
   }
-  // helper — داخل همین سرویس
+
   private async isDescendantOf(ancestorId: number, targetId: number): Promise<boolean> {
-    if (ancestorId === targetId) return false; // ادیت/خواندن خود شخص را جدا تصمیم می‌گیریم
+    if (ancestorId === targetId) return false;
     let current = await this.userRepo.findOne({
       where: { id: targetId },
       relations: ['parent'],
@@ -304,6 +268,7 @@ export class UserService {
     }
     return false;
   }
+
   async findDirectSubordinates(userId: number) {
     return this.userRepo.find({
       where: { parent: { id: userId } },
@@ -332,7 +297,7 @@ export class UserService {
     }));
   }
 
-  // --------- ویرایش (قبلاً سفت شد) ---------
+  // --------- ویرایش ---------
   async updateUserById(id: number, dto: UpdateUserDto, currentUser?: Users) {
     const user = await this.userRepo.findOne({ where: { id }, relations: ['parent'] });
     if (!user) throw new NotFoundException('کاربر پیدا نشد');
@@ -406,7 +371,17 @@ export class UserService {
 
     const saved = await this.userRepo.save(user);
 
-    // 📊 محاسبه‌ی تغییرات
+    // ✅ تشخیص تغییرات مهم برای سینک گروه SA
+    const parentChanged = (before.parent_id ?? null) !== (saved.parent?.id ?? null);
+    const roleChanged   = before.role_level !== saved.role_level;
+
+    // ✅ اگر والد یا نقش عوض شد، به ChatService خبر بده تا عضویت گروه SA Sync شود
+    if (parentChanged || roleChanged) {
+      this.events.emit('users.parent_changed', { userId: saved.id });
+      // (در ChatService می‌توانی در صورت نیاز، برای تمام زیرمجموعه‌های saved.id هم Sync انجام بدهی)
+    }
+
+    // 📊 محاسبه‌ی تغییرات برای آدیت
     const changed: Record<string, { from: any; to: any }> = {};
     const keys = ['full_name', 'phone', 'role_level', 'max_devices', 'max_drivers', 'parent_id'] as const;
     for (const k of keys) {
@@ -415,7 +390,6 @@ export class UserService {
       if (prev !== next) changed[k] = { from: prev, to: next };
     }
 
-    // 🔹 لاگ‌ها (اگر currentUser موجود است)
     if (currentUser && Object.keys(changed).length) {
       const { ip, userAgent } = RequestContext.get();
 
@@ -447,9 +421,4 @@ export class UserService {
 
     return saved;
   }
-
 }
-
-
-
-

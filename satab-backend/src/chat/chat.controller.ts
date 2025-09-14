@@ -1,6 +1,6 @@
 // src/chat/chat.controller.ts
 import {
-  Controller, Get, Post, Param, ParseIntPipe, Body,
+  Controller, Get, Post, Param, ParseIntPipe, Body, Delete,
   UploadedFile, UseInterceptors, BadRequestException, Query, Patch,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -24,7 +24,13 @@ export class ChatController {
     private readonly chat: ChatService,
     @InjectRepository(Users) private readonly usersRepo: Repository<Users>,
   ) { }
-
+  @Patch('rooms/:id/toggle-lock')
+  async toggleLock(
+    @Param('id', ParseIntPipe) roomId: number,
+    @CurrentUser() me: Users,
+  ) {
+    return this.chat.toggleRoomLock(roomId, me);
+  }
   // ——— لیست همهٔ کاربرها برای استارت چت (بدون هیچ فیلتر نقشی/دامنه‌ای)
   @Get('visible-users')
   async visibleUsers(@CurrentUser() me: Users) {
@@ -35,7 +41,13 @@ export class ChatController {
     // اگر خودت رو نمی‌خوای ببینی، اینجا حذفش می‌کنیم
     return users.filter(u => u.id !== me.id);
   }
-
+  @Get('rooms/:id/members')
+  async getRoomMembers(
+    @Param('id', ParseIntPipe) roomId: number,
+    @CurrentUser() me: Users,
+  ) {
+    return this.chat.getRoomMembers(roomId, me.id);
+  }
   // ——— اتاق‌های من (همون چیزی که سرویس می‌ده؛ Membership مبناست)
   @Get('rooms')
   async myRooms(@CurrentUser() me: Users) {
@@ -120,21 +132,59 @@ export class ChatController {
   @Post('direct/:peerId')
   async sendDirect(
     @Param('peerId', ParseIntPipe) peerId: number,
-    @Body() body: { text?: string },
+    @Body() body: { text?: string } = {} as any,   // 👈 نال‌سیف
     @CurrentUser() me: Users,
   ) {
-    // سرویس باید بی‌قید و شرط Room رو بسازه/برگردونه (کدش پایین توضیح دادم)
     const room = await this.chat.ensureDirectRoom(me.id, peerId);
+    const text = (body?.text ?? '').trim();        // 👈 نال‌سیف
 
-    const text = (body.text ?? '').trim();
-    if (!text) return { room_id: room.id };
+    if (!text) {
+      return { ok: true, room_id: room.id, room }; // 👈 یکنواخت
+    }
 
-    return this.chat.sendMessage({
+    const message = await this.chat.sendMessage({
       roomId: room.id,
       senderId: me.id,
       text,
       kind: 'TEXT',
     });
+    return { ok: true, room_id: room.id, room, message };
+  }
+  @Get('rooms/:id')
+  async getRoom(
+    @Param('id', ParseIntPipe) roomId: number,
+    @CurrentUser() me: Users,
+  ) {
+    const ok = await this.chat.canJoinRoom(me.id, roomId);
+    if (!ok) throw new BadRequestException('اجازه دسترسی به این اتاق را ندارید.');
+    return this.chat.getRoomById(roomId);
+  }
+
+  @Post('rooms/:id/pin')
+  async pinRoom(
+    @Param('id', ParseIntPipe) roomId: number,
+    @Body() body: { messageId: number },
+    @CurrentUser() me: Users,
+  ) {
+    const mid = Number(body?.messageId);
+    if (!Number.isFinite(mid)) throw new BadRequestException('messageId نامعتبر است');
+    return this.chat.pinRoomMessage(roomId, mid, me);
+  }
+
+  @Delete('rooms/:id/pin')
+  async unpinRoom(
+    @Param('id', ParseIntPipe) roomId: number,
+    @CurrentUser() me: Users,
+  ) {
+    return this.chat.unpinRoomMessage(roomId, me);
+  }
+
+  @Get('rooms/:id/pin')
+  async getRoomPin(
+    @Param('id', ParseIntPipe) roomId: number,
+    @CurrentUser() me: Users,
+  ) {
+    return this.chat.getPinnedMessage(roomId, me.id);
   }
 
   // ——— مارک‌کردن خواندن پیام

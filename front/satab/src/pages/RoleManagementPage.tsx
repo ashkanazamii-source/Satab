@@ -18,33 +18,34 @@ import PublicIcon from '@mui/icons-material/Public';
 import { alpha, keyframes } from '@mui/material/styles';
 import { Paper, Typography, Avatar, Tooltip, Popper, Fade, LinearProgress } from '@mui/material';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import RefreshIcon from '@mui/icons-material/Refresh';
+
+
+
+
+
+
+
+
 export const NODE_W = 200;   // عرض ثابت کارت
 export const NODE_H = 76;    // ارتفاع ثابت کارت
 // ==== Hover Summary Bus ====
 
-// یجا نزدیک بالای فایل بگذار
-const makeCursorVirtualEl = (x: number, y: number): VirtualElement => ({
-  getBoundingClientRect: () => ({
-    x, y, top: y, left: x, right: x, bottom: y, width: 0, height: 0,
-    toJSON: () => { }
-  })
-});
+
 
 
 const SUMMARY_CACHE = new Map<string, any>();
 
-// ==== Hover Summary Bus (by mouse coords) ====
 type HoverAction =
-  | { type: 'show'; userId: number; x: number; y: number }
-  | { type: 'move'; x: number; y: number }
+  | { type: 'show'; userId: number; anchorEl: HTMLElement }
   | { type: 'hide' };
 
 export const HoverSummaryBus = (() => {
   let handler: ((a: HoverAction) => void) | null = null;
   return {
     setHandler(h: typeof handler) { handler = h; },
-    showAt(userId: number, x: number, y: number) { handler?.({ type: 'show', userId, x, y }); },
-    moveTo(x: number, y: number) { handler?.({ type: 'move', x, y }); },
+    showFor(userId: number, anchorEl: HTMLElement) { handler?.({ type: 'show', userId, anchorEl }); },
     hide() { handler?.({ type: 'hide' }); },
   };
 })();
@@ -53,9 +54,10 @@ export const HoverSummaryBus = (() => {
 
 
 
+
 function AnalyticsHoverPortal({ from, to }: { from?: string; to?: string }) {
   const [open, setOpen] = useState(false);
-  const [xy, setXy] = useState({ x: 0, y: 0 });
+  const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const [userId, setUserId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
@@ -63,38 +65,23 @@ function AnalyticsHoverPortal({ from, to }: { from?: string; to?: string }) {
     nodeId: number; drivers: number; totalDistanceKm: number; engineHours: number; totalViolations: number;
   } | null>(null);
   const [timer, setTimer] = useState<any>(null);
-  const cardRef = useRef<HTMLDivElement | null>(null);
-
-  // همگام با اندازه کارت، مختصات را داخل ویوپورت کلمپ کن، ولی «همان نقطه‌ی موس» را ملاک بگیر
-  useLayoutEffect(() => {
-    if (!open) return;
-    const w = cardRef.current?.offsetWidth ?? 0;
-    const h = cardRef.current?.offsetHeight ?? 0;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const clampedX = Math.min(Math.max(xy.x, 0), Math.max(vw - w, 0));
-    const clampedY = Math.min(Math.max(xy.y, 0), Math.max(vh - h, 0));
-    if (clampedX !== xy.x || clampedY !== xy.y) setXy({ x: clampedX, y: clampedY });
-  }, [open, xy.x, xy.y]);
 
   useEffect(() => {
     HoverSummaryBus.setHandler(async (a) => {
       if (a.type === 'hide') {
         setOpen(false);
+        setAnchorEl(null);
         setUserId(null);
         setErr('');
         if (timer) clearTimeout(timer);
         return;
       }
-      if (a.type === 'move') {
-        if (open) setXy({ x: a.x, y: a.y });
-        return;
-      }
-      // show
+
+      // show روی المنت
       setOpen(true);
       setErr('');
       setUserId(a.userId);
-      setXy({ x: a.x, y: a.y });
+      setAnchorEl(a.anchorEl);
 
       if (timer) clearTimeout(timer);
       const t = setTimeout(async () => {
@@ -119,60 +106,66 @@ function AnalyticsHoverPortal({ from, to }: { from?: string; to?: string }) {
       setTimer(t);
     });
     return () => HoverSummaryBus.setHandler(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [from, to]);
 
-  if (!open) return null;
+  if (!open || !anchorEl) return null;
 
   return (
-    <Portal>
-      <Fade in={open} timeout={120}>
-        <Paper
-          ref={cardRef}
-          elevation={3}
-          sx={{
-            position: 'fixed',       // مستقل از هر والد
-            left: xy.x,              // ⟵ دقیقاً نقطه‌ی موس
-            top: xy.y,               // ⟵ دقیقاً نقطه‌ی موس
-            // هیچ translate و offsetی اعمال نمی‌کنیم
-            zIndex: (t) => t.zIndex.modal + 1000,
-            p: 1.25,
-            borderRadius: 2,
-            minWidth: 260,
-            maxWidth: 320,
-            border: '1px solid',
-            borderColor: 'divider',
-            boxShadow: `0 10px 24px rgba(0,0,0,.16)`,
-            background: `linear-gradient(180deg,#fff, #fafafa)`,
-            pointerEvents: 'none',   // ⟵ تا هاور کارت قطع نشه و چشمک نزنه
-          }}
-        >
-          <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: .5 }}>
-            <Typography fontWeight={700} fontSize={13}>خلاصهٔ آنالیز</Typography>
-            <Chip size="small" label={userId ? `#${userId}` : ''} />
-          </Stack>
+    <Popper
+      open={open}
+      anchorEl={anchorEl}
+      placement="top-start"
+      transition
+      modifiers={[
+        { name: 'offset', options: { offset: [0, 8] } },
+        { name: 'preventOverflow', options: { boundary: 'viewport', padding: 8 } },
+        { name: 'flip', options: { fallbackPlacements: ['right-start', 'left-start', 'bottom-start'] } },
+      ]}
+      style={{ zIndex: 20000, pointerEvents: 'none' }}
+    >
+      {({ TransitionProps }) => (
+        <Fade {...TransitionProps} timeout={120}>
+          <Paper
+            elevation={3}
+            sx={{
+              p: 1.25,
+              borderRadius: 2,
+              minWidth: 260,
+              maxWidth: 320,
+              border: '1px solid',
+              borderColor: 'divider',
+              boxShadow: `0 10px 24px rgba(0,0,0,.16)`,
+              background: `linear-gradient(180deg,#fff, #fafafa)`,
+              pointerEvents: 'none',
+            }}
+          >
+            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: .5 }}>
+              <Typography fontWeight={700} fontSize={13}>خلاصهٔ آنالیز</Typography>
+              <Chip size="small" label={userId ? `#${userId}` : ''} />
+            </Stack>
 
-          {loading ? (
-            <Box sx={{ py: 1 }}><LinearProgress /></Box>
-          ) : err ? (
-            <Typography color="error" fontSize={12}>{err}</Typography>
-          ) : data ? (
-            <Grid container spacing={1} sx={{ mt: .5 }}>
-              <Grid item xs={6}><Metric label="راننده" value={data.drivers} /></Grid>
-              <Grid item xs={6}><Metric label="تخلف" value={data.totalViolations} /></Grid>
-              <Grid item xs={12}>
-                <Metric label="مسافت" value={`${Number(data.totalDistanceKm || 0).toLocaleString('fa-IR')} km`} />
+            {loading ? (
+              <Box sx={{ py: 1 }}><LinearProgress /></Box>
+            ) : err ? (
+              <Typography color="error" fontSize={12}>{err}</Typography>
+            ) : data ? (
+              <Grid container spacing={1} sx={{ mt: .5 }}>
+                <Grid item xs={6}><Metric label="راننده" value={data.drivers} /></Grid>
+                <Grid item xs={6}><Metric label="تخلف" value={data.totalViolations} /></Grid>
+                <Grid item xs={12}>
+                  <Metric label="مسافت" value={`${Number(data.totalDistanceKm || 0).toLocaleString('fa-IR')} km`} />
+                </Grid>
+                <Grid item xs={12}>
+                  <Metric label="ساعت موتور" value={`${Number(data.engineHours || 0).toLocaleString('fa-IR')} h`} />
+                </Grid>
               </Grid>
-              <Grid item xs={12}>
-                <Metric label="ساعت موتور" value={`${Number(data.engineHours || 0).toLocaleString('fa-IR')} h`} />
-              </Grid>
-            </Grid>
-          ) : (
-            <Typography fontSize={12} color="text.secondary">داده‌ای نیست.</Typography>
-          )}
-        </Paper>
-      </Fade>
-    </Portal>
+            ) : (
+              <Typography fontSize={12} color="text.secondary">داده‌ای نیست.</Typography>
+            )}
+          </Paper>
+        </Fade>
+      )}
+    </Popper>
   );
 }
 
@@ -219,9 +212,10 @@ function UserCard({
           boxShadow: `0 16px 28px ${alpha(royal.c2, .18)}`,
         },
       })}
-      onMouseEnter={(e) => HoverSummaryBus.showAt(u.id, e.clientX, e.clientY)}
-      onMouseMove={(e) => HoverSummaryBus.moveTo(e.clientX, e.clientY)}
+      onMouseEnter={(e) => HoverSummaryBus.showFor(u.id, e.currentTarget as HTMLElement)}
       onMouseLeave={() => HoverSummaryBus.hide()}
+      onFocus={(e) => HoverSummaryBus.showFor(u.id, e.currentTarget as HTMLElement)}   // برای دسترسی‌پذیری
+      onBlur={() => HoverSummaryBus.hide()}
 
     >
       <Stack direction="row" alignItems="center" spacing={1.25} sx={{ width: '100%', minWidth: 0 }}>
@@ -414,9 +408,10 @@ function NodeCard({
         },
 
       }}
-      onMouseEnter={(e) => HoverSummaryBus.showAt(u.id, e.clientX, e.clientY)}
-      onMouseMove={(e) => HoverSummaryBus.moveTo(e.clientX, e.clientY)}
+      onMouseEnter={(e) => HoverSummaryBus.showFor(u.id, e.currentTarget as HTMLElement)}
       onMouseLeave={() => HoverSummaryBus.hide()}
+      onFocus={(e) => HoverSummaryBus.showFor(u.id, e.currentTarget as HTMLElement)}   // برای دسترسی‌پذیری
+      onBlur={() => HoverSummaryBus.hide()}
 
     >
       {/* بخش بالا: آواتار و اطلاعات کاربر */}
@@ -2067,6 +2062,11 @@ export function AddVehicleDialog({
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
+  // pairing state
+  const [redeemLoading, setRedeemLoading] = useState(false);
+  const [redeemMsg, setRedeemMsg] = useState<string>('');
+  const [pairedDeviceId, setPairedDeviceId] = useState<string | null>(null);
+
   // لیست نوع‌های مجاز با ظرفیت باقی‌مانده
   const [allowedTypes, setAllowedTypes] = useState<{ code: VehicleTypeCode; label: string; remaining: number }[]>([]);
   // کشورهایی که منیجر برای این سوپرادمین مجاز کرده
@@ -2074,6 +2074,7 @@ export function AddVehicleDialog({
 
   // فرم + تکه‌های پلاک ایران
   const [form, setForm] = useState<{
+    name: string;
     country_code: CountryCode | '';
     plate_no: string;
     plate_part1: string; // 2 رقم
@@ -2081,11 +2082,9 @@ export function AddVehicleDialog({
     plate_part3: string; // 3 رقم
     plate_part4: string; // 2 رقم
     vehicle_type_code: VehicleTypeCode | '';
-    tracker_imei: string; // ⬅️ جدید و اجباری
-    fuel_type: string;
-    manufactured_year: number | '';
     tank_capacity_liters: number | '';
   }>({
+    name: '',
     country_code: '',
     plate_no: '',
     plate_part1: '',
@@ -2093,22 +2092,66 @@ export function AddVehicleDialog({
     plate_part3: '',
     plate_part4: '',
     vehicle_type_code: '',
-    tracker_imei: '',      // ⬅️
-    fuel_type: '',
-    manufactured_year: '',
     tank_capacity_liters: '',
   });
+
   type VehicleTypeCode =
-    | "bus"
-    | "minibus"
-    | "van"
-    | "tanker"
-    | "truck"
-    | "khavar"
-    | "sedan"
-    | "pickup";
+    | 'bus'
+    | 'minibus'
+    | 'van'
+    | 'tanker'
+    | 'truck'
+    | 'khavar'
+    | 'sedan'
+    | 'pickup';
+
   const labelOfType = (code: VehicleTypeCode) =>
     VEHICLE_TYPES.find(t => t.code === code)?.label || code;
+
+  // --- منطق «رمز ۴ رقمی» + شمارش معکوس
+  const [pairCode, setPairCode] = useState<string | null>(null);
+  const [pairExpiresAt, setPairExpiresAt] = useState<number | null>(null); // ms epoch
+  const [secondsLeft, setSecondsLeft] = useState<number>(0);
+
+  useEffect(() => {
+    if (!pairExpiresAt) return;
+    const tick = () => {
+      const s = Math.max(0, Math.ceil((pairExpiresAt - Date.now()) / 1000));
+      setSecondsLeft(s);
+      if (s <= 0) {
+        setPairCode(null);
+        setPairExpiresAt(null);
+      }
+    };
+    tick();
+    const iv = setInterval(tick, 500);
+    return () => clearInterval(iv);
+  }, [pairExpiresAt]);
+
+  // فقط «انتظار برای پیام برد» (long-poll به بک‌اند)
+  const waitForBoard = async () => {
+    setRedeemMsg('');
+    if (!pairCode || secondsLeft <= 0) {
+      setRedeemMsg('کد منقضی شده؛ دوباره «دریافت رمز» بزنید.');
+      return;
+    }
+    try {
+      setRedeemLoading(true);
+      // timeout کلاینت رو کمی بیشتر از 60s بگذار
+      const { data } = await api.get('/pairing-codes/wait', {
+        params: { code: pairCode },
+        timeout: 65000,
+      });
+      // data = { paired:true, owner_user_id, device_id, device_name? }
+      setPairedDeviceId(data?.device_id || null);
+      setRedeemMsg('✅ پیام برد رسید و در بک‌اند ثبت شد.');
+      try { onCreated(); } catch { }
+    } catch (e: any) {
+      setRedeemMsg(e?.response?.data?.message || e?.message || 'هیچ پیامی از برد دریافت نشد.');
+    } finally {
+      setRedeemLoading(false);
+    }
+  };
 
   // بارگذاری سیاست‌ها و کشورها هنگام باز شدن
   useEffect(() => {
@@ -2158,6 +2201,13 @@ export function AddVehicleDialog({
             ? (countries.includes(prev.country_code as any) ? (prev.country_code as any) : (countries[0] as any))
             : '',
         }));
+
+        // هر بار باز شدن: ریست کد/جفت‌سازی
+        setPairCode(null);
+        setPairExpiresAt(null);
+        setSecondsLeft(0);
+        setPairedDeviceId(null);
+        setRedeemMsg('');
       } catch (e: any) {
         setErrorMsg(e?.response?.data?.message || 'خطا در دریافت مجوزها/آمار');
       } finally {
@@ -2177,18 +2227,18 @@ export function AddVehicleDialog({
     const { name, value } = e.target as any;
     setForm(f => ({ ...f, [name]: value }));
   };
-  const normalizedUID = (form.tracker_imei || '').trim().replace(/\s/g, '').toUpperCase();
-  const uidInvalid =
-    normalizedUID.length === 0 || !/^[A-Z0-9._-]{4,64}$/.test(normalizedUID); // IMEI 15 رقمی هم داخلش اوکیه
 
-  // تنها نسخه‌ی handleSubmit
+  // ثبت وسیله (در این نسخه، بعد از جفت‌سازی فعال می‌شود)
   const handleSubmit = async () => {
     setLoading(true);
     setErrorMsg('');
     try {
+      if (!form.name.trim()) throw new Error('نام ماشین را وارد کنید');
       if (!form.vehicle_type_code) throw new Error('نوع ماشین را انتخاب کنید');
       if (!form.country_code) throw new Error('کشور پلاک را انتخاب کنید');
-      if (uidInvalid) throw new Error('UID/IMEI دستگاه الزامی و باید معتبر باشد');
+
+      // اگه بدون جفت‌سازی نمی‌خوای اجازه بدی:
+      if (!pairedDeviceId) throw new Error('ابتدا با برد جفت‌سازی کنید (دریافت رمز → در انتظار پیام).');
 
       // ساخت پلاک نهایی
       let plateNo = form.plate_no?.trim();
@@ -2202,18 +2252,18 @@ export function AddVehicleDialog({
         if (!plateNo) throw new Error('پلاک را وارد کنید');
       }
 
+      // ⬅️ نکته‌ی اصلی: device_id را هم بفرست تا «همان ماشین» با همان شناسه ۹۶ بیتی ذخیره شود
       await api.post('/vehicles', {
         owner_user_id: ownerId,
+        name: form.name.trim(),
         country_code: form.country_code,
         plate_no: plateNo,
         vehicle_type_code: form.vehicle_type_code,
-        tracker_imei: normalizedUID, // ⬅️ می‌فرستیم به بک‌اند
-        fuel_type: form.fuel_type || undefined,
-        manufactured_year: form.manufactured_year !== '' ? Number(form.manufactured_year) : undefined,
         tank_capacity_liters:
           form.vehicle_type_code === 'tanker' && form.tank_capacity_liters !== ''
             ? Number(form.tank_capacity_liters)
             : undefined,
+        device_id: pairedDeviceId, // 👈 حتماً بفرست
       });
 
       onClose();
@@ -2227,7 +2277,25 @@ export function AddVehicleDialog({
 
   const noTypeCapacity = !allowedTypes.length;
   const noCountryAllowed = !allowedCountries.length;
-
+  const canSubmit =
+    !loading && !noTypeCapacity && !noCountryAllowed && !!pairedDeviceId; // اگر نمی‌خوای اجباری باشه، شرط آخر رو بردار
+  const requestPairCode = async () => {
+    try {
+      setLoading(true);
+      setErrorMsg('');
+      setRedeemMsg('');
+      setPairedDeviceId(null);   // ریست شناسهٔ متصل‌شده
+      const { data } = await api.post('/pairing-codes', { userId: ownerId });
+      const code = String(data?.code ?? '').padStart(4, '0').slice(-4);
+      const exp = data?.expires_at ? new Date(data.expires_at).getTime() : Date.now() + 60_000;
+      setPairCode(code);
+      setPairExpiresAt(exp);
+    } catch (e: any) {
+      setErrorMsg(e?.response?.data?.message || 'دریافت رمز ناموفق بود');
+    } finally {
+      setLoading(false);
+    }
+  };
   return (
     <Dialog open={open} onClose={onClose} fullWidth>
       <DialogTitle>افزودن ماشین جدید</DialogTitle>
@@ -2241,6 +2309,18 @@ export function AddVehicleDialog({
                 <Box sx={{ color: 'error.main', fontSize: 14 }}>{errorMsg}</Box>
               </Grid>
             )}
+
+            {/* نام ماشین — بالا */}
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                required
+                label="نام ماشین"
+                name="name"
+                value={form.name}
+                onChange={handleChange}
+              />
+            </Grid>
 
             {(noTypeCapacity || noCountryAllowed) ? (
               <Grid item xs={12}>
@@ -2279,17 +2359,17 @@ export function AddVehicleDialog({
                   >
                     {allowedCountries.map(code => (
                       <option key={code} value={code}>
-                        {{
+                        {({
                           IR: 'ایران', QA: 'قطر', AE: 'امارات', IQ: 'عراق',
                           AF: 'افغانستان', TM: 'ترکمنستان', TR: 'ترکیه'
-                        }[code] || code}
+                        } as Record<string, string>)[code] || code}
                       </option>
                     ))}
                   </select>
                 </Grid>
 
+                {/* پلاک */}
                 <Grid container spacing={1}>
-                  {/* کشور = ایران ⇒ چهار تکه */}
                   {form.country_code === 'IR' ? (
                     <Grid container spacing={1} alignItems="center" sx={{ mt: 1 }}>
                       <Grid item>
@@ -2297,8 +2377,7 @@ export function AddVehicleDialog({
                           label="دو رقم اول"
                           value={form.plate_part1}
                           onChange={(e) =>
-                            setForm(f => ({ ...f, plate_part1: e.target.value.replace(/\D/g, '').slice(0, 2) }))
-                          }
+                            setForm(f => ({ ...f, plate_part1: e.target.value.replace(/\D/g, '').slice(0, 2) }))}
                           size="small"
                           sx={{ width: 120 }}
                         />
@@ -2311,11 +2390,9 @@ export function AddVehicleDialog({
                             setForm(f => ({
                               ...f,
                               plate_part2: e.target.value
-                                // حروف غیر فارسی حذف شود
                                 .replace(/[^آابپتثجچحخدذرزژسشصضطظعغفقکگلمنوهی]/g, '')
                                 .slice(0, 1),
-                            }))
-                          }
+                            }))}
                           size="small"
                           sx={{ width: 120 }}
                         />
@@ -2325,8 +2402,7 @@ export function AddVehicleDialog({
                           label="سه رقم وسط"
                           value={form.plate_part3}
                           onChange={(e) =>
-                            setForm(f => ({ ...f, plate_part3: e.target.value.replace(/\D/g, '').slice(0, 3) }))
-                          }
+                            setForm(f => ({ ...f, plate_part3: e.target.value.replace(/\D/g, '').slice(0, 3) }))}
                           size="small"
                           sx={{ width: 120 }}
                         />
@@ -2336,15 +2412,13 @@ export function AddVehicleDialog({
                           label="دو رقم آخر"
                           value={form.plate_part4}
                           onChange={(e) =>
-                            setForm(f => ({ ...f, plate_part4: e.target.value.replace(/\D/g, '').slice(0, 2) }))
-                          }
+                            setForm(f => ({ ...f, plate_part4: e.target.value.replace(/\D/g, '').slice(0, 2) }))}
                           size="small"
                           sx={{ width: 120 }}
                         />
                       </Grid>
                     </Grid>
                   ) : (
-                    // کشور ≠ ایران ⇒ یک فیلد سادهٔ پلاک
                     <Grid item xs={12} sx={{ mt: 1 }}>
                       <TextField
                         fullWidth
@@ -2355,44 +2429,11 @@ export function AddVehicleDialog({
                       />
                     </Grid>
                   )}
-
                 </Grid>
 
-
-                {/* ✅ UID/IMEI اجباری */}
-                <Grid item xs={12} sx={{ mt: 1 }}>
-                  <TextField
-                    fullWidth
-                    required
-                    label="UID/IMEI دستگاه (اجباری)"
-                    name="tracker_imei"
-                    value={form.tracker_imei}
-                    onChange={(e) =>
-                      setForm(f => ({ ...f, tracker_imei: e.target.value.replace(/\s/g, '').toUpperCase() }))
-                    }
-                    error={normalizedUID.length > 0 && uidInvalid}
-                    helperText="فقط حروف/عدد و . _ - ؛ بدون فاصله (مثال: IMEI 15 رقمی)"
-                    inputProps={{ maxLength: 64 }}
-                  />
-                </Grid>
-
-                <Grid item xs={6}>
-                  <TextField fullWidth label="سوخت (اختیاری)" name="fuel_type" value={form.fuel_type} onChange={handleChange} />
-                </Grid>
-
-                <Grid item xs={6}>
-                  <TextField
-                    fullWidth
-                    label="سال ساخت (اختیاری)"
-                    name="manufactured_year"
-                    type="number"
-                    value={form.manufactured_year}
-                    onChange={handleChange}
-                  />
-                </Grid>
-
+                {/* تانکر: ظرفیت مخزن */}
                 {form.vehicle_type_code === 'tanker' && (
-                  <Grid item xs={6}>
+                  <Grid item xs={6} sx={{ mt: 1 }}>
                     <TextField
                       fullWidth
                       label="حجم مخزن (لیتر)"
@@ -2403,17 +2444,85 @@ export function AddVehicleDialog({
                     />
                   </Grid>
                 )}
+
+                {/* --- بخش دریافت/انتظار رمز --- */}
+                <Grid item xs={12} sx={{ mt: 2 }}>
+                  <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+                    <Stack direction="row" justifyContent="space-between" alignItems="center">
+                      <Box>
+                        <Typography fontWeight={700} sx={{ mb: 0.5 }}>
+                          سینک اولیه با رمز ۴ رقمی
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          «دریافت رمز» → کد را روی برد وارد کنید → «در انتظار پیام از برد». اعتبار کد ~۶۰ثانیه است.
+                        </Typography>
+                      </Box>
+
+                      <Stack direction="row" spacing={1}>
+                        {pairCode && (
+                          <Tooltip title="کپی رمز">
+                            <IconButton onClick={async () => { try { await navigator.clipboard.writeText(pairCode); } catch { } }} size="small">
+                              <ContentCopyIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                        )}
+
+                        <Button
+                          variant="contained"
+                          startIcon={<RefreshIcon />}
+                          onClick={requestPairCode}
+                          disabled={loading}
+                        >
+                          دریافت رمز
+                        </Button>
+
+                        <Button
+                          variant="outlined"
+                          onClick={waitForBoard}
+                          disabled={!pairCode || secondsLeft <= 0 || redeemLoading}
+                        >
+                          در انتظار پیام از برد
+                        </Button>
+                      </Stack>
+                    </Stack>
+
+                    {redeemLoading && <Box sx={{ mt: 1 }}><LinearProgress /></Box>}
+                    {redeemMsg && (
+                      <Typography variant="caption" sx={{ mt: 1, display: 'block' }} color={redeemMsg.startsWith('✅') ? 'success.main' : 'error.main'}>
+                        {redeemMsg}
+                      </Typography>
+                    )}
+
+                    {pairedDeviceId && (
+                      <Box sx={{ mt: 1 }}>
+                        <Chip label={`متصل: ${pairedDeviceId.slice(0, 8)}…`} variant="outlined" />
+                      </Box>
+                    )}
+
+                    <Collapse in={!!pairCode} unmountOnExit>
+                      <Box sx={{ mt: 2, textAlign: 'center' }}>
+                        <Typography sx={{ letterSpacing: 6, fontSize: 28, fontWeight: 800 }}>
+                          {pairCode || '----'}
+                        </Typography>
+                        <Typography variant="caption" color={secondsLeft > 0 ? 'text.secondary' : 'error'}>
+                          {secondsLeft > 0 ? `انقضا: ${secondsLeft} ثانیه` : 'منقضی شد، دوباره دریافت کنید.'}
+                        </Typography>
+                      </Box>
+                    </Collapse>
+                  </Paper>
+                </Grid>
               </>
             )}
           </Grid>
         )}
       </DialogContent>
+
       <DialogActions>
         <Button onClick={onClose} disabled={loading}>انصراف</Button>
         <Button
           variant="contained"
           onClick={handleSubmit}
-          disabled={loading || noTypeCapacity || noCountryAllowed || uidInvalid}
+          disabled={!canSubmit}  // اگر نمی‌خوای جفت‌سازی الزام باشه، به: disabled={loading || noTypeCapacity || noCountryAllowed}
         >
           ثبت
         </Button>
@@ -2421,7 +2530,6 @@ export function AddVehicleDialog({
     </Dialog>
   );
 }
-
 
 
 function AddUserDialog({

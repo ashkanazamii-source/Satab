@@ -23,6 +23,8 @@ import { GlobalExceptionFilter } from './audit/global-exception.filter';
 import { ChatModule } from './chat/chat.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { ProfilesModule } from './profiles/profiles.module'; // ✅ ۱. این خط را برای import اضافه کنید
+import { PairingModule } from './pairing/pairing.module';
 
 import { ContextMiddleware } from './common/context.middleware';
 
@@ -65,6 +67,8 @@ import { ContextMiddleware } from './common/context.middleware';
     ChatModule,
     AuditModule,
     AnalyticsModule,
+    ProfilesModule,
+    PairingModule
   ],
   providers: [
     // لاگ همهٔ درخواست‌های HTTP

@@ -55,4 +55,16 @@ export class ChatRoom {
 
   @OneToMany(() => ChatMessage, m => m.room)
   messages: ChatMessage[];
+
+
+  @Column({ type: 'boolean', default: false })
+  is_locked: boolean;
+
+  @Column({ type: 'int', nullable: true })
+  pinned_message_id: number | null;
+
+  @ManyToOne(() => ChatMessage, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'pinned_message_id' })
+  pinned_message?: ChatMessage | null;
+
 }

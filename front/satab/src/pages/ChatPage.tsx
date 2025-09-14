@@ -5,8 +5,9 @@ import {
     Box, Paper, Stack, Typography, IconButton, TextField, Button, Divider,
     List, ListItemButton, ListItemText, ListItemAvatar, Avatar, Badge, Chip,
     CircularProgress, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent,
-    DialogActions
+    DialogActions, ListItem, Tabs, Tab,
 } from '@mui/material';
+
 import { alpha, keyframes, useTheme } from '@mui/material/styles';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import AttachFileRoundedIcon from '@mui/icons-material/AttachFileRounded';
@@ -18,6 +19,10 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
+import LockRoundedIcon from '@mui/icons-material/LockRounded';
+import LockOpenRoundedIcon from '@mui/icons-material/LockOpenRounded';
+import axios from 'axios'; // Make sure axios is imported at the top
+
 
 const shimmer = keyframes`
   0% { background-position: 0% 50% }
@@ -47,6 +52,8 @@ type Room = {
     sa_root_user_id?: number | null;
     direct_key?: string | null; // برای DM: "minId-maxId"
     max_upload_mb?: number | null;
+    is_locked?: boolean; //  <-- این فیلد اضافه شود
+
 };
 
 type MessageKind = 'TEXT' | 'IMAGE' | 'FILE';
@@ -63,6 +70,11 @@ type Message = {
     created_at: string;
 };
 
+api.interceptors.request.use(config => {
+    const token = localStorage.getItem('token');
+    if (token) { config.headers.Authorization = `Bearer ${token}`; }
+    return config;
+});
 function useLocalToken() { return localStorage.getItem('token') ?? ''; }
 
 /* ==========================
@@ -86,25 +98,283 @@ export default function ChatPage() {
     return <ChatApp me={me} />;
 }
 
+
+
+const byOldestFirst = (a: Message, b: Message) => {
+    const ta = new Date(a.created_at).getTime();
+    const tb = new Date(b.created_at).getTime();
+    if (ta !== tb) return ta - tb;   // older first
+    return a.id - b.id;              // tie-breaker
+};
+const byNewestFirst = (a: Message, b: Message) => {
+    const tb = new Date(b.created_at).getTime();
+    const ta = new Date(a.created_at).getTime();
+    if (tb !== ta) return tb - ta;
+    return b.id - a.id;
+};
 function ChatApp({ me }: { me: User }) {
     const theme = useTheme();
-
+    const [isMembersDialogOpen, setIsMembersDialogOpen] = useState(false);
+    const [memberList, setMemberList] = useState<User[]>([]);
+    const [loadingMembers, setLoadingMembers] = useState(false);
     // ===== WS & refs
     const tokenRaw = useLocalToken();
     const token = useMemo(() => (tokenRaw || '').replace(/^Bearer\s+/i, ''), [tokenRaw]);
     const socketRef = useRef<Socket | null>(null);
+    const safeEmitReadRef = useRef<(messageId: number) => Promise<void>>(async () => { });
 
     const listRef = useRef<HTMLDivElement | null>(null);
     const activeRoomIdRef = useRef<number | null>(null);
     const activeRoomRef = useRef<Room | null>(null);
     const lastWireRoomRef = useRef<{ kind: 'DIRECT' | 'GROUP'; peerId?: number; groupId?: number } | null>(null);
+    const [tab, setTab] = useState<'GROUPS' | 'DIRECT'>('GROUPS'); // ⬅️ تب فعلی
+    const [rooms, setRooms] = useState<Room[]>([]);
+    // --- Message search state ---
+    const [activeRoomId, setActiveRoomId] = useState<number | null>(null);
+    const [msgSearchOpen, setMsgSearchOpen] = useState(false);
+    const [msgSearchQ, setMsgSearchQ] = useState('');
+    const [msgSearchLoading, setMsgSearchLoading] = useState(false);
+    const [msgSearchErr, setMsgSearchErr] = useState('');
+    const [msgSearchResults, setMsgSearchResults] = useState<Message[]>([]);
+    const [msgSearchBeforeId, setMsgSearchBeforeId] = useState<number | undefined>(undefined); // برای pagination نتایج
+    const activeRoom = useMemo(() => rooms.find(r => r.id === activeRoomId) || null, [rooms, activeRoomId]);
+    const [messages, setMessages] = useState<Message[]>([]);
+
+    // برای هایلایت و اسکرول به پیام
+    const [highlightedMsgId, setHighlightedMsgId] = useState<number | null>(null);
+    // call backend search if available, otherwise local filter
+    const doSearchMessages = useCallback(async (reset = true) => {
+        if (!activeRoom || !msgSearchQ.trim()) { setMsgSearchResults([]); return; }
+        setMsgSearchLoading(true);
+        setMsgSearchErr('');
+        try {
+            // تلاش سمت سرور (اگر پیاده‌سازی شده باشد)
+            const params: any = { q: msgSearchQ.trim(), limit: 30 };
+            if (!reset && msgSearchBeforeId) params.beforeId = msgSearchBeforeId;
+
+            const { data } = await api.get(`/chat/rooms/${activeRoom.id}/messages/search`, { params });
+
+            if (Array.isArray(data)) {
+                const arr: Message[] = data.map((m: any) => ({
+                    id: Number(m.id),
+                    room_id: activeRoom.id,
+                    sender_id: Number(m.sender_id ?? m.senderId),
+                    senderName: m.senderName || `کاربر #${m.sender_id ?? m.senderId}`,
+                    kind: (m.kind ?? (m.attachment_url ? 'IMAGE' : 'TEXT')) as MessageKind,
+                    text: m.text ?? null,
+                    attachment_url: m.attachment_url ?? null,
+                    attachment_mime: m.attachment_mime ?? null,
+                    attachment_size: m.attachment_size ?? null,
+                    created_at: new Date(m.created_at ?? m.createdAt ?? Date.now()).toISOString(),
+                }));
+
+                setMsgSearchResults(reset ? arr : [...msgSearchResults, ...arr]);
+                setMsgSearchBeforeId(arr.length ? arr[arr.length - 1].id : msgSearchBeforeId);
+            } else {
+                // fallback: جستجوی کلاینتی توی پیام‌های لودشده
+                const q = msgSearchQ.trim().toLowerCase();
+                const local = messages.filter(m =>
+                    (m.text || '').toLowerCase().includes(q)
+                );
+                setMsgSearchResults(local);
+            }
+        } catch (e: any) {
+            // fallback کلاینتی اگر 404/501/… بود
+            const q = msgSearchQ.trim().toLowerCase();
+            const local = messages.filter(m => (m.text || '').toLowerCase().includes(q));
+            setMsgSearchResults(local);
+            if (!local.length) setMsgSearchErr(e?.response?.data?.message || 'جستجو ناموفق بود.');
+        } finally {
+            setMsgSearchLoading(false);
+        }
+    }, [activeRoom, msgSearchQ, msgSearchBeforeId, messages, msgSearchResults]);
+
+    // اسکرول و هایلایت پیام
+    // همه‌ی refهای آیتم‌های پیام را اینجا نگه می‌داریم:
+    const msgElRefs = useRef<Record<number, HTMLDivElement | null>>({});
+
+    // برای بایند کردن ref هر پیام:
+    const bindMsgRef = useCallback(
+        (id: number) => (el: HTMLDivElement | null) => {
+            if (el) msgElRefs.current[id] = el;
+            else delete msgElRefs.current[id];
+        },
+        []
+    );
+
+    // برای اسکرول و هایلایت کردن پیام پیدا‌شده:
+    const scrollToMessage = useCallback((id: number) => {
+        const el = msgElRefs.current[id];
+        if (!el) return;
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setHighlightedMsgId(id);
+        // بعد از 2 ثانیه هایلایت رو بردار
+        window.setTimeout(() => setHighlightedMsgId(null), 2000);
+    }, []);
+
+
+    // اگر پیام هنوز لود نشده، چند صفحه قدیمی‌تر را لود کن تا پیدا شود
+    const loadUntilFound = useCallback(async (targetId: number) => {
+        // اگر الان هست، تمام
+        if (messagesRef.current.some(m => m.id === targetId)) {
+            scrollToMessage(targetId);
+            return;
+        }
+        // تا 5 تلاش: هر بار 50 پیام قدیمی‌تر
+        for (let i = 0; i < 5; i++) {
+            const oldest = messagesRef.current[0];
+            const beforeId = oldest ? oldest.id : undefined;
+            try {
+                setFetchingMsgs(true);
+                const { data } = await api.get(`/chat/rooms/${activeRoom!.id}/messages`, {
+                    params: { limit: 50, beforeId }
+                });
+                const arr: Message[] = Array.isArray(data) ? data.map((m: any) => ({
+                    id: Number(m.id),
+                    room_id: activeRoom!.id,
+                    sender_id: Number(m.sender_id ?? m.senderId),
+                    senderName: m.senderName || `کاربر #${m.sender_id ?? m.senderId}`,
+                    kind: (m.kind ?? (m.attachment_url ? 'IMAGE' : 'TEXT')) as MessageKind,
+                    text: m.text ?? null,
+                    attachment_url: m.attachment_url ?? null,
+                    attachment_mime: m.attachment_mime ?? null,
+                    attachment_size: m.attachment_size ?? null,
+                    created_at: new Date(m.created_at ?? m.createdAt ?? Date.now()).toISOString(),
+                })) : [];
+
+                if (!arr.length) break;
+
+                // prepend
+                setMessages(prev => {
+                    const next = [...arr, ...prev];
+                    next.sort(byOldestFirst);
+                    return next;
+                });
+
+                await new Promise(r => setTimeout(r, 0)); // yield رندر
+
+                if (messagesRef.current.some(m => m.id === targetId)) {
+                    scrollToMessage(targetId);
+                    return;
+                }
+            } finally {
+                setFetchingMsgs(false);
+            }
+        }
+        // پیدا نشد
+        alert('پیام موردنظر در تاریخچه پیدا نشد.');
+    }, [activeRoom, scrollToMessage, byOldestFirst]);
+
+    const groupRooms = useMemo(
+        () => rooms.filter(r => r.type !== 'DIRECT'),
+        [rooms]
+    );
+    const directRooms = useMemo(
+        () => rooms.filter(r => r.type === 'DIRECT'),
+        [rooms]
+    );
+    const shownRooms = tab === 'GROUPS' ? groupRooms : directRooms; // ⬅️ لیستِ تب
+    // pinned message state (per room)
+    const [pinnedMsg, setPinnedMsg] = useState<Message | null>(null);
+    const canPinInRoom = useMemo(() => {
+        if (!activeRoom) return false;
+        // در DIRECT: هردو طرف مجاز
+        if (activeRoom.type === 'DIRECT') return true;
+        // در GROUP: فقط نقش‌های 1 و 2
+        return me.role_level === 1 || me.role_level === 2;
+    }, [activeRoom, me.role_level]);
+
+
+    // بارگذاری پیام پین‌شده هنگام عوض شدن اتاق
+    const fetchPinned = useCallback(async (roomId: number) => {
+        try {
+            const { data } = await api.get(`/chat/rooms/${roomId}/pin`);
+            if (!data) { setPinnedMsg(null); return; }
+            const m: Message = {
+                id: Number(data.id),
+                room_id: roomId,
+                sender_id: Number(data.sender_id ?? data.senderId),
+                senderName: data.senderName || `کاربر #${data.sender_id ?? data.senderId}`,
+                kind: (data.kind ?? (data.attachment_url ? 'IMAGE' : 'TEXT')) as MessageKind,
+                text: data.text ?? null,
+                attachment_url: data.attachment_url ?? null,
+                attachment_mime: data.attachment_mime ?? null,
+                attachment_size: data.attachment_size ?? null,
+                created_at: new Date(data.created_at ?? data.createdAt ?? Date.now()).toISOString(),
+            };
+            setPinnedMsg(m);
+        } catch {
+            setPinnedMsg(null);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (activeRoomId) fetchPinned(activeRoomId);
+        else setPinnedMsg(null);
+    }, [activeRoomId, fetchPinned]);
+
+    // Pin/Unpin اقدام
+    const pinMessage = useCallback(async (m: Message) => {
+        if (!activeRoom || !canPinInRoom) return;
+        const prev = pinnedMsg;
+        setPinnedMsg(m); // optimistic
+        try {
+            await api.post(`/chat/rooms/${activeRoom.id}/pin`, { messageId: m.id });
+        } catch (e: any) {
+            setPinnedMsg(prev); // rollback
+            alert(e?.response?.data?.message || 'پین کردن ناموفق بود.');
+        }
+    }, [activeRoom, canPinInRoom, pinnedMsg]);
+
+    const unpinMessage = useCallback(async () => {
+        if (!activeRoom || !canPinInRoom) return;
+        const prev = pinnedMsg;
+        setPinnedMsg(null); // optimistic
+        try {
+            await api.delete(`/chat/rooms/${activeRoom.id}/pin`);
+        } catch (e: any) {
+            setPinnedMsg(prev); // rollback
+            alert(e?.response?.data?.message || 'برداشتن پین ناموفق بود.');
+        }
+    }, [activeRoom, canPinInRoom, pinnedMsg]);
+
+    // اسکرول به پیام پین‌شده
+    const gotoPinned = useCallback(() => {
+        if (!pinnedMsg) return;
+        if (!messagesRef.current.some(x => x.id === pinnedMsg.id)) {
+            loadUntilFound(pinnedMsg.id);
+        } else {
+            scrollToMessage(pinnedMsg.id);
+        }
+    }, [pinnedMsg, loadUntilFound, scrollToMessage]);
 
     // ===== State
-    const [rooms, setRooms] = useState<Room[]>([]);
-    const [activeRoomId, setActiveRoomId] = useState<number | null>(null);
-    const activeRoom = useMemo(() => rooms.find(r => r.id === activeRoomId) || null, [rooms, activeRoomId]);
+    const [pinDlgOpen, setPinDlgOpen] = useState(false);
+    const [pinDlgTarget, setPinDlgTarget] = useState<Message | null>(null);
 
-    const [messages, setMessages] = useState<Message[]>([]);
+    const openPinDialog = useCallback((m: Message) => {
+        if (!canPinInRoom) return;
+        setPinDlgTarget(m);
+        setPinDlgOpen(true);
+    }, [canPinInRoom]);
+
+    const handlePinConfirm = useCallback(async () => {
+        if (!pinDlgTarget) return;
+        setPinDlgLoading(true);
+        try {
+            if (pinnedMsg?.id === pinDlgTarget.id) {
+                await unpinMessage();
+            } else {
+                await pinMessage(pinDlgTarget);
+            }
+        } finally {
+            setPinDlgLoading(false);
+            setPinDlgOpen(false);
+            setPinDlgTarget(null);
+        }
+    }, [pinDlgTarget, pinnedMsg, pinMessage, unpinMessage]);
+
+
     const [hasMore, setHasMore] = useState(true);
     const [fetchingMsgs, setFetchingMsgs] = useState(false);
 
@@ -115,6 +385,85 @@ function ChatApp({ me }: { me: User }) {
     const [openNewDm, setOpenNewDm] = useState(false);
     const [dmUser, setDmUser] = useState<User | null>(null);
     const messagesRef = useRef<Message[]>([]);
+
+    const isInputDisabled = !!(activeRoom?.is_locked && me.role_level !== 2);
+    const disabledTooltip = "این گروه قفل شده و فقط مدیر می‌تواند پیام ارسال کند.";
+    const handleOpenMembersDialog = useCallback(async () => {
+        if (!activeRoom || activeRoom.type === 'DIRECT') return;
+
+        setIsMembersDialogOpen(true);
+        setLoadingMembers(true);
+        setMemberList([]);
+        try {
+            // This is the new endpoint you need to create on the backend
+            const { data } = await api.get(`/chat/rooms/${activeRoom.id}/members`);
+            setMemberList(Array.isArray(data) ? data : []);
+        } catch (err: any) {
+            alert(err?.response?.data?.message || 'خطا در دریافت لیست اعضا.');
+        } finally {
+            setLoadingMembers(false);
+        }
+    }, [activeRoom]);
+    const handleToggleLock = useCallback(async () => {
+        if (!activeRoom || me.role_level !== 2) return;
+
+        const originalRooms = rooms;
+        const newLockState = !activeRoom.is_locked;
+
+        // آپدیت خوش‌بینانه UI
+        setRooms(prev =>
+            prev.map(r =>
+                r.id === activeRoom.id ? { ...r, is_locked: newLockState } : r
+            )
+        );
+
+        try {
+            await api.patch(`/chat/rooms/${activeRoom.id}/toggle-lock`);
+        } catch (err) {
+            // بازگردانی UI در صورت بروز خطا
+            let errorMessage = 'تغییر وضعیت قفل گروه ناموفق بود.';
+
+            // بررسی ایمن نوع خطا قبل از دسترسی به پراپرتی‌ها
+            if (axios.isAxiosError(err) && err.response?.data?.message) {
+                errorMessage = err.response.data.message;
+            }
+
+            alert(errorMessage);
+            setRooms(originalRooms);
+        }
+    }, [activeRoom, me.role_level, rooms]);
+
+    useEffect(() => {
+        safeEmitReadRef.current = async (messageId: number) => {
+            const s = socketRef.current;
+            const ar = activeRoomRef.current;
+            const myId = me?.id;
+
+            if (!s || !ar || !myId) return;
+            if (sentReadsRef.current.has(messageId)) return;
+
+            sentReadsRef.current.add(messageId);
+
+            const payload =
+                ar.type === 'DIRECT'
+                    ? (() => {
+                        const [a, b] = (ar.direct_key ?? '').split('-').map(Number);
+                        if (Number.isNaN(a) || Number.isNaN(b)) return { messageId, kind: 'DIRECT' as const };
+                        return { messageId, kind: 'DIRECT' as const, peerId: myId === a ? b : a };
+                    })()
+                    : { messageId, kind: 'GROUP' as const, groupId: ar.id };
+
+            try {
+                await s.timeout(10000).emitWithAck('chat.message.read', payload);
+                // console.log(`[FE] Read confirmation sent for ${messageId}`);
+            } catch (err) {
+                // اگر شکست خورد، اجازه بده دوباره ارسال شود
+                sentReadsRef.current.delete(messageId);
+                console.error(`[FE] read-ack failed`, err);
+            }
+        };
+    }, [me?.id]);
+
     useEffect(() => { messagesRef.current = messages; }, [messages]);
     const [input, setInput] = useState('');
     const [file, setFile] = useState<File | null>(null);
@@ -128,6 +477,22 @@ function ChatApp({ me }: { me: User }) {
     const [defaultMaxBytes, setDefaultMaxBytes] = useState(10 * 1024 * 1024);
     const [roomMaxBytes, setRoomMaxBytes] = useState<Record<number, number>>({});
     const uploadLimitBytes = activeRoom ? (roomMaxBytes[activeRoom.id] ?? defaultMaxBytes) : defaultMaxBytes;
+    const applyRoomLockUpdate = useCallback((roomId: number, isLocked: boolean) => {
+        setRooms(prev => prev.map(r => r.id === roomId ? { ...r, is_locked: isLocked } : r));
+    }, []);
+
+
+
+    useEffect(() => {
+        const list = tab === 'GROUPS' ? groupRooms : directRooms;
+        if (!list.length) {
+            setActiveRoomId(null);
+            return;
+        }
+        if (!list.some(r => r.id === activeRoomId)) {
+            setActiveRoomId(list[0].id);
+        }
+    }, [tab, groupRooms, directRooms]); // ⬅️ تب یا اتاق‌های تب عوض شد
 
     useEffect(() => {
         const loadReads = async () => {
@@ -200,12 +565,7 @@ function ChatApp({ me }: { me: User }) {
         return room.title || `گروه #${room.id}`;
     }, [dmPeerId, me.id, visibleUsers]);
     // جایگزین کن
-    const byOldestFirst = (a: Message, b: Message) => {
-        const ta = new Date(a.created_at).getTime();
-        const tb = new Date(b.created_at).getTime();
-        if (ta !== tb) return ta - tb;   // older first
-        return a.id - b.id;              // tie-breaker
-    };
+
 
     // نزدیکِ پایین؟
     const isNearBottom = () => {
@@ -213,68 +573,8 @@ function ChatApp({ me }: { me: User }) {
         return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     };
 
-    // ببر پایین
-    const scrollToBottom = () => {
-        const el = listRef.current; if (!el) return;
-        el.scrollTop = el.scrollHeight;
-    };
 
 
-
-    // ===== HTTP: rooms / messages / users
-    const loadRooms = useCallback(async () => {
-        const { data } = await api.get('/chat/rooms');
-        const rs: Room[] = Array.isArray(data) ? data : [];
-        setRooms(rs);
-        // max bytes
-        setRoomMaxBytes(prev => {
-            const next = { ...prev };
-            for (const r of rs) if (typeof r.max_upload_mb === 'number') next[r.id] = r.max_upload_mb * 1024 * 1024;
-            return next;
-        });
-        if (!activeRoomId && rs.length) setActiveRoomId(rs[0].id);
-        // DM نام طرف را داشته باشیم
-        ensurePeerUsersInCache(rs);
-    }, [activeRoomId]);
-
-    const fetchMessages = useCallback(async (roomId: number, reset = true) => {
-        setFetchingMsgs(true);
-        try {
-            const curr = messagesRef.current;
-            const beforeId = !reset && curr.length ? curr[0].id : undefined;
-
-            const { data } = await api.get(`/chat/rooms/${roomId}/messages`, {
-                params: { limit: 50, beforeId }
-            });
-            console.log('[FE] loadMessages API response (برای بررسی kind)', data); // <-- این خط رو اضافه کن
-
-            const arr: Message[] = Array.isArray(data) ? data : [];
-            arr.sort(byOldestFirst); // کلاسیک: قدیمی بالا، جدید پایین
-
-            setMessages(prev => (reset ? arr : [...arr, ...prev])); // ⬅️ prepend
-            setHasMore(arr.length >= 50);
-
-            setReadsByMsg(prev => {
-                const next = { ...prev };
-                for (const m of arr) if (!next[m.id]) next[m.id] = {};
-                return next;
-            });
-
-            for (const m of arr) if (m.sender_id !== me.id) safeEmitRead(m.id);
-
-            if (reset) requestAnimationFrame(scrollToBottom);
-        } finally {
-            setFetchingMsgs(false);
-        }
-    }, [me.id]);
-
-
-    const loadVisibleUsers = useCallback(async () => {
-        try {
-            const { data } = await api.get('/chat/visible-users');
-            setVisibleUsers(Array.isArray(data) ? data : []);
-        } catch { setVisibleUsers([]); }
-    }, []);
 
     const ensurePeerUsersInCache = useCallback(async (rs: Room[]) => {
         const known = new Set<number>(visibleUsers.map(u => u.id));
@@ -310,6 +610,73 @@ function ChatApp({ me }: { me: User }) {
             });
         }
     }, [visibleUsers, me.id]);
+    // ===== HTTP: rooms / messages / users
+    const loadRooms = useCallback(async () => {
+        const { data } = await api.get('/chat/rooms');
+        const rs: Room[] = Array.isArray(data) ? data : [];
+        setRooms(rs);
+        ensurePeerUsersInCache(rs);
+    }, []); // ← بدون وابستگی به state
+
+
+
+    const refreshRoomState = useCallback(async (roomId: number) => {
+        try {
+            // اگر API تکی ندارید، می‌توانید از loadRooms() استفاده کنید
+            const { data } = await api.get(`/chat/rooms/${roomId}`);
+            if (!data) return;
+
+            const locked =
+                Boolean(data.is_locked ?? data.isLocked ?? data.locked);
+
+            setRooms(prev =>
+                prev.map(r => (r.id === roomId ? { ...r, is_locked: locked, title: data.title ?? r.title } : r))
+            );
+        } catch (e: any) {
+            // fallback: اگر endpoint تکی ندارید
+            try { await loadRooms(); } catch { }
+        }
+    }, [loadRooms]);
+    const fetchMessages = useCallback(async (roomId: number, reset = true) => {
+        setFetchingMsgs(true);
+        try {
+            const curr = messagesRef.current;
+            const beforeId = !reset && curr.length ? curr[0].id : undefined;
+
+            const { data } = await api.get(`/chat/rooms/${roomId}/messages`, {
+                params: { limit: 50, beforeId }
+            });
+            console.log('[FE] loadMessages API response (برای بررسی kind)', data); // <-- این خط رو اضافه کن
+
+            const arr: Message[] = Array.isArray(data) ? data : [];
+            arr.sort(byOldestFirst); // کلاسیک: قدیمی بالا، جدید پایین
+
+            setMessages(prev => (reset ? arr : [...arr, ...prev])); // ⬅️ prepend
+            setHasMore(arr.length >= 50);
+
+            setReadsByMsg(prev => {
+                const next = { ...prev };
+                for (const m of arr) if (!next[m.id]) next[m.id] = {};
+                return next;
+            });
+
+            for (const m of arr) if (m.sender_id !== me.id) safeEmitReadRef.current(m.id);
+
+            if (reset) requestAnimationFrame(scrollToBottom);
+        } finally {
+            setFetchingMsgs(false);
+        }
+    }, [me.id]);
+
+
+    const loadVisibleUsers = useCallback(async () => {
+        try {
+            const { data } = await api.get('/chat/visible-users');
+            setVisibleUsers(Array.isArray(data) ? data : []);
+        } catch { setVisibleUsers([]); }
+    }, []);
+
+
     // جدیدترها اول (بالا)
     const byNewestFirst = (a: Message, b: Message) => {
         const ta = new Date(a.created_at).getTime();
@@ -327,23 +694,22 @@ function ChatApp({ me }: { me: User }) {
             return url;
         }
     };
+    const [pinDlgLoading, setPinDlgLoading] = useState(false);
+
 
     // ===== WS connect
+    // --- 2) افکت وب‌سوکت با رویدادهای قفل/بازشدن ---
     useEffect(() => {
         const WS_URL =
             import.meta.env.VITE_WS_URL ||
             (api.defaults.baseURL ? new URL(api.defaults.baseURL).origin : window.location.origin);
 
-        console.log('[FE] WS_URL', WS_URL, 'token.len=', token?.length);
-
-        // از ساخت مجدد جلوگیری کن
         if (socketRef.current) return;
 
         const s = io(WS_URL, {
             path: '/ws',
-            //transports: ['websocket'],
             withCredentials: true,
-            auth: { token }, // token از localStorage همونه
+            auth: { token }, // توکن از localStorage
             reconnection: true,
             reconnectionAttempts: Infinity,
             reconnectionDelay: 500,
@@ -351,45 +717,41 @@ function ChatApp({ me }: { me: User }) {
         });
 
         socketRef.current = s;
-        s.on('connect_error', (err: any) => {
+
+        // ---- Handlers به صورت function تا در cleanup off() کنیم ----
+        const onConnect = () => {
+            console.log('[FE] CONNECTED', s.id);
+            if (activeRoomRef.current) {
+                joinRoomWs(activeRoomRef.current);
+            }
+        };
+
+        const onConnectError = (err: any) => {
             console.error('[FE] CONNECT_ERR', {
                 message: err?.message,
                 description: err?.description,
                 context: err,
             });
-        });
-        // اتصال
-        s.on('connect', () => {
-            console.log('[FE] CONNECTED', s.id);
-            if (activeRoomRef.current) {
-                console.log('[FE] JOIN_ON_CONNECT');
-                joinRoomWs(activeRoomRef.current);
-            }
-        });
+        };
 
-        s.on('connect_error', (err) => console.error('[FE] CONNECT_ERR', err?.message || err));
-
-        // پیام جدید از WS
-        s.on('message:new', (m: any) => {
+        const onMessageNew = (m: any) => {
             try {
                 const ar = activeRoomRef.current;
                 if (!ar) return;
 
-                // --- نرمال‌سازی فیلدها (WS = camelCase, HTTP = snake_case) ---
+                // نرمال‌سازی فیلدها
                 const attUrl = m.attachment_url ?? m.attachmentUrl ?? null;
                 const attMime = m.attachment_mime ?? m.attachmentMime ?? null;
                 const attSize = m.attachment_size ?? m.attachmentSize ?? null;
                 const created = m.created_at ?? m.createdAt ?? new Date().toISOString();
-                const kind: MessageKind =
-                    m.kind ? m.kind
-                        : (attUrl ? 'IMAGE' : 'TEXT');
+                const kind: MessageKind = m.kind ? m.kind : (attUrl ? 'IMAGE' : 'TEXT');
 
                 const senderId = Number(m?.senderId ?? m?.sender_id);
                 const roomKind = m?.room?.kind as 'GROUP' | 'DIRECT' | undefined;
                 const groupId = Number(m?.room?.groupId ?? m?.room_id ?? NaN);
                 const peerId = roomKind === 'DIRECT' ? Number(m?.room?.peerId ?? NaN) : null;
 
-                // --- فیلتر تعلق پیام به اتاق فعال (مثل قبل) ---
+                // فیلتر تعلق پیام به اتاق فعال
                 let belongs = true;
                 if (roomKind === 'GROUP') {
                     belongs = groupId === ar.id;
@@ -402,7 +764,6 @@ function ChatApp({ me }: { me: User }) {
                 }
                 if (!belongs) return;
 
-                // --- ساخت آبجکت Message سازگار با state ---
                 const msg: Message = {
                     id: Number(m.id),
                     room_id: ar.id,
@@ -413,9 +774,10 @@ function ChatApp({ me }: { me: User }) {
                     attachment_url: attUrl,
                     attachment_mime: attMime,
                     attachment_size: attSize,
-                    created_at: typeof created === 'string'
-                        ? new Date(created).toISOString()
-                        : (created instanceof Date ? created.toISOString() : new Date().toISOString()),
+                    created_at:
+                        typeof created === 'string'
+                            ? new Date(created).toISOString()
+                            : (created instanceof Date ? created.toISOString() : new Date().toISOString()),
                 };
 
                 setMessages(prev => {
@@ -425,20 +787,22 @@ function ChatApp({ me }: { me: User }) {
                     return next;
                 });
 
-                if (msg.sender_id !== me.id) safeEmitRead(msg.id);
-                if (isNearBottom()) requestAnimationFrame(scrollToBottom);
+                if (msg.sender_id !== me.id) safeEmitReadRef.current(msg.id);
+                if (listRef.current) {
+                    const nearBottom =
+                        listRef.current.scrollHeight - listRef.current.scrollTop - listRef.current.clientHeight < 80;
+                    if (nearBottom) requestAnimationFrame(() => {
+                        listRef.current!.scrollTop = listRef.current!.scrollHeight;
+                    });
+                }
 
-                setReadsByMsg(prev => prev[msg.id] ? prev : ({ ...prev, [msg.id]: {} }));
+                setReadsByMsg(prev => (prev[msg.id] ? prev : ({ ...prev, [msg.id]: {} })));
             } catch (err) {
                 console.error('[FE] message:new HANDLER_ERROR', err, { incoming: m, activeRoom: activeRoomRef.current });
             }
-        });
+        };
 
-
-        // رسید خواندن
-        s.on('message:read', (evt: any) => {
-            console.log('[FE] READ_EVT', evt);  // باید messageId و readerId (یوزر B) رو ببینی
-
+        const onMessageRead = (evt: any) => {
             const messageId = Number(evt?.messageId);
             const readerId = Number(evt?.readerId);
             if (!messageId || !readerId) return;
@@ -447,55 +811,151 @@ function ChatApp({ me }: { me: User }) {
                 if (prevReaders[readerId]) return prev;
                 return { ...prev, [messageId]: { ...prevReaders, [readerId]: true } };
             });
-        });
+        };
 
-        // حضور
-        s.on('presence.join', (p: { userId: number; room: string }) => {
+        const onPresenceJoin = (p: { userId: number; room: string }) => {
             const ar = activeRoomRef.current; if (!ar) return;
-            const ok = (ar.type === 'DIRECT'
-                ? p.room === dmRoomName(Math.min(me.id, dmPeerId(ar, me.id) || 0), Math.max(me.id, dmPeerId(ar, me.id) || 0))
-                : p.room === `GRP:${ar.id}`);
+            const ok = (
+                ar.type === 'DIRECT'
+                    ? p.room === `DM:${Math.min(me.id, dmPeerId(ar, me.id) || 0)}:${Math.max(me.id, dmPeerId(ar, me.id) || 0)}`
+                    : p.room === `GRP:${ar.id}`
+            );
             if (ok) setPresence(prev => (prev.includes(p.userId) ? prev : [...prev, p.userId]));
-        });
+        };
 
-        s.on('presence.leave', (p: { userId: number; room: string }) => {
+        const onPresenceLeave = (p: { userId: number; room: string }) => {
             const ar = activeRoomRef.current; if (!ar) return;
-            const ok = (ar.type === 'DIRECT'
-                ? p.room === dmRoomName(Math.min(me.id, dmPeerId(ar, me.id) || 0), Math.max(me.id, dmPeerId(ar, me.id) || 0))
-                : p.room === `GRP:${ar.id}`);
+            const ok = (
+                ar.type === 'DIRECT'
+                    ? p.room === `DM:${Math.min(me.id, dmPeerId(ar, me.id) || 0)}:${Math.max(me.id, dmPeerId(ar, me.id) || 0)}`
+                    : p.room === `GRP:${ar.id}`
+            );
             if (ok) setPresence(prev => prev.filter(id => id !== p.userId));
-        });
+        };
 
-        // تایپینگ
-        s.on('typing.started', (p: { userId: number; room: string }) => {
+        const onTypingStarted = (p: { userId: number; room: string }) => {
             if (p.userId === me.id) return;
             const ar = activeRoomRef.current; if (!ar) return;
-            const ok = (ar.type === 'DIRECT'
-                ? p.room === dmRoomName(Math.min(me.id, dmPeerId(ar, me.id) || 0), Math.max(me.id, dmPeerId(ar, me.id) || 0))
-                : p.room === `GRP:${ar.id}`);
+            const ok = (
+                ar.type === 'DIRECT'
+                    ? p.room === `DM:${Math.min(me.id, dmPeerId(ar, me.id) || 0)}:${Math.max(me.id, dmPeerId(ar, me.id) || 0)}`
+                    : p.room === `GRP:${ar.id}`
+            );
             if (ok) setTypingUsers(prev => (prev.includes(p.userId) ? prev : [...prev, p.userId]));
-        });
+        };
 
-        s.on('typing.stopped', (p: { userId: number; room: string }) => {
+        const onTypingStopped = (p: { userId: number; room: string }) => {
             setTypingUsers(prev => prev.filter(id => id !== p.userId));
-        });
+        };
 
-        // آپلود‌لیمیت (اختیاری)
-        s.on('config.upload_limit_updated', (p: { defaultMaxBytes?: number; roomId?: number; maxBytes?: number }) => {
+        // --- 🔒 رویدادهای قفل/بازشدن (چند نام برای سازگاری) ---
+        const onRoomUpdated = (payload: any) => {
+            const room = payload?.room ?? payload;
+            if (!room) return;
+            const id = Number(room.id ?? room.roomId);
+            const isLocked = Boolean(room.is_locked ?? room.isLocked ?? room.locked);
+            if (!Number.isFinite(id)) return;
+            applyRoomLockUpdate(id, isLocked);
+        };
+
+        const onRoomLocked = (payload: any) => {
+            const id = Number(payload?.roomId ?? payload?.id);
+            if (!Number.isFinite(id)) return;
+            applyRoomLockUpdate(id, true);
+        };
+
+        const onRoomUnlocked = (payload: any) => {
+            const id = Number(payload?.roomId ?? payload?.id);
+            if (!Number.isFinite(id)) return;
+            applyRoomLockUpdate(id, false);
+        };
+
+        const onUploadLimit = (p: { defaultMaxBytes?: number; roomId?: number; maxBytes?: number }) => {
             if (p.defaultMaxBytes != null) setDefaultMaxBytes(p.defaultMaxBytes);
             if (p.roomId && p.maxBytes != null) setRoomMaxBytes(prev => ({ ...prev, [p.roomId!]: p.maxBytes! }));
+        };
+        const onPinChanged = (payload: any) => {
+            const roomId = Number(payload?.roomId ?? payload?.room?.id ?? payload?.id);
+            if (!activeRoomRef.current || !Number.isFinite(roomId) || roomId !== activeRoomRef.current.id) return;
+
+            const msg = payload?.message ?? payload?.msg ?? null;
+            if (!msg) {
+                setPinnedMsg(null);
+                return;
+            }
+            // نرمال‌سازی پیام
+            const m: Message = {
+                id: Number(msg.id),
+                room_id: roomId,
+                sender_id: Number(msg.sender_id ?? msg.senderId),
+                senderName: msg.senderName || `کاربر #${msg.sender_id ?? msg.senderId}`,
+                kind: (msg.kind ?? (msg.attachment_url ? 'IMAGE' : 'TEXT')) as MessageKind,
+                text: msg.text ?? null,
+                attachment_url: msg.attachment_url ?? null,
+                attachment_mime: msg.attachment_mime ?? null,
+                attachment_size: msg.attachment_size ?? null,
+                created_at: new Date(msg.created_at ?? msg.createdAt ?? Date.now()).toISOString(),
+            };
+            setPinnedMsg(m);
+        };
+
+        s.on('chat.room.pin.changed', onPinChanged);
+        s.on('room:pin.changed', onPinChanged);
+        s.on('room:pinned', onPinChanged);
+        s.on('room:unpinned', () => {
+            const ar = activeRoomRef.current;
+            if (ar) setPinnedMsg(null);
         });
 
-        // Clean up
+        // cleanup:
+        s.off('chat.room.pin.changed', onPinChanged);
+        s.off('room:pin.changed', onPinChanged);
+        s.off('room:pinned', onPinChanged);
+        s.off('room:unpinned', () => { });
+
+        // ---- ثبت لیسنرها ----
+        s.on('connect', onConnect);
+        s.on('connect_error', onConnectError);
+        s.on('message:new', onMessageNew);
+        s.on('message:read', onMessageRead);
+        s.on('presence.join', onPresenceJoin);
+        s.on('presence.leave', onPresenceLeave);
+        s.on('typing.started', onTypingStarted);
+        s.on('typing.stopped', onTypingStopped);
+
+        // قفل/باز شدن اتاق
+        s.on('room:updated', onRoomUpdated);
+        s.on('chat.room.updated', onRoomUpdated);
+        s.on('chat.room.locked', onRoomLocked);
+        s.on('chat.room.unlocked', onRoomUnlocked);
+
+        // سایر
+        s.on('config.upload_limit_updated', onUploadLimit);
+
+        // ---- Cleanup ----
         return () => {
-            s.removeAllListeners();
+            s.off('connect', onConnect);
+            s.off('connect_error', onConnectError);
+            s.off('message:new', onMessageNew);
+            s.off('message:read', onMessageRead);
+            s.off('presence.join', onPresenceJoin);
+            s.off('presence.leave', onPresenceLeave);
+            s.off('typing.started', onTypingStarted);
+            s.off('typing.stopped', onTypingStopped);
+
+            s.off('room:updated', onRoomUpdated);
+            s.off('chat.room.updated', onRoomUpdated);
+            s.off('chat.room.locked', onRoomLocked);
+            s.off('chat.room.unlocked', onRoomUnlocked);
+
+            s.off('config.upload_limit_updated', onUploadLimit);
+
             s.disconnect();
             socketRef.current = null;
         };
-
-        // ⛔️ فقط یک بار اجرا شود
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
 
 
     // ===== Join/leave room over WS + presence list
@@ -551,7 +1011,7 @@ function ChatApp({ me }: { me: User }) {
             // در صورت خطا، ممکن است بخواهید messageId را از sentReadsRef.current حذف کنید تا دوباره تلاش کند
             sentReadsRef.current.delete(messageId);
         }
-    }, [activeRoom, me]); // وابستگی‌ها
+    }, [activeRoom, me, dmPeerId]); // ✅ FIX: Added dmPeerId dependency
     useEffect(() => {
         const s = socketRef.current;
         if (!s) return;
@@ -565,13 +1025,23 @@ function ChatApp({ me }: { me: User }) {
             });
         };
 
-        s.on('message:read', handleMessageRead);
-        return () => { s.off('message:read', handleMessageRead); };
+
     }, []);
 
 
 
-    // ===== Send
+    // PATCH: اسکرول
+    const wantInitialScrollRef = useRef(false);
+
+    const scrollToBottom = () => {
+        const el = listRef.current; if (!el) return;
+        el.scrollTop = el.scrollHeight;
+    };
+    const scrollToBottomAfterPaint = () => {
+        requestAnimationFrame(() => {
+            requestAnimationFrame(scrollToBottom);
+        });
+    };
 
 
     // ===== Start DM
@@ -586,15 +1056,32 @@ function ChatApp({ me }: { me: User }) {
             alert(e?.response?.data?.message || 'ایجاد گفتگوی خصوصی ناموفق بود.');
         }
     }, [loadRooms]);
+    useEffect(() => {
+        if (!messages.length) return;
+        if (!wantInitialScrollRef.current) return;
+
+        scrollToBottomAfterPaint();     // PATCH: اسکرول واقعا بعد از رندر
+        wantInitialScrollRef.current = false;
+    }, [messages.length, activeRoomId]);
 
     // ===== lifecycle
-    useEffect(() => { (async () => { await loadVisibleUsers(); await loadRooms(); })(); }, [loadRooms, loadVisibleUsers]);
+    useEffect(() => { loadVisibleUsers(); loadRooms(); }, []); // ← فقط یکبار
+    // فقط گرفتن پیام‌ها، فقط وقتی activeRoomId عوض شد
     useEffect(() => {
         if (!activeRoomId) return;
+        wantInitialScrollRef.current = true;
         fetchMessages(activeRoomId, true);
-        const r = rooms.find(x => x.id === activeRoomId) || null;
+    }, [activeRoomId]); // ← rooms حذف شد
+
+    // فقط join WS، فقط وقتی activeRoomId عوض شد
+    const roomsRef = useRef<Room[]>([]);
+    useEffect(() => { roomsRef.current = rooms; }, [rooms]);
+
+    useEffect(() => {
+        const r = roomsRef.current.find(x => x.id === activeRoomId) || null;
         joinRoomWs(r);
-    }, [activeRoomId, rooms, fetchMessages, joinRoomWs]);
+    }, [activeRoomId, joinRoomWs]); // ← rooms حذف شد
+
 
 
     useEffect(() => {
@@ -621,34 +1108,42 @@ function ChatApp({ me }: { me: User }) {
     };
     // ===== typing (WS) — این بخش را بالای return بگذار
     const typingTimerRef = useRef<number | null>(null);
+    const lockCheckAtRef = useRef(0);
 
     const handleTyping = useCallback((val: string) => {
+        const ar = activeRoomRef.current;
+        if (!ar) return;
+        if (ar.is_locked && me.role_level !== 2) return; // گارد محلی
+
         setInput(val);
 
-        const s = socketRef.current;
-        const ar = activeRoomRef.current;
-        if (!s || !ar) return;
-
-        // تراتل ۱.۲ ثانیه‌ای
-        if (typingTimerRef.current) {
-            window.clearTimeout(typingTimerRef.current);
-            typingTimerRef.current = null;
-        }
-
+        const s = socketRef.current; if (!s) return;
         const wire = toWireRoom(ar, me.id);
         s.emit('typing.start', wire);
-
+        if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current);
         typingTimerRef.current = window.setTimeout(() => {
             s.emit('typing.stop', wire);
             typingTimerRef.current = null;
         }, 1200);
-    }, [toWireRoom, me.id]);
+    }, [me.id, me.role_level, toWireRoom]);
+    // ← refreshRoomState از اینجا حذف شد
+
+
     // در داخل ChatApp، جایگزین کنید:
     const handleSend = useCallback(async () => {
+        if (activeRoom?.is_locked && me.role_level !== 2) {
+            return; // مسدود اگر قفل است و کاربر مدیر نیست
+        }
+
         const s = socketRef.current;
         if (!activeRoom || !s) return;
 
-        // تا وقتی واقعاً وصل نشده، چیزی نفرست
+        // ⛔️ اگر قفل است و کاربر سوپرادمین نیست، اجازه‌ی ارسال نده (حتی اگر UI هنوز آپدیت نشده)
+        if (activeRoom.is_locked && me.role_level !== 2) {
+            alert('این گروه قفل است و فقط مدیر می‌تواند پیام ارسال کند.');
+            return;
+        }
+
         if (!s.connected) {
             console.warn('[FE] socket not connected yet, waiting…');
             await new Promise<void>((resolve) => s.once('connect', () => resolve()));
@@ -659,32 +1154,25 @@ function ChatApp({ me }: { me: User }) {
         const hasFile = !!file;
         if (!hasText && !hasFile) return;
 
-        // === بررسی‌های اولیه فایل ===
         if (hasFile) {
-            // 1. نوع فایل
             if (!file!.type.startsWith('image/')) {
                 alert('فقط فایل‌های تصویری مجاز هستند.');
-                return; // متوقف کردن ارسال
+                return;
             }
-
-            // 2. حجم فایل (مثال: 10MB = 10 * 1024 * 1024 bytes)
-            // فرض: uploadLimitBytes از Context یا State گرفته می‌شود
             if (file!.size > uploadLimitBytes) {
                 alert(`حجم فایل بیش از حد مجاز (${Math.floor(uploadLimitBytes / 1024 / 1024)}MB) است.`);
-                return; // متوقف کردن ارسال
+                return;
             }
         }
-        // === پایان بررسی‌های اولیه ===
 
         const wire = toWireRoom(activeRoom, me.id);
-        let messageSent = false; // پرچم برای ردیابی موفقیت ارسال
+        let messageSent = false;
+
         try {
             if (hasFile) {
                 const form = new FormData();
                 form.append('file', file!);
-                console.log('[FE] SENDING_FILE', { fileName: file!.name, fileSize: file!.size, fileType: file!.type });
                 const { data: savedImg } = await api.post(`/chat/rooms/${activeRoom.id}/messages/image`, form);
-                console.log('[FE] FILE_SENT_RESPONSE', savedImg);
                 if (savedImg?.id) {
                     const processedMessage: Message = {
                         id: savedImg.id,
@@ -698,70 +1186,78 @@ function ChatApp({ me }: { me: User }) {
                         attachment_size: savedImg.attachment_size ?? savedImg.attachmentSize ?? null,
                         created_at: (savedImg.created_at ?? savedImg.createdAt) || new Date().toISOString(),
                     };
-
-                    // ===================
-
                     setMessages(prev => {
-                        const exists = prev.some(m => m.id === processedMessage.id);
-                        if (exists) {
-                            console.log('[FE] FILE_SENT IGNORED (duplicate id)', processedMessage.id);
-                            // ممکن است بخواهید پیام را آپدیت کنید به جای رد کردن - اما برای سادگی فعلاً رد می‌کنیم
-                            // یا می‌توانید آپدیت کنید:
-                            // return prev.map(m => m.id === processedMessage.id ? processedMessage : m);
-                            return prev;
-                        }
+                        if (prev.some(m => m.id === processedMessage.id)) return prev;
                         const next = [...prev, processedMessage];
                         next.sort(byOldestFirst);
-                        console.log('[FE] FILE_SENT ADDED TO STATE', processedMessage.id);
                         return next;
                     });
                     if (isNearBottom()) requestAnimationFrame(scrollToBottom);
-                    messageSent = true; // ارسال فایل موفق بود
+                    messageSent = true;
                 }
             }
 
-
             if (hasText) {
-                console.log('[FE] SEND_MSG', { wire, text, sid: s.id });
                 const ack = await s.timeout(5000).emitWithAck('chat.message.send', { ...wire, text });
-                console.log('[FE] SEND_ACK', ack);
-                messageSent = true; // ارسال متن موفق بود
+                // اگر سرور خطای «قفل بودن اتاق» برگرداند:
+                if (ack && (ack.error === 'ROOM_LOCKED' || ack.code === 'ROOM_LOCKED')) {
+                    alert('این گروه قفل است و فقط مدیر می‌تواند پیام ارسال کند.');
+                    return;
+                }
+                messageSent = true;
             }
 
-            // فقط در صورت موفقیت در ارسال یکی از دو (یا هر دو)، ورودی‌ها را پاک کن
-            if (messageSent) {
-                setInput('');
-                setFile(null);
-            } else {
-                // اگر هیچ چیزی ارسال نشد (مثلاً فایل انتخاب شد اما API آن را رد کرد)
-                console.warn('[FE] No message was successfully sent.');
-                // ممکن است بخواهید پیامی به کاربر نمایش دهید
-            }
+            if (messageSent) { setInput(''); setFile(null); }
 
         } catch (e: any) {
-            console.error('[FE] send failed:', e);
-            // پیام خطا را به کاربر نمایش بده
-            const errorMessage = e?.response?.data?.message || 'ارسال پیام ناموفق بود.';
-            alert(errorMessage);
-            // ورودی‌ها پاک نمی‌شوند تا کاربر بتواند دوباره تلاش کند
-            // مگر اینکه خطا مربوط به متن باشد و فایل ارسال شده باشد
-            // در آن صورت ممکن است بخواهید فقط `setInput('')` را فراخوانی کنید
+            const msg = e?.response?.data?.message || e?.message || 'ارسال پیام ناموفق بود.';
+            alert(msg);
         }
-    }, [activeRoom, input, file, me.id, toWireRoom, uploadLimitBytes]); // اضافه کردن uploadLimitBytes به dependency array
+    }, [activeRoom?.is_locked, me.role_level, activeRoom, input, file, me.id, toWireRoom, uploadLimitBytes]);
 
     return (
         <Box sx={{ p: 2, height: 'calc(100vh - 64px)' }}>
+
             <Stack direction="row" spacing={2} sx={{ height: '100%' }}>
                 {/* Sidebar */}
                 <Paper elevation={0} sx={(t) => ({ ...fancyCard(t), width: 320, p: 1.25, display: 'flex', flexDirection: 'column' })}>
+                    {/* Header */}
                     <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: .5, pb: .5 }}>
                         <Stack direction="row" alignItems="center" spacing={1}>
                             <Typography fontWeight={800}>گفتگوها</Typography>
                         </Stack>
-                        <Tooltip title="شروع گفتگوی خصوصی">
-                            <IconButton size="small" onClick={() => setOpenNewDm(true)}><AddRoundedIcon fontSize="small" /></IconButton>
-                        </Tooltip>
+
+                        {/* دکمه ساخت DM فقط در تب خصوصی */}
+                        {tab === 'DIRECT' && (
+                            <Tooltip title="شروع گفتگوی خصوصی">
+                                <IconButton size="small" onClick={() => setOpenNewDm(true)}>
+                                    <AddRoundedIcon fontSize="small" />
+                                </IconButton>
+                            </Tooltip>
+                        )}
                     </Stack>
+
+                    {/* ⬇️ تب‌ها */}
+                    <Tabs
+                        value={tab}
+                        onChange={(_, v) => setTab(v)}
+                        variant="fullWidth"
+                        sx={{ mb: 1 }}
+                    >
+                        <Tab
+                            value="GROUPS"
+                            label="گروه‌ها"
+                            icon={<GroupsRoundedIcon fontSize="small" />}
+                            iconPosition="start"
+                        />
+                        <Tab
+                            value="DIRECT"
+                            label="خصوصی"
+                            icon={<PersonRoundedIcon fontSize="small" />}
+                            iconPosition="start"
+                        />
+                    </Tabs>
+
 
                     <TextField
                         size="small"
@@ -776,7 +1272,7 @@ function ChatApp({ me }: { me: User }) {
 
                     <Box sx={{ overflowY: 'auto', flex: 1, pr: .5 }}>
                         <List dense>
-                            {rooms
+                            {shownRooms
                                 .filter(r => (roomTitle(r) || '').includes(searchQ))
                                 .map(r => {
                                     const selected = r.id === activeRoomId;
@@ -806,103 +1302,213 @@ function ChatApp({ me }: { me: User }) {
                                     );
                                 })}
                         </List>
+
                     </Box>
                 </Paper>
 
                 {/* Main */}
                 <Paper elevation={0} sx={(t) => ({ ...fancyCard(t), flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' })}>
+
                     {/* Header */}
                     <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 1.25 }}>
-                        <Stack direction="row" spacing={1} alignItems="center">
+                        <Stack direction="row" spacing={1.5} alignItems="center" minWidth={0}>
                             {activeRoom?.type === 'DIRECT' ? <PersonRoundedIcon /> : <GroupsRoundedIcon />}
-                            <Typography fontWeight={900}>{activeRoom ? roomTitle(activeRoom) : '—'}</Typography>
-                            {activeRoom && (<Chip size="small" label={activeRoom.type === 'DIRECT' ? 'خصوصی' : 'گروهی'} />)}
+                            <Box>
+                                <Typography fontWeight={900} noWrap>{activeRoom ? roomTitle(activeRoom) : '—'}</Typography>
+
+                                {activeRoom && activeRoom.type !== 'DIRECT' && (
+                                    <Button
+                                        size="small"
+                                        onClick={handleOpenMembersDialog}
+                                        sx={{ p: 0, color: 'text.secondary', textTransform: 'none', textAlign: 'left', justifyContent: 'flex-start' }}
+                                    >
+                                        {presence.length} نفر حاضر
+                                    </Button>
+                                )}
+                            </Box>
                         </Stack>
-                        <Tooltip title={`حداکثر آپلود: ${Math.floor(uploadLimitBytes / 1024 / 1024)}MB`}>
-                            <InfoOutlinedIcon sx={{ opacity: .7 }} />
-                        </Tooltip>
+
+                        <Stack direction="row" spacing={1} alignItems="center">
+                            {me.role_level === 2 && activeRoom && activeRoom.type !== 'DIRECT' && (
+                                <Tooltip title={activeRoom.is_locked ? 'باز کردن گروه' : 'قفل کردن گروه'}>
+                                    <IconButton onClick={handleToggleLock} size="small">
+                                        {activeRoom.is_locked ? <LockRoundedIcon color="warning" /> : <LockOpenRoundedIcon />}
+                                    </IconButton>
+                                </Tooltip>
+                            )}
+
+                            {/* دکمهٔ جستجوی پیام‌ها */}
+                            <Tooltip title="جستجوی پیام‌ها">
+                                <IconButton
+                                    size="small"
+                                    onClick={() => {
+                                        setMsgSearchOpen(true);
+                                        setMsgSearchResults([]);
+                                        setMsgSearchBeforeId(undefined);
+                                    }}
+                                >
+                                    <SearchRoundedIcon />
+                                </IconButton>
+                            </Tooltip>
+
+                            <Tooltip title={`حداکثر آپلود: ${Math.floor(uploadLimitBytes / 1024 / 1024)}MB`}>
+                                <InfoOutlinedIcon sx={{ opacity: .7 }} />
+                            </Tooltip>
+                        </Stack>
                     </Stack>
-                    <Divider />
+
+                    {/* 🔶 بنر پیامِ پین‌شده زیر هدر */}
+                    {pinnedMsg && (
+                        <Box
+                            sx={(t) => ({
+                                mx: 1.25, mb: 1, p: 1,
+                                borderRadius: 2,
+                                border: '1px dashed',
+                                borderColor: alpha(t.palette.warning.main, .5),
+                                bgcolor: alpha(t.palette.warning.main, .08),
+                                display: 'flex', alignItems: 'center', gap: 1,
+                            })}
+                        >
+                            <Box sx={{ flex: 1, minWidth: 0, cursor: 'pointer' }} onClick={gotoPinned} title="رفتن به پیام پین‌شده">
+                                <Typography variant="caption" sx={{ fontWeight: 700 }} noWrap>
+                                    {pinnedMsg.senderName}
+                                </Typography>
+                                {pinnedMsg.text
+                                    ? <Typography variant="body2" sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{pinnedMsg.text}</Typography>
+                                    : <Typography variant="body2" color="text.secondary">[ضمیمه]</Typography>
+                                }
+                            </Box>
+                            {canPinInRoom && (
+                                <Tooltip title="برداشتن پین">
+                                    <IconButton size="small" onClick={unpinMessage}>
+                                        <CloseRoundedIcon fontSize="small" />
+                                    </IconButton>
+                                </Tooltip>
+                            )}
+                        </Box>
+                    )}
 
                     {/* Messages */}
                     <Box ref={listRef} sx={{ flex: 1, overflowY: 'auto', p: 2 }}>
                         {fetchingMsgs && !messages.length ? (
-                            <Box sx={{ display: 'grid', placeItems: 'center', height: '100%' }}><CircularProgress size={24} /></Box>
+                            <Box sx={{ display: 'grid', placeItems: 'center', height: '100%' }}>
+                                <CircularProgress size={24} />
+                            </Box>
                         ) : (
                             <Stack spacing={1}>
-                                {/* Messages */}
-                                <Box ref={listRef} sx={{ flex: 1, overflowY: 'auto', p: 2 }}>
-                                    {fetchingMsgs && !messages.length ? (
-                                        <Box sx={{ display: 'grid', placeItems: 'center', height: '100%' }}><CircularProgress size={24} /></Box>
-                                    ) : (
-                                        <Stack spacing={1}>
-                                            {messages.map(m => {
-                                                const mine = m.sender_id === me.id;
-                                                const isFile = !!m.attachment_url || m.kind !== 'TEXT';
-                                                console.log('[FE] RENDER_MSG_DEBUG', { id: m.id, isFile, kind: m.kind, attachment_url: m.attachment_url, text: m.text }); // <-- لاگ اضافی
-                                                return (
-                                                    <Box key={m.id} sx={{ display: 'flex', justifyContent: mine ? 'flex-start' : 'flex-end' }}>
-                                                        <Paper
-                                                            elevation={0}
-                                                            sx={(t) => ({
-                                                                maxWidth: '72%',
-                                                                p: 1,
-                                                                borderRadius: mine ? '12px 12px 12px 4px' : '12px 12px 4px 12px',
-                                                                bgcolor: mine ? alpha(t.palette.primary.main, .10) : alpha(t.palette.text.primary, .06),
-                                                                border: '1px solid',
-                                                                borderColor: mine ? alpha(t.palette.primary.main, .35) : 'divider',
-                                                            })}
-                                                        >
-                                                            <Stack spacing={.5}>
-                                                                {/* نمایش نام فرستنده - فقط برای پیام‌های دیگران */}
-                                                                {!mine && (
-                                                                    <Typography variant="caption" color="text.secondary" fontWeight="bold">
-                                                                        {m.senderName || `کاربر #${m.sender_id}`}
-                                                                    </Typography>
-                                                                )}
-                                                                {/* بخش render پیام‌ها - داخل Stack */}
-                                                                {isFile ? (
-                                                                    <>
-                                                                        {/* بررسی نمایش عکس */}
-                                                                        {(m.kind === 'IMAGE' || (m.attachment_mime && m.attachment_mime.startsWith('image/'))) ? (
-                                                                            <Box sx={{ my: 0.5 }}>
-                                                                                <img src={absolutize(m.attachment_url)!} alt="" style={{ maxWidth: 280, borderRadius: 8 }} />
-                                                                            </Box>
-                                                                        ) : (
-                                                                            <a href={absolutize(m.attachment_url)!} target="_blank" rel="noreferrer">دانلود فایل</a>
-                                                                        )}
+                                {messages.map((m) => {
+                                    const mine = m.sender_id === me.id;
+                                    const isFile = !!m.attachment_url || m.kind !== 'TEXT';
+                                    return (
+                                        <Box
+                                            key={m.id}
+                                            ref={bindMsgRef(m.id)}
+                                            sx={{
+                                                display: 'flex',
+                                                justifyContent: mine ? 'flex-start' : 'flex-end',
+                                                transition: 'box-shadow .2s, outline-color .2s, background-color .2s',
+                                                outline: m.id === highlightedMsgId ? '2px solid' : '2px solid transparent',
+                                                outlineColor: m.id === highlightedMsgId ? alpha(theme.palette.warning.main, .8) : 'transparent',
+                                                borderRadius: 2,
+                                            }}
+                                        >
+                                            <Paper
+                                                elevation={0}
+                                                onClick={(e) => {
+                                                    if (!canPinInRoom) return;
+                                                    const el = e.target as HTMLElement;
+                                                    // اگر روی عنصر تعاملی کلیک شده، دیالوگ باز نشه
+                                                    if (el.closest('a, button, input, textarea, select, img, video, audio')) return;
+                                                    openPinDialog(m);
+                                                }}
+                                                sx={(t) => ({
+                                                    position: 'relative',
+                                                    maxWidth: '72%',
+                                                    p: 1,
+                                                    borderRadius: (m.sender_id === me.id)
+                                                        ? '12px 12px 12px 4px'
+                                                        : '12px 12px 4px 12px',
+                                                    bgcolor: (m.sender_id === me.id)
+                                                        ? alpha(t.palette.primary.main, .10)
+                                                        : alpha(t.palette.text.primary, .06),
+                                                    border: '1px solid',
+                                                    borderColor: (m.sender_id === me.id)
+                                                        ? alpha(t.palette.primary.main, .35)
+                                                        : 'divider',
+                                                    cursor: canPinInRoom ? 'pointer' : 'default',
+                                                })}
+                                            >
 
-                                                                        {/* فقط وقتی متن داره و خالی نیست نمایش بده */}
-                                                                        {m.text && m.text.trim() !== '' && (
-                                                                            <Typography sx={{ whiteSpace: 'pre-wrap' }}>{m.text}</Typography>
-                                                                        )}
-                                                                    </>
-                                                                ) : (
-                                                                    <Typography sx={{ whiteSpace: 'pre-wrap' }}>{m.text}</Typography>
-                                                                )}
-                                                                <Stack direction="row" alignItems="center" spacing={0.75} justifyContent="flex-end">
-                                                                    <Typography variant="caption" color="text.secondary" dir="ltr">
-                                                                        {new Date(m.created_at).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })}
-                                                                    </Typography>
+                                                {/* 🎯 دکمهٔ Pin/Unpin روی هر پیام */}
+                                                {canPinInRoom && (
+                                                    <Box sx={{
+                                                        position: 'absolute',
+                                                        top: 6,
+                                                        [mine ? 'left' : 'right']: 6,
+                                                    }}>
+                                                        <Tooltip title={pinnedMsg?.id === m.id ? 'برداشتن پین' : 'پین کردن'}>
+                                                            <IconButton
+                                                                size="small"
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    if (pinnedMsg?.id === m.id) unpinMessage();
+                                                                    else pinMessage(m);
+                                                                }}
+                                                            >
 
-                                                                    {/* ✅ نمایش تیک فقط برای پیام‌های خودم */}
-                                                                    {m.sender_id === me.id && (
-                                                                        isReadByOtherThanSender(m)
-                                                                            ? <DoneAllRoundedIcon sx={{ fontSize: 16, color: 'primary.main' }} />
-                                                                            : <DoneRoundedIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
-                                                                    )}
-
-
-                                                                </Stack>
-
-                                                            </Stack>
-                                                        </Paper>
+                                                            </IconButton>
+                                                        </Tooltip>
                                                     </Box>
-                                                );
-                                            })}
-                                        </Stack>
-                                    )}
-                                </Box>
+                                                )}
+
+                                                <Stack spacing={.5}>
+                                                    {/* نام فرستنده برای پیام‌های دیگران */}
+                                                    {!mine && (
+                                                        <Typography variant="caption" color="text.secondary" fontWeight="bold">
+                                                            {m.senderName || `کاربر #${m.sender_id}`}
+                                                        </Typography>
+                                                    )}
+
+                                                    {/* متن/فایل */}
+                                                    {isFile ? (
+                                                        <>
+                                                            {(m.kind === 'IMAGE' || (m.attachment_mime && m.attachment_mime.startsWith('image/'))) ? (
+                                                                <Box sx={{ my: 0.5 }}>
+                                                                    <img
+                                                                        src={absolutize(m.attachment_url)!}
+                                                                        alt=""
+                                                                        style={{ maxWidth: 280, borderRadius: 8 }}
+                                                                    />
+                                                                </Box>
+                                                            ) : (
+                                                                <a href={absolutize(m.attachment_url)!} target="_blank" rel="noreferrer">
+                                                                    دانلود فایل
+                                                                </a>
+                                                            )}
+                                                            {m.text && m.text.trim() !== '' && (
+                                                                <Typography sx={{ whiteSpace: 'pre-wrap' }}>{m.text}</Typography>
+                                                            )}
+                                                        </>
+                                                    ) : (
+                                                        <Typography sx={{ whiteSpace: 'pre-wrap' }}>{m.text}</Typography>
+                                                    )}
+
+                                                    {/* زمان + تیک‌ها */}
+                                                    <Stack direction="row" alignItems="center" spacing={0.75} justifyContent="flex-end">
+                                                        <Typography variant="caption" color="text.secondary" dir="ltr">
+                                                            {new Date(m.created_at).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })}
+                                                        </Typography>
+                                                        {m.sender_id === me.id && (
+                                                            isReadByOtherThanSender(m)
+                                                                ? <DoneAllRoundedIcon sx={{ fontSize: 16, color: 'primary.main' }} />
+                                                                : <DoneRoundedIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
+                                                        )}
+                                                    </Stack>
+                                                </Stack>
+                                            </Paper>
+                                        </Box>
+                                    );
+                                })}
                             </Stack>
                         )}
                     </Box>
@@ -916,58 +1522,64 @@ function ChatApp({ me }: { me: User }) {
 
                     {/* input */}
                     <Divider />
-                    <Stack direction="row" spacing={1} sx={{ p: 1.25 }}>
-                        <input
-                            id="chat-file"
-                            type="file"
-                            hidden
-                            accept="image/*"
-                            onChange={(e) => {
-                                const f = e.target.files?.[0] || null;
-                                if (f && !f.type?.startsWith('image/')) {
-                                    alert('فقط تصویر مجاز است.');
-                                    e.currentTarget.value = '';
-                                    setFile(null);
-                                    return;
-                                }
-                                if (f && activeRoom && f.size > uploadLimitBytes) {
-                                    alert(`حجم تصویر بیش از حد مجاز (${Math.floor(uploadLimitBytes / 1024 / 1024)}MB) است.`);
-                                    e.currentTarget.value = '';
-                                    setFile(null);
-                                    return;
-                                }
-                                setFile(f);
-                            }}
-                        />
-                        <label htmlFor="chat-file">
-                            <Tooltip title={`ضمیمه (حداکثر ${Math.floor(uploadLimitBytes / 1024 / 1024)}MB)`}>
-                                <IconButton component="span"><AttachFileRoundedIcon /></IconButton>
+                    <Box sx={{ position: 'relative' }}>
+                        {isInputDisabled && (
+                            <Tooltip title={disabledTooltip}>
+                                <Box sx={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', zIndex: 2, cursor: 'not-allowed' }} />
                             </Tooltip>
-                        </label>
-                        <TextField
-                            fullWidth size="small" placeholder="بنویسید..."
-                            value={input}
-                            onChange={(e) => handleTyping(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
-                            }}
-                        />
-                        <Button
-                            variant="contained"
-                            endIcon={<SendRoundedIcon />}
-                            onClick={handleSend}
+                        )}
+                        <Stack direction="row" spacing={1} sx={{ p: 1.25, opacity: isInputDisabled ? 0.6 : 1 }}>
+                            {/* ... همان ورودی/ارسال قبلی ... */}
+                        </Stack>
+                    </Box>
 
-                        >
-                            ارسال
-                        </Button>
-                    </Stack>
                     {file && (
                         <Stack direction="row" alignItems="center" spacing={1} sx={{ px: 2, pb: 1 }}>
                             <Chip label={`${file.name} — ${(file.size / 1024 / 1024).toFixed(1)}MB`} onDelete={() => setFile(null)} deleteIcon={<CloseRoundedIcon />} />
                         </Stack>
                     )}
                 </Paper>
+
+
             </Stack>
+            <Dialog
+                open={pinDlgOpen}
+                onClose={() => { setPinDlgOpen(false); setPinDlgTarget(null); }}
+                maxWidth="xs"
+                fullWidth
+            >
+                <DialogTitle>پین کردن پیام</DialogTitle>
+                <DialogContent dividers>
+                    {pinDlgTarget ? (
+                        <Stack spacing={1}>
+                            <Typography variant="subtitle2">{pinDlgTarget.senderName}</Typography>
+                            {pinDlgTarget.text
+                                ? <Typography sx={{ whiteSpace: 'pre-wrap' }}>{pinDlgTarget.text}</Typography>
+                                : <Typography color="text.secondary">[بدون متن / دارای ضمیمه]</Typography>}
+                        </Stack>
+                    ) : (
+                        <Typography color="text.secondary">پیامی انتخاب نشده است.</Typography>
+                    )}
+                </DialogContent>
+                <DialogActions>
+                    <Button
+                        onClick={() => { setPinDlgOpen(false); setPinDlgTarget(null); }}
+                        disabled={pinDlgLoading}
+                    >
+                        انصراف
+                    </Button>
+
+                    <Button
+                        variant="contained"
+                        color={(pinnedMsg && pinDlgTarget?.id === pinnedMsg.id) ? 'warning' : 'primary'}
+                        onClick={handlePinConfirm}
+                        disabled={!pinDlgTarget || pinDlgLoading}
+                    >
+                        {(pinnedMsg && pinDlgTarget?.id === pinnedMsg.id) ? 'برداشتن پین' : 'پین'}
+                        {pinDlgLoading && <CircularProgress size={16} sx={{ ml: 1 }} />}
+                    </Button>
+                </DialogActions>
+            </Dialog>
 
             {/* دیالوگ DM */}
             <Dialog open={openNewDm} onClose={() => setOpenNewDm(false)} maxWidth="xs" fullWidth>
@@ -1021,7 +1633,114 @@ function ChatApp({ me }: { me: User }) {
                     <Button onClick={() => setReadersOpen(false)}>بستن</Button>
                 </DialogActions>
             </Dialog>
+            {/* این دیالوگ جدید به انتهای JSX اضافه می‌شود */}
+            <Dialog open={isMembersDialogOpen} onClose={() => setIsMembersDialogOpen(false)} maxWidth="xs" fullWidth>
+                <DialogTitle>اعضای گروه</DialogTitle>
+                <DialogContent dividers>
+                    {loadingMembers ? (
+                        <Box sx={{ display: 'grid', placeItems: 'center', p: 4 }}>
+                            <CircularProgress />
+                        </Box>
+                    ) : (
+                        <List dense>
+                            {memberList.length > 0 ? memberList.map(member => (
+                                <ListItem key={member.id} disablePadding>
+                                    <ListItemButton>
+                                        <ListItemAvatar>
+                                            <Badge
+                                                color="success"
+                                                variant="dot"
+                                                anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                                                invisible={!presence.includes(member.id)}
+                                            >
+                                                <Avatar>{(member.full_name || '#')[0]}</Avatar>
+                                            </Badge>
+                                        </ListItemAvatar>
+                                        <ListItemText primary={member.full_name || `کاربر #${member.id}`} />
+                                    </ListItemButton>
+                                </ListItem>
+                            )) : (
+                                <Typography sx={{ p: 2, textAlign: 'center', color: 'text.secondary' }}>
+                                    عضوی یافت نشد.
+                                </Typography>
+                            )}
+                        </List>
+                    )}
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setIsMembersDialogOpen(false)}>بستن</Button>
+                </DialogActions>
+            </Dialog>
+            <Dialog open={msgSearchOpen} onClose={() => setMsgSearchOpen(false)} maxWidth="sm" fullWidth>
+                <DialogTitle>جستجوی پیام‌ها</DialogTitle>
+                <DialogContent dividers>
+                    <Stack direction="row" spacing={1} sx={{ mb: 1 }}>
+                        <TextField
+                            fullWidth size="small" label="عبارت جستجو"
+                            value={msgSearchQ}
+                            onChange={(e) => setMsgSearchQ(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') doSearchMessages(true); }}
+                        />
+                        <Button variant="contained" onClick={() => doSearchMessages(true)} disabled={!msgSearchQ.trim()}>
+                            جستجو
+                        </Button>
+                    </Stack>
+
+                    {msgSearchLoading && <Box sx={{ py: 2, textAlign: 'center' }}><CircularProgress size={20} /></Box>}
+                    {!!msgSearchErr && <Typography color="error" variant="body2">{msgSearchErr}</Typography>}
+
+                    <List dense>
+                        {msgSearchResults.map((m) => (
+                            <React.Fragment key={`sr-${m.id}`}>
+                                <ListItem
+                                    disableGutters
+                                    secondaryAction={
+                                        <Button size="small" onClick={() => {
+                                            setMsgSearchOpen(false);
+                                            if (!messagesRef.current.some(x => x.id === m.id)) {
+                                                loadUntilFound(m.id);    // اگر در لیست نبود، تاریخچه را لود کن
+                                            } else {
+                                                scrollToMessage(m.id);   // اگر بود، اسکرول و هایلایت
+                                            }
+                                        }}>
+                                            نمایش
+                                        </Button>
+                                    }
+                                >
+                                    <ListItemAvatar><Avatar>{(m.senderName || '#')[0]}</Avatar></ListItemAvatar>
+                                    <ListItemText
+                                        primary={<Typography noWrap fontWeight={700}>{m.senderName || `کاربر #${m.sender_id}`}</Typography>}
+                                        secondary={<Typography variant="caption" color="text.secondary">{new Date(m.created_at).toLocaleString('fa-IR')}</Typography>}
+                                    />
+                                </ListItem>
+                                {m.text && (
+                                    <Box sx={{ px: 7, pb: 1, color: 'text.secondary', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                        {m.text}
+                                    </Box>
+                                )}
+                                <Divider />
+                            </React.Fragment>
+                        ))}
+                        {!msgSearchLoading && !msgSearchResults.length && !!msgSearchQ.trim() && (
+                            <Typography variant="body2" color="text.secondary" sx={{ py: 2, textAlign: 'center' }}>
+                                موردی یافت نشد.
+                            </Typography>
+                        )}
+                    </List>
+
+                    {!!msgSearchResults.length && (
+                        <Box sx={{ textAlign: 'center', mt: 1 }}>
+                            <Button onClick={() => doSearchMessages(false)}>نتایج بیشتر</Button>
+                        </Box>
+                    )}
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setMsgSearchOpen(false)}>بستن</Button>
+                </DialogActions>
+            </Dialog>
+
         </Box>
+
     );
 
 

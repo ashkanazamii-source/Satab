@@ -1,4 +1,3 @@
-// src/auth/auth.module.ts
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
@@ -12,6 +11,7 @@ import { JwtStrategy } from './jwt.strategy';
 
 import { Users } from '../users/users.entity';
 import { UserModule } from '../users/users.module';
+import { ChatModule } from '../chat/chat.module';
 
 @Module({
   imports: [
@@ -28,6 +28,7 @@ import { UserModule } from '../users/users.module';
       }),
     }),
     UserModule,
+    ChatModule, // <--- این خط باید اینجا اضافه شود
   ],
   providers: [AuthService, JwtStrategy],
   controllers: [AuthController],
