@@ -23,6 +23,8 @@ import { UpdateVehicleDto } from '../dto/create-vehicle.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AclGuard } from '../acl/acl.guard';
 import { ACL } from '../acl/acl.decorator';
+import { InternalServerErrorException, Logger } from '@nestjs/common';
+import { CreateRouteDto } from '../dto/create-route.dto';
 
 @UseGuards(JwtAuthGuard, AclGuard)
 @Controller('vehicles')
@@ -47,7 +49,21 @@ export class VehiclesController {
   ) {
     return this.service.listAccessible({ userId, vehicleTypeCode, limit });
   }
+  @ACL({ roles: [1, 2, 3, 4, 5] })
+  @Get(':id/routes/current/geofence')
+  getRouteGeofenceState(@Param('id', ParseIntPipe) id: number) {
+    return this.service.getCurrentRouteGeofenceState(id);
+  }
 
+  // ژئوفنس مسیر جاری: رویدادها
+  @ACL({ roles: [1, 2, 3, 4, 5] })
+  @Get(':id/routes/current/geofence/events')
+  getRouteGeofenceEvents(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit: number,
+  ) {
+    return this.service.getCurrentRouteGeofenceEvents(id, limit);
+  }
   // لیست وسایل در زیرمجموعه کاربر جاری (درخت کامل)
   @Get()
   list(
@@ -107,6 +123,21 @@ export class VehiclesController {
   ) {
     return this.service.updateVehicleStation(vehicleId, id, dto);
   }
+  // vehicles.controller.ts
+  @ACL({ roles: [1, 2, 3, 4, 5] })
+  @Get(':id/ai/monitor')
+  getAiMonitor(@Param('id', ParseIntPipe) id: number) {
+    return this.service.getAiMonitor(id);
+  }
+
+  @ACL({ roles: [1, 2, 3, 4, 5] })
+  @Put(':id/ai/monitor')
+  setAiMonitor(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { enabled?: boolean; params?: string[] },
+  ) {
+    return this.service.setAiMonitor(id, body);
+  }
 
   @Delete(':vehicleId/stations/:id')
   async deleteStation(
@@ -134,29 +165,42 @@ export class VehiclesController {
     return this.service.deleteStation(sid, +req.user.id);
   }
 
-  // مسیر جاری و مدیریت مسیرها
+  // VehiclesController
   @Get(':id/routes/current')
-  getCurrentRoute(@Param('id', ParseIntPipe) id: number) {
-    return this.service.getCurrentRouteWithMeta(id); // { route_id, name }
+  async getCurrentRoute(@Param('id', ParseIntPipe) id: number) {
+    const cur = await this.service.getCurrentRouteWithMeta(id);
+    return cur ?? { route_id: null, name: null, threshold_m: null };
   }
+
 
   @Get(':id/routes')
   async listRoutes(@Param('id', ParseIntPipe) id: number) {
     return this.service.listVehicleRoutes(id);
   }
 
+  @ACL({ roles: [1, 2, 3, 4, 5, 6] })
   @Post(':id/routes')
   async createRouteAndAssign(
     @Req() req: any,
     @Param('id', ParseIntPipe) id: number,
-    @Body() dto: {
-      name: string;
-      threshold_m?: number;
-      points: { lat: number; lng: number; name?: string; radius_m?: number }[];
-    },
+    @Body() dto: CreateRouteDto,
   ) {
-    return this.service.createRouteForVehicle(id, +req.user.id, dto);
+    try {
+      return await this.service.createRouteForVehicle(id, +req.user.id, dto);
+    } catch (e: any) {
+      Logger.error('createRouteAndAssign failed', e?.stack || e);
+      throw new InternalServerErrorException(e?.message || 'Create route failed');
+    }
   }
+  // VehiclesController
+  @ACL({ roles: [1, 2, 3, 4, 5] })
+  @Get(':id/routes/current/stations')
+  async getCurrentRouteStations(@Req() req: any, @Param('id', ParseIntPipe) id: number) {
+    const cur = await this.service.getCurrentRouteWithMeta(id);
+    if (!cur?.route_id) return [];
+    return this.service.listStationsByRouteForUser(cur.route_id, +req.user.id);
+  }
+
 
   @Put(':id/routes/current')
   async setOrUpdateCurrentRoute(

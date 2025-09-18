@@ -25,6 +25,7 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { ProfilesModule } from './profiles/profiles.module'; // ✅ ۱. این خط را برای import اضافه کنید
 import { PairingModule } from './pairing/pairing.module';
+import { OtpModule } from './sms/otp.module';
 
 import { ContextMiddleware } from './common/context.middleware';
 
@@ -68,7 +69,8 @@ import { ContextMiddleware } from './common/context.middleware';
     AuditModule,
     AnalyticsModule,
     ProfilesModule,
-    PairingModule
+    PairingModule,
+    OtpModule
   ],
   providers: [
     // لاگ همهٔ درخواست‌های HTTP

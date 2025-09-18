@@ -14,6 +14,10 @@ import { Route } from './route.entity';
 import { RouteStation } from './route-station.entity';
 import { VehiclePoliciesService } from '../vehicle-policies/vehicle-policies.service';
 import { UserService } from '../users/users.service';
+import { RouteGeofenceState } from './route-geofence-state.entity';
+import { RouteGeofenceEvent } from './route-geofence-event.entity';
+import { CreateRouteDto } from 'src/dto/create-route.dto';
+import { DeepPartial } from 'typeorm';
 
 @Injectable()
 export class VehiclesService {
@@ -24,11 +28,69 @@ export class VehiclesService {
     @InjectRepository(VehiclePolicy) private readonly policyRepo: Repository<VehiclePolicy>,
     @InjectRepository(Route) private readonly routeRepo: Repository<Route>,
     @InjectRepository(RouteStation) private readonly routeStationRepo: Repository<RouteStation>,
+    @InjectRepository(RouteGeofenceState) private readonly fenceStateRepo: Repository<RouteGeofenceState>,   // ⬅️
+    @InjectRepository(RouteGeofenceEvent) private readonly fenceEventRepo: Repository<RouteGeofenceEvent>,   // ⬅️
     private readonly ds: DataSource,
     private readonly gw: VehiclesGateway,
     private readonly vehiclePolicies: VehiclePoliciesService,
-    private readonly users: UserService, // اگر متود ancestor داری
+    private readonly users: UserService,
   ) { }
+
+  private routeCache = new Map<number, { points: { lat: number; lng: number }[], threshold_m: number }>();
+  private toMeters(latRef: number, lat: number, lng: number) {
+    const mPerDegLat = 111_320;                 // ~
+    const mPerDegLng = 111_320 * Math.cos(latRef * Math.PI / 180);
+    return { x: lng * mPerDegLng, y: lat * mPerDegLat };
+  }
+
+  private distPointToSegmentMeters(p: { lat: number; lng: number }, a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
+    // پروژه محلی روی صفحه (equirectangular around segment)
+    const latRef = (a.lat + b.lat) / 2;
+    const P = this.toMeters(latRef, p.lat, p.lng);
+    const A = this.toMeters(latRef, a.lat, a.lng);
+    const B = this.toMeters(latRef, b.lat, b.lng);
+
+    const ABx = B.x - A.x, ABy = B.y - A.y;
+    const APx = P.x - A.x, APy = P.y - A.y;
+    const ab2 = ABx * ABx + ABy * ABy || 1e-9;
+    let t = (APx * ABx + APy * ABy) / ab2;
+    t = Math.max(0, Math.min(1, t));
+    const Cx = A.x + t * ABx, Cy = A.y + t * ABy;
+    const dx = P.x - Cx, dy = P.y - Cy;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  private async loadRoutePolyline(routeId: number) {
+    let cached = this.routeCache.get(routeId);
+    if (cached) return cached;
+    const r = await this.routeRepo.findOne({ where: { id: routeId }, select: ['id', 'threshold_m'] });
+    if (!r) return null;
+    const pts = await this.routeStationRepo.find({
+      where: { route: { id: routeId } },
+      order: { order_no: 'ASC', id: 'ASC' },
+      select: ['lat', 'lng'],
+    });
+    if (pts.length < 2) return null;
+    cached = { points: pts, threshold_m: Math.max(1, r.threshold_m || 60) };
+    this.routeCache.set(routeId, cached);
+    return cached;
+  }
+
+  private invalidateRouteCache(routeId: number) {
+    this.routeCache.delete(routeId);
+  }
+  private minDistanceToRouteMeters(poly: { points: { lat: number; lng: number }[], threshold_m: number }, lat: number, lng: number) {
+    let best = Number.POSITIVE_INFINITY;
+    let bestIdx = -1;
+    const p = { lat, lng };
+    const pts = poly.points;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const d = this.distPointToSegmentMeters(p, pts[i], pts[i + 1]);
+      if (d < best) { best = d; bestIdx = i; }
+    }
+    return { distance_m: best, segment_index: bestIdx, inside: best <= poly.threshold_m, threshold_m: poly.threshold_m };
+  }
+
 
   // vehicles.service.ts
   async listStationsByVehicleForUser(vehicleId: number, _currentUserId: number) {
@@ -37,7 +99,6 @@ export class VehiclesService {
       order: { id: 'ASC' },
     });
   }
-  p// vehicles.service.ts (داخل کلاس VehiclesService)
 
   private async getUserRoleLevel(userId: number): Promise<number | null> {
     try {
@@ -71,25 +132,21 @@ export class VehiclesService {
     currentUserId: number,
     dto: { name: string; lat: number; lng: number; radius_m?: number }
   ) {
-    // 1) اجازه‌ی افزودن ایستگاه
     if (!(await this.canUserAddStations(currentUserId))) {
       throw new ForbiddenException('adding stations is not allowed');
     }
 
-    // 2) گرفتن مالک وسیله بدون selectِ ستون اشتباه
+    // فقط owner_user_id لازم داریم
     const veh = await this.repo.findOne({
       where: { id: vehicleId },
-      relations: ['owner_user'],   // ⬅️ رلیشن را لود کن
-      select: ['id'],              // فقط id خود Vehicle کافی است
+      relations: { owner_user: true },
+      select: { id: true, owner_user: { id: true } },
     });
     if (!veh) throw new NotFoundException('vehicle not found');
-    const ownerId = veh.owner_user?.id;
-    if (!ownerId) throw new NotFoundException('vehicle owner not found');
 
-    // 3) ساخت ایستگاه
     const st = this.stationRepo.create({
       vehicle_id: vehicleId,
-      owner_user_id: Number(ownerId),
+      owner_user_id: Number(veh.owner_user?.id),          // ✅ از رلیشن بگیر
       name: (dto.name ?? 'ایستگاه').trim(),
       lat: +dto.lat,
       lng: +dto.lng,
@@ -97,11 +154,22 @@ export class VehiclesService {
     });
 
     const saved = await this.stationRepo.save(st);
-
-    // 4) برادکست
-    this.gw.emitStationsChanged(vehicleId, Number(ownerId), { type: 'created', station: saved });
-
+    this.gw.emitStationsChanged(vehicleId, Number(veh.owner_user?.id), { type: 'created', station: saved });
     return saved;
+  }
+
+  // vehicles.service.ts
+  async getAiMonitor(vehicleId: number) {
+    const defaults = await this.getEffectiveOptions(vehicleId).catch(() => []);
+    return { enabled: true, params: defaults }; // موقت
+  }
+
+  async setAiMonitor(
+    vehicleId: number,
+    body: { enabled?: boolean; params?: string[] },
+  ) {
+    // TODO: بعداً پرسیستنس بده
+    return this.getAiMonitor(vehicleId);
   }
 
 
@@ -123,7 +191,7 @@ export class VehiclesService {
   }
   async ingestVehicleTelemetry(
     vehicleId: number,
-    data: { ignition?: boolean; idle_time?: number; odometer?: number; ts?: string }
+    data: { ignition?: boolean; idle_time?: number; odometer?: number; engine_temp?: number; ts?: string }
   ) {
     const ts = data.ts ? new Date(data.ts) : new Date();
 
@@ -132,7 +200,7 @@ export class VehiclesService {
       this.gw.emitIgnition(vehicleId, data.ignition, ts.toISOString());
     }
 
-    const patch: any = {}; // ⬅️ last_telemetry_at حذف شد
+    const patch: any = {};
     if (data.idle_time !== undefined) {
       patch.idle_time_sec = data.idle_time;
       this.gw.emitIdle(vehicleId, data.idle_time, ts.toISOString());
@@ -142,10 +210,35 @@ export class VehiclesService {
       this.gw.emitOdometer(vehicleId, data.odometer, ts.toISOString());
     }
 
+
     if (Object.keys(patch).length) {
       await this.repo.update({ id: vehicleId }, patch);
     }
   }
+
+  async readVehicleTelemetry(vehicleId: number, keys: string[] = []) {
+    const out: any = {};
+    const v = await this.repo.findOne({
+      where: { id: vehicleId },
+      relations: { owner_user: true },
+      select: { id: true, vehicle_type_code: true, owner_user: { id: true } },
+    });
+    if (!v) throw new NotFoundException('Vehicle not found');
+
+    const pol = await this.policyRepo.findOne({
+      where: { user_id: Number(v.owner_user?.id), vehicle_type_code: v.vehicle_type_code },
+    });
+
+    if (!v) return out;
+
+    if (!keys.length || keys.includes('ignition')) out.ignition = v.ignition ?? null;
+    if (!keys.length || keys.includes('idle_time')) out.idle_time = v.idle_time_sec ?? null;
+    if (!keys.length || keys.includes('odometer')) out.odometer = v.odometer_km ?? null;
+    if (!keys.length || keys.includes('engine_on_duration')) out.engine_on_duration = v.ignition_on_sec_since_reset ?? 0;
+
+    return out;
+  }
+
 
   // vehicles.service.ts
   async updateVehicleStation(vehicleId: number, id: number, dto: { name?: string; radius_m?: number; lat?: number; lng?: number }) {
@@ -165,12 +258,12 @@ export class VehiclesService {
   }
 
   async deleteVehicleStation(vehicleId: number, id: number, actorUserId?: number) {
-    // اگر actor می‌دهی، دسترسی را چک کن
     if (actorUserId != null) {
       const owners = await this.getAllowedOwnerIds(actorUserId);
       const veh = await this.repo.findOne({
-        where: { id: vehicleId, owner_user_id: In(owners) as any },
-        select: ['id', 'owner_user_id'],
+        where: { id: vehicleId, owner_user: { id: In(owners) as any } },   // ✅ رابطه‌ای
+        relations: { owner_user: true },
+        select: { id: true, owner_user: { id: true } },                    // ✅ nested select
       });
       if (!veh) throw new NotFoundException('vehicle not found or not accessible');
     }
@@ -181,6 +274,7 @@ export class VehiclesService {
     await this.stationRepo.delete(id);
     this.gw.emitStationsChanged(st.vehicle_id, st.owner_user_id, { type: 'deleted', station_id: id });
   }
+
 
 
 
@@ -205,33 +299,77 @@ export class VehiclesService {
     } as any);
   }
 
+  private async checkRouteGeofence(vehicleId: number, lat: number, lng: number, when: Date) {
+    // مسیر جاری وسیله
+    const v = await this.repo.findOne({ where: { id: vehicleId }, select: ['id', 'current_route_id'] });
+    const routeId = v?.current_route_id ?? null;
+    if (!routeId) return;
 
+    // پلی‌لاین + threshold
+    const poly = await this.loadRoutePolyline(routeId);
+    if (!poly) return; // مسیر ناقص
 
-  // vehicles.service.ts
-  async readVehicleTelemetry(vehicleId: number, keys: string[] = []) {
-    const out: any = {};
+    // حداقل فاصله تا مسیر
+    const res = this.minDistanceToRouteMeters(poly, lat, lng);
 
-    const v = await this.repo.findOne({
-      where: { id: vehicleId },
-      // 👇 حتماً id را هم انتخاب کن تا TypeORM //DISTINCT...ORDER BY Vehicle_id// نسازه و خطا نده
-      select: ['id', 'ignition', 'idle_time_sec', 'odometer_km', 'ignition_on_sec_since_reset'],
+    // state قبلی
+    let st = await this.fenceStateRepo.findOne({
+      where: { vehicle_id: vehicleId, route_id: routeId }
     });
 
-    if (!v) return out;
+    if (!st) {
+      // اولین بار state می‌سازیم (رویداد enter/exit لازم نیست)
+      st = this.fenceStateRepo.create({
+        vehicle_id: vehicleId,
+        route_id: routeId,
+        inside: res.inside,
+        last_distance_m: res.distance_m,
+        last_segment_index: res.segment_index,
+        last_changed_at: when,
+      });
+      await this.fenceStateRepo.save(st);
+      return;
+    }
 
-    if (!keys.length || keys.includes('ignition')) out.ignition = v.ignition ?? null;
-    if (!keys.length || keys.includes('idle_time')) out.idle_time = v.idle_time_sec ?? null;
-    if (!keys.length || keys.includes('odometer')) out.odometer = v.odometer_km ?? null;
-    if (!keys.length || keys.includes('engine_on_duration'))
-      out.engine_on_duration = v.ignition_on_sec_since_reset ?? 0;
+    // تغییر وضعیت؟
+    const changed = st.inside !== res.inside;
 
-    return out;
+    st.inside = res.inside;
+    st.last_distance_m = res.distance_m;
+    st.last_segment_index = res.segment_index;
+    if (changed) st.last_changed_at = when;
+    await this.fenceStateRepo.save(st);
+
+    if (changed) {
+      const ev = this.fenceEventRepo.create({
+        vehicle_id: vehicleId,
+        route_id: routeId,
+        type: res.inside ? 'enter' : 'exit',
+        distance_m: res.distance_m,
+        segment_index: res.segment_index,
+        lat, lng,
+      });
+      await this.fenceEventRepo.save(ev);
+
+      // برادکست اختیاری
+      (this.gw as any)?.emitRouteGeofence?.(vehicleId, {
+        route_id: routeId,
+        type: ev.type,
+        at: ev.at,
+        distance_m: ev.distance_m,
+        segment_index: ev.segment_index,
+        lat, lng,
+        threshold_m: res.threshold_m,
+      });
+    }
   }
+
 
 
   async ingestVehiclePos(vehicleId: number, lat: number, lng: number, ts?: string) {
     const when = ts ? new Date(ts) : new Date();
     await this.trackRepo.insert({ vehicle_id: vehicleId, lat, lng, ts: when });
+    await this.checkRouteGeofence(vehicleId, lat, lng, when); // ⬅️ اضافه شد
 
     // اگر در جدول vehicles ستون‌های last_location داری:
     await this.repo.update({ id: vehicleId }, {
@@ -405,35 +543,21 @@ export class VehiclesService {
     return rows.map((r: any) => Number(r.id));
   }
 
-  async list(params: {
-    currentUserId?: number;
-    owner_user_id?: number;
-    country_code?: string;
-    vehicle_type_code?: string;
-    page?: number;
-    limit?: number;
-  }) {
-    const {
-      currentUserId,
-      owner_user_id,
-      country_code,
-      vehicle_type_code,
-      page = 1,
-      limit = 20,
-    } = params;
+  async list(params: { currentUserId?: number; owner_user_id?: number; country_code?: string; vehicle_type_code?: string; page?: number; limit?: number; }) {
+    const { currentUserId, owner_user_id, country_code, vehicle_type_code, page = 1, limit = 20 } = params;
 
-    // ⚠️ مهم: روی relation فیلتر کن تا خطای "owner_user_id not found" نخوریم
-    const qb = this.repo
-      .createQueryBuilder('v')
-      .leftJoin('v.owner_user', 'ou')
-      .orderBy('v.id', 'DESC');
+    const qb = this.repo.createQueryBuilder('v').leftJoin('v.owner_user', 'ou').orderBy('v.id', 'DESC');
 
     if (owner_user_id != null) {
       qb.andWhere('ou.id = :owner_user_id', { owner_user_id: Number(owner_user_id) });
     } else if (currentUserId) {
-      const ids = await this.getSubtreeUserIds(currentUserId);
-      if (ids.length) qb.andWhere('ou.id IN (:...ids)', { ids });
-      else qb.andWhere('1=0');
+      // ⬇️ منیجر: هیچ محدودیتی
+      const role = await this.getUserRoleLevel(currentUserId);
+      if (role !== 1) {
+        const ids = await this.getSubtreeUserIds(currentUserId);
+        if (ids.length) qb.andWhere('ou.id IN (:...ids)', { ids });
+        else qb.andWhere('1=0');
+      }
     }
 
     if (country_code) qb.andWhere('v.country_code = :country_code', { country_code });
@@ -443,31 +567,23 @@ export class VehiclesService {
 
     const [items, total] = await qb.getManyAndCount();
 
-    // ===== ایستگاه‌ها را برای همه‌ی وسایل با یک کوئری بگیر و ضمیمه کن
-    const vehIds = items.map(v => v.id);  // ⬅️ قبلاً const ids بود
+    const vehIds = items.map(v => v.id);
     let itemsWithStations: any[] = items.map(v => ({ ...v, stations: [] }));
 
     if (vehIds.length) {
-      const stRows = await this.stationRepo.find({
-        where: { vehicle_id: In(vehIds) as any },
-        order: { id: 'ASC' },
-      });
-
+      const stRows = await this.stationRepo.find({ where: { vehicle_id: In(vehIds) as any }, order: { id: 'ASC' } });
       const byVid = new Map<number, any[]>();
       for (const s of stRows) {
         const arr = byVid.get(s.vehicle_id) || [];
         arr.push(s);
         byVid.set(s.vehicle_id, arr);
       }
-
-      itemsWithStations = items.map(v => ({
-        ...v,
-        stations: byVid.get(v.id) || [],
-      }));
+      itemsWithStations = items.map(v => ({ ...v, stations: byVid.get(v.id) || [] }));
     }
 
     return { items: itemsWithStations, total, page, limit };
   }
+
 
   /////////////////////////////////////////////////////////////////////////////////////////////////////
   async getCurrentRouteWithMeta(vehicleId: number) {
@@ -492,13 +608,55 @@ export class VehiclesService {
     }
 
     if (body.threshold_m != null) {
-      const rid = body.route_id ?? v.current_route_id;
-      if (rid) {
+      const rid = (body.route_id ?? v.current_route_id) ?? null;
+      if (rid != null) {
+        this.invalidateRouteCache(rid);
         await this.routeRepo.update({ id: rid }, { threshold_m: body.threshold_m });
       }
     }
 
+
     return this.getCurrentRouteWithMeta(vehicleId);
+  }
+  async getCurrentRouteGeofenceState(vehicleId: number) {
+    const v = await this.repo.findOne({ where: { id: vehicleId }, select: ['id', 'current_route_id'] });
+    if (!v?.current_route_id) return { active: false };
+
+    // اگر آخرین لوکیشن ذخیره شده داری، فاصله لحظه‌ای را هم برگردانیم (اختیاری)
+    const poly = await this.loadRoutePolyline(v.current_route_id);
+    let live: any = null;
+    try {
+      const vv = await this.repo.findOne({
+        where: { id: vehicleId },
+        select: ['id'] as any,
+        // @ts-ignore: فیلدها ممکن است در entity تایپ نشده باشند
+      }) as any;
+      if ((vv as any).last_location_lat != null && (vv as any).last_location_lng != null && poly) {
+        live = this.minDistanceToRouteMeters(poly, (vv as any).last_location_lat, (vv as any).last_location_lng);
+      }
+    } catch { }
+
+    const st = await this.fenceStateRepo.findOne({ where: { vehicle_id: vehicleId, route_id: v.current_route_id } });
+    return {
+      active: true,
+      route_id: v.current_route_id,
+      inside: st?.inside ?? null,
+      last_changed_at: st?.last_changed_at ?? null,
+      last_distance_m: st?.last_distance_m ?? live?.distance_m ?? null,
+      last_segment_index: st?.last_segment_index ?? live?.segment_index ?? null,
+      threshold_m: poly?.threshold_m ?? null,
+    };
+  }
+
+  async getCurrentRouteGeofenceEvents(vehicleId: number, limit = 50) {
+    const v = await this.repo.findOne({ where: { id: vehicleId }, select: ['id', 'current_route_id'] });
+    if (!v?.current_route_id) return { items: [] };
+    const items = await this.fenceEventRepo.find({
+      where: { vehicle_id: vehicleId, route_id: v.current_route_id },
+      order: { id: 'DESC' },
+      take: Math.min(200, Math.max(1, limit)),
+    });
+    return { items };
   }
 
   async unassignCurrentRoute(vehicleId: number) {
@@ -507,100 +665,147 @@ export class VehiclesService {
   }
 
   async listVehicleRoutes(vehicleId: number) {
-    // 👈 owner_user_id را انتخاب نکن؛ relation را لود کن
     const veh = await this.repo.findOne({
       where: { id: vehicleId },
-      relations: ['owner_user'], // تا بتوانیم veh.owner_user.id را داشته باشیم
-      select: ['id'],            // فقط id لازم است
+      relations: { owner_user: true },
+      select: { id: true, owner_user: { id: true } },
     });
+    const ownerUserId = Number(veh?.owner_user?.id);
+    if (!ownerUserId) return { items: [] };
 
-    if (!veh || !veh.owner_user?.id) return { items: [] };
+    const sa = await this.users.findFirstAncestorByLevel(ownerUserId, 2).catch(() => null);
+    const ownerIds: number[] = [];
+    if (sa?.id) ownerIds.push(Number(sa.id));
+    ownerIds.push(ownerUserId); // 🔧 fallback: مسیرهایی که به نام owner ثبت شده‌اند
 
     const items = await this.routeRepo.find({
-      where: { owner_user_id: veh.owner_user.id },   // 👈 بر اساس ستون واقعی در Route
+      where: { owner_user_id: In(ownerIds) as any },
       select: ['id', 'name', 'threshold_m'],
       order: { id: 'DESC' },
     });
-
     return { items };
   }
-  // جایگزینِ قبلی:
 
 
-  // نسخه‌ی درست (استفاده از allowed owners):
-  private async routeOwnedByAllowedOwners(routeId: number, currentUserId: number) {
-    const owners = await this.getAllowedOwnerIds(currentUserId);
+
+  // قبلی: کلی شرط روی role و allowedOwners
+  private async routeAccessibleByUser(routeId: number, _currentUserId: number) {
     return this.routeRepo.findOne({
-      where: { id: routeId, owner_user_id: In(owners) as any },
-      select: ['id', 'owner_user_id', 'name', 'threshold_m'],
+      where: { id: routeId },
+      select: ['id', 'name', 'threshold_m', 'owner_user_id'],
     });
   }
 
-  async deleteRouteForUser(routeId: number, currentUserId: number) {
-    const route = await this.routeOwnedByAllowedOwners(routeId, currentUserId);
-    if (!route) throw new NotFoundException('route not found');
 
-    await this.ds.transaction(async (m) => {
-      await m.getRepository(RouteStation).delete({ route_id: routeId });
-      await m.getRepository(Vehicle).update({ current_route_id: routeId } as any, { current_route_id: null as any });
-      await m.getRepository(Route).delete({ id: routeId });
-    });
 
-    // (اختیاری) اگر نیاز داری رویداد سوکتی بدهی اینجا emit کن
+
+
+
+
+
+
+
+
+
+  private async getOwningSAId(currentUserId: number): Promise<number | null> {
+    // 1) مدیرکل: دسترسی آزاد
+    const me = await this.ds.query('select id, role_level from users where id=$1 limit 1', [currentUserId]);
+    const role = me?.[0]?.role_level ?? null;
+    if (role === 1) return null; // null = بدون فیلتر SA (global)
+
+    // 2) اگر خودش SA است، خودش مالک مسیرهای این درخت است
+    if (role === 2) return Number(me[0].id);
+
+    // 3) بقیه: SA بالاسری را پیدا کن
+    const sa = await this.users.findFirstAncestorByLevel(currentUserId, 2);
+    return sa?.id ?? null;
   }
 
 
   async createRouteForVehicle(
     vehicleId: number,
-    currentUserId: number,
-    dto: {
-      name: string;
-      threshold_m?: number;
-      points: { lat: number; lng: number; name?: string; radius_m?: number }[];
-    }
+    _currentUserId: number,              // عمداً استفاده نمی‌شود
+    dto: CreateRouteDto
   ) {
     if (!dto?.name || !Array.isArray(dto.points) || dto.points.length < 2) {
       throw new BadRequestException('name و حداقل 2 نقطه لازم است');
     }
 
-    // ⬅️ بدون select
-    const veh = await this.repo.findOne({ where: { id: vehicleId } });
+    const createdName = dto.name.trim();
+    const createdThreshold =
+      Number.isFinite(dto.threshold_m) ? Math.max(1, Math.trunc(dto.threshold_m!)) : 60;
+
+    // فقط وجود وسیله را چک می‌کنیم و owner را (اگر بود) برای route می‌نویسیم
+    const veh = await this.repo.findOne({
+      where: { id: vehicleId },
+      relations: { owner_user: true },
+      select: { id: true, owner_user: { id: true } },
+    });
     if (!veh) throw new NotFoundException('vehicle not found');
 
-    const ownerUserId = veh.owner_user_id; // ✅
+    const vehicleOwnerId = Number(veh.owner_user?.id);
+    const ownerValue: number | undefined = Number.isFinite(vehicleOwnerId)
+      ? vehicleOwnerId
+      : undefined;
 
-    const route = await this.routeRepo.save(
-      this.routeRepo.create({
-        owner_user_id: ownerUserId,
-        name: dto.name.trim(),
-        threshold_m: Number.isFinite(dto.threshold_m)
-          ? Math.max(1, Math.trunc(dto.threshold_m!))
-          : 60,
-      })
-    );
+    let createdRouteId: number | null = null;
 
-    await this.routeStationRepo.save(
-      dto.points.map((p, i) =>
-        this.routeStationRepo.create({
-          route_id: route.id,
-          order_no: i + 1,
+    await this.ds.transaction(async (m) => {
+      const routeRepo = m.getRepository(Route);
+      const routeStationRepo = m.getRepository(RouteStation);
+      const vehicleRepo = m.getRepository(Vehicle);
+
+      // 1) ساخت Route به‌صورت «تکی» (نه آرایه)
+      const routeToCreate: DeepPartial<Route> = {
+        owner_user_id: ownerValue,   // اگر ستون nullable نیست، مطمئن شو ownerValue تعریف‌شده است
+        name: createdName,
+        threshold_m: createdThreshold,
+      };
+
+      const newRoute = routeRepo.create(routeToCreate);  // <-- واضحاً تکی
+      const savedRoute = await routeRepo.save(newRoute); // <-- نوع: Promise<Route>
+      createdRouteId = Number(savedRoute.id);
+
+      // 2) ذخیرهٔ ایستگاه‌ها
+      const stations = dto.points.map((p, i) =>
+        routeStationRepo.create({
+          route: { id: savedRoute.id },          // <-- اینجا حالا قطعاً Route تکی داریم
+          order_no: (p.order_no ?? i) + 1,
           name: p.name ?? null,
           lat: +p.lat,
           lng: +p.lng,
           radius_m: p.radius_m != null ? Math.trunc(p.radius_m) : null,
         })
-      )
-    );
+      );
+      await routeStationRepo.save(stations);
 
-    await this.repo.update({ id: vehicleId }, { current_route_id: route.id });
+      // 3) بستن مسیر به ماشین
+      await vehicleRepo.update({ id: vehicleId }, { current_route_id: savedRoute.id });
+    });
 
-    return { route_id: route.id };
+    if (createdRouteId != null) this.invalidateRouteCache(createdRouteId);
+
+    return {
+      route_id: createdRouteId!,
+      name: createdName,
+      threshold_m: createdThreshold,
+    };
   }
+
+
+
+
+
+
+
+
+
+
 
 
   async getRouteStations(routeId: number) {
     return this.routeStationRepo.find({
-      where: { route_id: routeId },
+      where: { route: { id: routeId } },      // ← relation filter
       order: { order_no: 'ASC' },
     });
   }
@@ -612,11 +817,13 @@ export class VehiclesService {
     if (!Array.isArray(stations) || !stations.length) {
       throw new BadRequestException('stations خالی است');
     }
-    await this.routeStationRepo.delete({ route_id: routeId });
+    await this.routeStationRepo.delete({ route: { id: routeId } });  // 
+    this.invalidateRouteCache(routeId); // ⬅️
+
     await this.routeStationRepo.save(
       stations.map((s, i) =>
         this.routeStationRepo.create({
-          route_id: routeId,
+          route: { id: routeId },             // ←
           order_no: s.order_no ?? i + 1,
           name: s.name ?? null,
           lat: +s.lat,
@@ -629,57 +836,76 @@ export class VehiclesService {
   }
 
 
-  async listStationsByRouteForUser(routeId: number, currentUserId: number) {
-    const route = await this.routeOwnedByAllowedOwners(routeId, currentUserId);
+
+  async listStationsByRouteForUser(routeId: number, _currentUserId: number) {
+    const route = await this.routeRepo.findOne({ where: { id: routeId }, select: ['id'] });
     if (!route) throw new NotFoundException('route not found');
+
     return this.routeStationRepo.find({
-      where: { route_id: routeId },
+      where: { route: { id: routeId } },
       order: { order_no: 'ASC', id: 'ASC' },
     });
   }
 
-  async getRouteForUser(routeId: number, currentUserId: number) {
-    const route = await this.routeOwnedByAllowedOwners(routeId, currentUserId);
+
+
+  async deleteRouteForUser(routeId: number, _currentUserId: number) {
+    const route = await this.routeAccessibleByUser(routeId, 0);
     if (!route) throw new NotFoundException('route not found');
-    return route; // {id, owner_user_id, name, threshold_m}
+
+    await this.ds.transaction(async (m) => {
+      await m.getRepository(RouteStation).delete({ route: { id: routeId } });
+      await m.getRepository(Vehicle).update({ current_route_id: routeId } as any, { current_route_id: null as any });
+      await m.getRepository(Route).delete({ id: routeId });
+    });
   }
+
+  async getRouteForUser(routeId: number, _currentUserId: number) {
+    const route = await this.routeAccessibleByUser(routeId, 0);
+    if (!route) throw new NotFoundException('route not found');
+    return { id: route.id, name: route.name, threshold_m: route.threshold_m };
+  }
+
+
   async replaceRouteStationsForUser(
     routeId: number,
-    currentUserId: number,
-    stations: { order_no?: number; name?: string; lat: number; lng: number; radius_m?: number | null }[]
+    _currentUserId: number,
+    stations: { order_no?: number; name?: string; lat: number; lng: number; radius_m?: number | null }[],
   ) {
-    const route = await this.routeOwnedByAllowedOwners(routeId, currentUserId);
+    const route = await this.routeAccessibleByUser(routeId, 0);
     if (!route) throw new NotFoundException('route not found');
     return this.replaceRouteStations(routeId, stations);
   }
 
+
+
   async updateRouteForUser(
     routeId: number,
-    currentUserId: number,
+    _currentUserId: number,
     body: {
       name?: string;
       threshold_m?: number;
       stations?: { order_no?: number; name?: string; lat: number; lng: number; radius_m?: number | null }[];
     }
   ) {
-    const route = await this.routeOwnedByAllowedOwners(routeId, currentUserId);
+    const route = await this.routeAccessibleByUser(routeId, 0);
     if (!route) throw new NotFoundException('route not found');
 
     const patch: Partial<Route> = {};
     if (typeof body.name === 'string') patch.name = body.name.trim();
     if (Number.isFinite(body.threshold_m)) patch.threshold_m = Math.max(1, Math.trunc(body.threshold_m!));
+    this.invalidateRouteCache(routeId);
 
     await this.ds.transaction(async (m) => {
       if (Object.keys(patch).length) {
         await m.getRepository(Route).update({ id: routeId }, patch);
       }
       if (Array.isArray(body.stations)) {
-        // جایگزینی کامل ایستگاه‌ها
-        await m.getRepository(RouteStation).delete({ route_id: routeId });
+        await m.getRepository(RouteStation).delete({ route: { id: routeId } });
         await m.getRepository(RouteStation).save(
           body.stations.map((s, i) =>
             m.getRepository(RouteStation).create({
-              route_id: routeId,
+              route: { id: routeId },
               order_no: s.order_no ?? i + 1,
               name: s.name ?? null,
               lat: +s.lat,
@@ -693,6 +919,7 @@ export class VehiclesService {
 
     return this.routeRepo.findOne({ where: { id: routeId }, select: ['id', 'name', 'threshold_m'] });
   }
+
   private normType(s?: string) {
     return String(s || '').toLowerCase().replace(/[-_]/g, '');
   }
@@ -737,29 +964,48 @@ export class VehiclesService {
     const [items, total] = await qb.getManyAndCount();
     return { items, total, page: 1, limit };
   }
-  // vehicles.service.ts (افزودن helper)
+  // vehicles.service.ts
+
   private async getAllowedOwnerIds(userId: number): Promise<number[]> {
-    const ids = new Set<number>([userId]);
-
-    // SA والد (جدّ سطح 2) – اگر متود داری
+    const ids = new Set<number>();
+    let role: number | null = null;
     try {
-      const sa = await this.users.findFirstAncestorByLevel?.(userId, 2);
-      if (sa?.id) ids.add(Number(sa.id));
+      const r = await this.ds.query('select role_level from users where id = $1 limit 1', [userId]);
+      role = r?.[0]?.role_level ?? null;
     } catch { }
 
-    // owners از روی policyهای مجاز
-    try {
-      const pols = await this.vehiclePolicies.getForUser(userId, true).catch(() => []);
-      (pols || []).forEach((p: any) => {
-        const cand = Number(
-          p.owner_user_id ?? p.ownerId ?? p.super_admin_user_id ?? p.grantor_user_id
+    if (role === 1) {
+      // ⚠️ قبلاً فقط level=4 بود؛ الان SAها را هم اضافه می‌کنیم
+      try {
+        const rows = await this.ds.query(
+          'select id from users where role_level = ANY($1)',
+          [[2, 4]] // 2 = SuperAdmin, 4 = Owner
         );
-        if (Number.isFinite(cand)) ids.add(cand);
-      });
-    } catch { }
-
+        rows.forEach((row: any) => ids.add(Number(row.id)));
+      } catch { }
+    } else {
+      // (همان لاجیک قبلی)
+      ids.add(userId);
+      try {
+        const sa = await this.users.findFirstAncestorByLevel?.(userId, 2);
+        if (sa?.id) ids.add(Number(sa.id));
+      } catch { }
+      try {
+        const pols = await this.vehiclePolicies.getForUser(userId, true).catch(() => []);
+        (pols || []).forEach((p: any) => {
+          const cand = Number(p.owner_user_id ?? p.ownerId ?? p.super_admin_user_id ?? p.grantor_user_id);
+          if (Number.isFinite(cand)) ids.add(cand);
+        });
+      } catch { }
+    }
     return Array.from(ids);
   }
+
+
+
+
+
+
 
 }
 

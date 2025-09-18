@@ -31,6 +31,10 @@ export class Users {
   @Column()
   password: string;
 
+  @Index({ unique: true }) // اگر MySQL داری و چند NULL نمی‌پذیرد، این را بردار و Unique را در لایهٔ سرویس enforce کن
+  @Column({ type: 'char', length: 16, nullable: true })
+  driver_card_hex?: string | null;
+
   @Index()
   @Column({ type: 'enum', enum: UserLevel })
   role_level: UserLevel;

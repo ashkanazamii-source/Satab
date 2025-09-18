@@ -1403,6 +1403,7 @@ export function SuperAdminFormDialog({
     full_name: string;
     phone: string;
     password: string;
+
     permissions: { action: string; is_allowed: boolean }[];
   }>({
     full_name: '',
@@ -1454,6 +1455,7 @@ export function SuperAdminFormDialog({
   };
 
   return (
+
     <Dialog open={open} onClose={onClose} fullWidth>
       <DialogTitle>{initialData ? 'ویرایش سوپرادمین' : 'افزودن سوپرادمین جدید'}</DialogTitle>
       <DialogContent>
@@ -2066,6 +2068,10 @@ export function AddVehicleDialog({
   const [redeemLoading, setRedeemLoading] = useState(false);
   const [redeemMsg, setRedeemMsg] = useState<string>('');
   const [pairedDeviceId, setPairedDeviceId] = useState<string | null>(null);
+  // بالای کامپوننت
+  const [phoneVerified, setPhoneVerified] = useState(false);
+  // اگه قبلاً saving داری، دوباره تعریفش نکن!
+  const [saving, setSaving] = useState(false);
 
   // لیست نوع‌های مجاز با ظرفیت باقی‌مانده
   const [allowedTypes, setAllowedTypes] = useState<{ code: VehicleTypeCode; label: string; remaining: number }[]>([]);
@@ -2074,6 +2080,7 @@ export function AddVehicleDialog({
 
   // فرم + تکه‌های پلاک ایران
   const [form, setForm] = useState<{
+    role_level: number;
     name: string;
     country_code: CountryCode | '';
     plate_no: string;
@@ -2520,15 +2527,37 @@ export function AddVehicleDialog({
       <DialogActions>
         <Button onClick={onClose} disabled={loading}>انصراف</Button>
         <Button
-          variant="contained"
           onClick={handleSubmit}
-          disabled={!canSubmit}  // اگر نمی‌خوای جفت‌سازی الزام باشه، به: disabled={loading || noTypeCapacity || noCountryAllowed}
+          variant="contained"
+          disabled={saving || (form.role_level === 6 && !phoneVerified)}
         >
           ثبت
         </Button>
+
       </DialogActions>
     </Dialog>
   );
+}
+
+function normalize8ByteCode(input: string): { ok: boolean; hex16?: string; msg?: string } {
+  const v = (input || '').trim();
+  if (!v) return { ok: false, msg: 'کد کارت الزامی است' };
+
+  const hex = v.replace(/^0x/i, '').toUpperCase();
+  // دقیقاً 16 رقم هگز = 8 بایت
+  if (/^[0-9A-F]{16}$/.test(hex)) return { ok: true, hex16: hex };
+
+  // اگر ده‌دهی وارد شد، به هگز 16 رقمی تبدیلش کن (با BigInt تا overflow نداشته باشیم)
+  if (/^\d+$/.test(v)) {
+    try {
+      const n = BigInt(v);
+      if (n < 0n || n > 0xFFFFFFFFFFFFFFFFn) {
+        return { ok: false, msg: 'عدد باید بین 0 تا 18446744073709551615 باشد' };
+      }
+      return { ok: true, hex16: n.toString(16).toUpperCase().padStart(16, '0') };
+    } catch { }
+  }
+  return { ok: false, msg: 'کد نامعتبر است؛ ۱۶ رقم هگز (مثل 1A2B3C4D5E6F7788) یا عدد ده‌دهی' };
 }
 
 
@@ -2555,10 +2584,59 @@ function AddUserDialog({
     role_level: 4,          // پیش‌فرض: مالک
     parent_user_id: parentId,
   });
-
+  // بالا کنار useStateهای فرم
+  const [driverCard, setDriverCard] = useState('');         // ورودی کاربر
+  const [driverCardErr, setDriverCardErr] = useState('');   // پیام خطا
   // والدهای مجاز براساس نقش انتخابی
   const [filteredParents, setFilteredParents] =
     useState<{ id: number; full_name: string }[]>([]);
+  // بالای AddUserDialog
+  const [otpSending, setOtpSending] = useState(false);
+  const [otpVerifying, setOtpVerifying] = useState(false);
+  const [otpSent, setOtpSent] = useState(false);
+  const [otpCode, setOtpCode] = useState('');
+  const [otpMsg, setOtpMsg] = useState('');
+  const [otpSeconds, setOtpSeconds] = useState(0);
+  const [phoneVerified, setPhoneVerified] = useState(false);
+
+  useEffect(() => {
+    let iv: any = null;
+    if (otpSeconds > 0) {
+      iv = setInterval(() => setOtpSeconds(s => Math.max(0, s - 1)), 1000);
+    }
+    return () => iv && clearInterval(iv);
+  }, [otpSeconds]);
+
+  const sendOtp = async () => {
+    setOtpMsg('');
+    if (!form.phone?.trim()) { setOtpMsg('ابتدا شماره را وارد کنید'); return; }
+    try {
+      setOtpSending(true);
+      await api.post('/auth/otp/send', { phone: form.phone });
+      setOtpSent(true);
+      setOtpSeconds(60);           // 60 ثانیه محدودیت ارسال مجدد (بک‌اند هم rate دارد)
+      setOtpMsg('کد ارسال شد');
+    } catch (e: any) {
+      setOtpMsg(e?.response?.data?.message || 'ارسال ناموفق بود');
+    } finally {
+      setOtpSending(false);
+    }
+  };
+
+  const verifyOtp = async () => {
+    setOtpMsg('');
+    try {
+      setOtpVerifying(true);
+      await api.post('/auth/otp/verify', { phone: form.phone, code: otpCode.trim() });
+      setPhoneVerified(true);
+      setOtpMsg('✅ شماره تأیید شد');
+    } catch (e: any) {
+      setOtpMsg(e?.response?.data?.message || 'کد نادرست/منقضی است');
+      setPhoneVerified(false);
+    } finally {
+      setOtpVerifying(false);
+    }
+  };
 
   // انتخاب‌های مانیتورینگ برای هر نوع خودرو (فقط از روی grantableMap)
   const [perType, setPerType] =
@@ -2617,6 +2695,14 @@ function AddUserDialog({
     const value = name === 'role_level' || name === 'parent_user_id'
       ? Number(e.target.value) : e.target.value;
     setForm(f => ({ ...f, [name]: value }));
+    if (name === 'role_level') {
+      const lvl = Number(value);
+      if (lvl !== 6) {
+        setDriverCard('');
+        setDriverCardErr('');
+      }
+    }
+
   };
 
   // تیک‌های مانیتورینگ
@@ -2648,8 +2734,16 @@ function AddUserDialog({
       if (!rest.full_name?.trim() || !rest.phone?.trim() || !rest.password?.trim()) {
         throw new Error('نام، موبایل و رمز الزامی است');
       }
+      if (form.role_level === 6 && !phoneVerified) {
+        throw new Error('برای راننده، ابتدا باید شماره موبایل تایید شود.');
+      }
 
       const payload: any = { ...rest, role_level, parent_id: parent_user_id };
+      if (role_level === 6) {
+        const r = normalize8ByteCode(driverCard);
+        if (!r.ok) throw new Error(r.msg || 'کد کارت راننده نامعتبر است');
+        payload.driver_card_hex = r.hex16; // 👈 نام فیلد سمت سرور (در صورت تفاوت، این را مطابق API خودت تغییر بده)
+      }
       const { data: created } = await api.post('/users', payload);
       const newUserId = created?.id;
       if (!newUserId) throw new Error('ساخت کاربر موفق بود ولی id برنگشت.');
@@ -2718,6 +2812,79 @@ function AddUserDialog({
               helperText={errors.password}
             />
           </Grid>
+          {form.role_level === 6 && (
+            <Grid item xs={12}>
+              <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+                {/* بخش تایید شماره (OTP 6 رقمی) */}
+                <Stack direction="row" alignItems="center" spacing={1}>
+                  <TextField
+                    label="کد تایید ۶ رقمی"
+                    value={otpCode}
+                    onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    size="small"
+                    sx={{ width: 180 }}
+                    disabled={phoneVerified}
+                  />
+                  <Button
+                    variant="outlined"
+                    onClick={sendOtp}
+                    disabled={otpSending || otpSeconds > 0 || phoneVerified || !form.phone.trim()}
+                  >
+                    {otpSeconds > 0 ? `ارسال مجدد (${otpSeconds})` : 'ارسال کد'}
+                  </Button>
+                  <Button
+                    variant="contained"
+                    onClick={verifyOtp}
+                    disabled={otpVerifying || phoneVerified || otpCode.length !== 6}
+                  >
+                    تأیید
+                  </Button>
+                  {phoneVerified && <Chip color="success" label="تأیید شد" />}
+                </Stack>
+
+                {otpMsg && (
+                  <Typography
+                    variant="caption"
+                    sx={{ mt: 1, display: 'block' }}
+                    color={otpMsg.startsWith('✅') ? 'success.main' : 'error.main'}
+                  >
+                    {otpMsg}
+                  </Typography>
+                )}
+
+                {/* جداکننده بصری */}
+                <Box sx={{ my: 2, height: 1, bgcolor: 'divider' }} />
+
+                {/* بخش کد کارت ۸ بایتی */}
+                <Stack spacing={1}>
+                  <TextField
+                    label="کد کارت ۸ بایتی (Hex 16 رقم یا Decimal)"
+                    value={driverCard}
+                    onChange={(e) => {
+                      const v = e.target.value.trim();
+                      setDriverCard(v);
+                      const r = normalize8ByteCode(v);
+                      setDriverCardErr(r.ok ? '' : (r.msg || 'کد نامعتبر است'));
+                    }}
+                    error={!!driverCardErr}
+                    helperText={driverCardErr || 'مثال Hex: 1A2B3C4D5E6F7788 — مثال Decimal: 1234567890123456'}
+                    fullWidth
+                    size="small"
+                  />
+
+                  {/* پیش‌نمایش هگز نرمال‌شده (اختیاری) */}
+                  {driverCard && !driverCardErr && (
+                    <Typography variant="caption" color="text.secondary">
+                      هگز نهایی: {normalize8ByteCode(driverCard).hex16}
+                    </Typography>
+                  )}
+                </Stack>
+              </Paper>
+            </Grid>
+          )}
+
+
+
 
           {/* نقش و والد */}
           <Grid item xs={6}>
