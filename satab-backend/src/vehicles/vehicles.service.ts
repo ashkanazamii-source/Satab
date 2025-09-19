@@ -18,6 +18,8 @@ import { RouteGeofenceState } from './route-geofence-state.entity';
 import { RouteGeofenceEvent } from './route-geofence-event.entity';
 import { CreateRouteDto } from 'src/dto/create-route.dto';
 import { DeepPartial } from 'typeorm';
+import { ViolationsService } from '../telemetry/violations.service'; // ⬅️ اضافه
+import { DriverVehicleAssignmentService } from '../driver-vehicle-assignment/driver-vehicle-assignment.service';
 
 @Injectable()
 export class VehiclesService {
@@ -34,6 +36,8 @@ export class VehiclesService {
     private readonly gw: VehiclesGateway,
     private readonly vehiclePolicies: VehiclePoliciesService,
     private readonly users: UserService,
+    private readonly violations: ViolationsService, // ⬅️ تزریق
+    private readonly assignments: DriverVehicleAssignmentService,
   ) { }
 
   private routeCache = new Map<number, { points: { lat: number; lng: number }[], threshold_m: number }>();
@@ -299,70 +303,7 @@ export class VehiclesService {
     } as any);
   }
 
-  private async checkRouteGeofence(vehicleId: number, lat: number, lng: number, when: Date) {
-    // مسیر جاری وسیله
-    const v = await this.repo.findOne({ where: { id: vehicleId }, select: ['id', 'current_route_id'] });
-    const routeId = v?.current_route_id ?? null;
-    if (!routeId) return;
 
-    // پلی‌لاین + threshold
-    const poly = await this.loadRoutePolyline(routeId);
-    if (!poly) return; // مسیر ناقص
-
-    // حداقل فاصله تا مسیر
-    const res = this.minDistanceToRouteMeters(poly, lat, lng);
-
-    // state قبلی
-    let st = await this.fenceStateRepo.findOne({
-      where: { vehicle_id: vehicleId, route_id: routeId }
-    });
-
-    if (!st) {
-      // اولین بار state می‌سازیم (رویداد enter/exit لازم نیست)
-      st = this.fenceStateRepo.create({
-        vehicle_id: vehicleId,
-        route_id: routeId,
-        inside: res.inside,
-        last_distance_m: res.distance_m,
-        last_segment_index: res.segment_index,
-        last_changed_at: when,
-      });
-      await this.fenceStateRepo.save(st);
-      return;
-    }
-
-    // تغییر وضعیت؟
-    const changed = st.inside !== res.inside;
-
-    st.inside = res.inside;
-    st.last_distance_m = res.distance_m;
-    st.last_segment_index = res.segment_index;
-    if (changed) st.last_changed_at = when;
-    await this.fenceStateRepo.save(st);
-
-    if (changed) {
-      const ev = this.fenceEventRepo.create({
-        vehicle_id: vehicleId,
-        route_id: routeId,
-        type: res.inside ? 'enter' : 'exit',
-        distance_m: res.distance_m,
-        segment_index: res.segment_index,
-        lat, lng,
-      });
-      await this.fenceEventRepo.save(ev);
-
-      // برادکست اختیاری
-      (this.gw as any)?.emitRouteGeofence?.(vehicleId, {
-        route_id: routeId,
-        type: ev.type,
-        at: ev.at,
-        distance_m: ev.distance_m,
-        segment_index: ev.segment_index,
-        lat, lng,
-        threshold_m: res.threshold_m,
-      });
-    }
-  }
 
 
 
@@ -646,6 +587,82 @@ export class VehiclesService {
       last_segment_index: st?.last_segment_index ?? live?.segment_index ?? null,
       threshold_m: poly?.threshold_m ?? null,
     };
+  }
+  private async checkRouteGeofence(vehicleId: number, lat: number, lng: number, when: Date) {
+    const v = await this.repo.findOne({ where: { id: vehicleId }, select: ['id', 'current_route_id'] });
+    const routeId = v?.current_route_id ?? null;
+    if (!routeId) return;
+
+    const poly = await this.loadRoutePolyline(routeId);
+    if (!poly) return;
+
+    const res = this.minDistanceToRouteMeters(poly, lat, lng);
+
+    let st = await this.fenceStateRepo.findOne({ where: { vehicle_id: vehicleId, route_id: routeId } });
+    if (!st) {
+      st = this.fenceStateRepo.create({
+        vehicle_id: vehicleId,
+        route_id: routeId,
+        inside: res.inside,
+        last_distance_m: res.distance_m,
+        last_segment_index: res.segment_index,
+        last_changed_at: when,
+      });
+      await this.fenceStateRepo.save(st);
+      return;
+    }
+
+    const changed = st.inside !== res.inside;
+
+    st.inside = res.inside;
+    st.last_distance_m = res.distance_m;
+    st.last_segment_index = res.segment_index;
+    if (changed) st.last_changed_at = when;
+    await this.fenceStateRepo.save(st);
+
+    if (changed) {
+      const ev = this.fenceEventRepo.create({
+        vehicle_id: vehicleId,
+        route_id: routeId,
+        type: res.inside ? 'enter' : 'exit',
+        distance_m: res.distance_m,
+        segment_index: res.segment_index,
+        lat, lng,
+      });
+      const savedEv = await this.fenceEventRepo.save(ev);
+
+      // ✅ فقط در «خروج» از مسیر تخلف ثبت کن
+      if (!res.inside) {
+        // رانندهٔ فعال با سرویس انتساب
+        const driverUserId = await this.assignments.getActiveDriverByVehicle(vehicleId);
+
+        // متای کامل (برای گزارشات)
+        await this.violations.addOffRoute({
+          vehicleId,
+          driverUserId,
+          meta: {
+            route_id: routeId,
+            distance_m: res.distance_m,
+            threshold_m: res.threshold_m,
+            segment_index: res.segment_index,
+            lat, lng,
+            event_id: savedEv.id,
+            at: when.toISOString(),
+          },
+        });
+      }
+
+      // برادکست اختیاری به UI
+      (this.gw as any)?.emitRouteGeofence?.(vehicleId, {
+        route_id: routeId,
+        type: ev.type,
+        at: (savedEv as any).at,
+        distance_m: ev.distance_m,
+        segment_index: ev.segment_index,
+        lat, lng,
+        threshold_m: res.threshold_m,
+      });
+    }
   }
 
   async getCurrentRouteGeofenceEvents(vehicleId: number, limit = 50) {

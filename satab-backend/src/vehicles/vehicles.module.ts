@@ -15,6 +15,8 @@ import { VehiclePoliciesModule } from '../vehicle-policies/vehicle-policies.modu
 import { UserModule } from '../users/users.module'; // همونی که ساختی و UserService رو export می‌کنه
 import { RouteGeofenceEvent } from './route-geofence-event.entity'; // همونی که ساختی و UserService رو export می‌کنه
 import { RouteGeofenceState } from './route-geofence-state.entity'; // همونی که ساختی و UserService رو export می‌کنه
+import { ViolationsModule } from '../telemetry/violations.module'; // ⬅️
+import { DriverVehicleAssignmentModule } from 'src/driver-vehicle-assignment/driver-vehicle-assignment.module';
 
 @Module({
   imports: [
@@ -31,6 +33,9 @@ import { RouteGeofenceState } from './route-geofence-state.entity'; // همون�
     RolePermissionModule,
     VehiclePoliciesModule, // ✅ فقط ماژول رو ایمپورت کن
     UserModule,            // ✅ برای تزریق UserService
+    ViolationsModule, // ⬅️ حتماً اینجا باشد
+  DriverVehicleAssignmentModule,
+
   ],
   controllers: [VehiclesController, RoutesController],
   providers: [

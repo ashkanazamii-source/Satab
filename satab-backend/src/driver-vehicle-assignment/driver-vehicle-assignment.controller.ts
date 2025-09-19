@@ -1,9 +1,10 @@
 // src/driver-vehicle-assignment/driver-vehicle-assignment.controller.ts
-import { Body, Controller, Get, Param, ParseIntPipe, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseIntPipe, Post, UsePipes, ValidationPipe } from '@nestjs/common';
 import { DriverVehicleAssignmentService } from './driver-vehicle-assignment.service';
 import { StartAssignmentDto, EndAssignmentDto } from '../dto/assign.dto';
 
 @Controller('assignments')
+@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 export class DriverVehicleAssignmentController {
   constructor(private readonly service: DriverVehicleAssignmentService) {}
 

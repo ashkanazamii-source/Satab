@@ -1,21 +1,23 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+// src/driver-vehicle-assignment/driver-vehicle-assignment.service.ts
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, IsNull } from 'typeorm';
 import { DriverVehicleAssignment } from './driver-vehicle-assignment.entity';
-import { Users } from '../users/users.entity';
-import { Vehicle } from '../vehicles/vehicle.entity';
 
 @Injectable()
 export class DriverVehicleAssignmentService {
   constructor(
     @InjectRepository(DriverVehicleAssignment)
     private readonly repo: Repository<DriverVehicleAssignment>,
-    @InjectRepository(Vehicle)
-    private readonly vehRepo: Repository<Vehicle>,
   ) {}
 
   async startAssignment(driverId: number, vehicleId: number) {
+    // 1) انتساب فعال قبلی همین راننده را ببند
     await this.repo.update({ driver_id: driverId, ended_at: IsNull() }, { ended_at: new Date() });
+    // 2) هر انتساب فعال دیگری روی همین خودرو را ببند (برای جلوگیری از دو راننده روی یک خودرو)
+    await this.repo.update({ vehicle_id: vehicleId, ended_at: IsNull() }, { ended_at: new Date() });
+
+    // 3) انتساب جدید
     const assign = this.repo.create({
       driver_id: driverId,
       vehicle_id: vehicleId,
@@ -47,7 +49,14 @@ export class DriverVehicleAssignmentService {
     });
     return list;
   }
+
+  // کمکی برای ثبت تخلف/پوزیشن: رانندهٔ فعالِ یک خودرو
+  async getActiveDriverByVehicle(vehicleId: number): Promise<number | null> {
+    const row = await this.repo.findOne({
+      where: { vehicle_id: vehicleId, ended_at: IsNull() },
+      select: ['driver_id'],
+      order: { started_at: 'DESC' },
+    });
+    return row?.driver_id ?? null;
+  }
 }
-
-
-

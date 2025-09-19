@@ -26,7 +26,8 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { ProfilesModule } from './profiles/profiles.module'; // ✅ ۱. این خط را برای import اضافه کنید
 import { PairingModule } from './pairing/pairing.module';
 import { OtpModule } from './sms/otp.module';
-
+import { ViolationsModule } from './telemetry/violations.module';
+import { TelemetryModule } from './telemetry/telemetry.module';
 import { ContextMiddleware } from './common/context.middleware';
 
 @Module({
@@ -70,7 +71,9 @@ import { ContextMiddleware } from './common/context.middleware';
     AnalyticsModule,
     ProfilesModule,
     PairingModule,
-    OtpModule
+    OtpModule,
+    TelemetryModule,
+    ViolationsModule,
   ],
   providers: [
     // لاگ همهٔ درخواست‌های HTTP

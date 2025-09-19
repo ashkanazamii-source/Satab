@@ -4,13 +4,11 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { DriverVehicleAssignment } from './driver-vehicle-assignment.entity';
 import { DriverVehicleAssignmentService } from './driver-vehicle-assignment.service';
 import { DriverVehicleAssignmentController } from './driver-vehicle-assignment.controller';
-import { Users } from '../users/users.entity';
-import { Vehicle } from '../vehicles/vehicle.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([DriverVehicleAssignment, Users, Vehicle])],
+  imports: [TypeOrmModule.forFeature([DriverVehicleAssignment])],
   controllers: [DriverVehicleAssignmentController],
   providers: [DriverVehicleAssignmentService],
-  exports: [DriverVehicleAssignmentService],
+  exports: [DriverVehicleAssignmentService], // ⬅️ برای تزریق در سرویس‌های دیگر
 })
 export class DriverVehicleAssignmentModule {}
