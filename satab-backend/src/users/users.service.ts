@@ -17,6 +17,7 @@ import { AuditService } from '../audit/audit.service';
 import { AuditTopic } from '../audit/audit-topics';
 import { RequestContext } from '../common/request-context';
 import { InjectDataSource } from '@nestjs/typeorm';
+import { SuperAdminType } from './users.entity';
 
 // ✅ اضافه شد
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -34,13 +35,14 @@ export class UserService {
     @InjectDataSource() private readonly dataSource: DataSource,
     // ✅ اضافه شد: برای اعلام رویدادها به ChatService
     private readonly events: EventEmitter2,
-  ) {}
+  ) { }
 
   async findFirstAncestorByLevel(userId: number, level: number): Promise<Users | null> {
     let current = await this.userRepo.findOne({
       where: { id: userId },
       relations: ['parent'],
-      select: { id: true, role_level: true } as any,
+      // ⬇️ sa_type را هم برگردان
+      select: { id: true, role_level: true, sa_type: true } as any,
     });
     if (!current) return null;
 
@@ -50,7 +52,8 @@ export class UserService {
       const parent = await this.userRepo.findOne({
         where: { id: current.parent.id },
         relations: ['parent'],
-        select: { id: true, full_name: true, role_level: true } as any,
+        // ⬇️ اینجا هم
+        select: { id: true, full_name: true, role_level: true, sa_type: true } as any,
       });
       if (!parent) return null;
 
@@ -102,12 +105,9 @@ export class UserService {
     return { ok: true };
   }
 
-  /**
-   * ایجاد کاربر جدید
-   */
   async create(dto: CreateUserDto, currentUser: Users): Promise<Users> {
     const isManager = currentUser.role_level === UserLevel.MANAGER;        // 1
-    const isSuperAdmin = currentUser.role_level === UserLevel.SUPER_ADMIN; // 2
+    const isSuperAdmin = currentUser.role_level === UserLevel.SUPER_ADMIN;    // 2
 
     if (!isManager) {
       const allowed = await this.rolePermissionService.isAllowed(currentUser.id, 'create_user');
@@ -131,7 +131,8 @@ export class UserService {
       if (!parent) throw new BadRequestException('والد یافت نشد.');
 
       if (isSuperAdmin) {
-        const okParent = parent.id === currentUser.id || (await this.isDescendantOf(currentUser.id, parent.id));
+        const okParent =
+          parent.id === currentUser.id || (await this.isDescendantOf(currentUser.id, parent.id));
         if (!okParent) throw new ForbiddenException('والد انتخاب‌شده در دامنهٔ مجاز شما نیست.');
       } else if (!isManager) {
         if (parent.id !== currentUser.id) throw new ForbiddenException('والد نامعتبر است.');
@@ -145,6 +146,27 @@ export class UserService {
       throw new ForbiddenException('نقش کاربر جدید باید پایین‌تر از نقش شما باشد.');
     }
 
+    // --- تعیین خودکار sa_type ---
+    let resolvedSaType: SuperAdminType | null = null;
+
+    if (dto.role_level === UserLevel.SUPER_ADMIN) {
+      // برای خودِ سوپرادمین جدید، نوع الزامی‌ست
+      if (
+        !dto.sa_type ||
+        !Object.values(SuperAdminType).includes(dto.sa_type as SuperAdminType)
+      ) {
+        throw new BadRequestException('sa_type برای سوپرادمین الزامی است (fleet/device/universal).');
+      }
+      resolvedSaType = dto.sa_type as SuperAdminType;
+    } else {
+      // برای سایر نقش‌ها، نوع را از نزدیک‌ترین SA بالاسری به ارث بگیر
+      const anchorId = parent?.id ?? currentUser.id;
+      const nearestSA = await this.findFirstAncestorByLevel(anchorId, UserLevel.SUPER_ADMIN);
+      resolvedSaType = (nearestSA?.sa_type as SuperAdminType) ?? null;
+      // اگر می‌خواهی نبودن SA را خطا بدهی، به‌جای null این را فعال کن:
+      // if (!resolvedSaType) throw new BadRequestException('ساخت این کاربر خارج از دامنهٔ یک سوپرادمین معتبر است.');
+    }
+
     const newUser = this.userRepo.create({
       full_name: dto.full_name,
       phone: dto.phone,
@@ -153,12 +175,12 @@ export class UserService {
       max_devices: dto.max_devices ?? 0,
       max_drivers: dto.max_drivers ?? 0,
       parent,
+      sa_type: resolvedSaType, // ⬅️ ست نوع سوپرادمین (برای SA یا ارث‌گرفته)
     });
 
     const saved = await this.userRepo.save(newUser);
 
-    // ✅ پس از ساخت، عضویت گروه SA را به‌صورت رویدادی هندل کن
-    // ChatService with @OnEvent('users.created') => ensureSaGroupForUser(saved.id)
+    // ✅ رویداد پس از ساخت
     this.events.emit('users.created', { userId: saved.id });
 
     // آدیت‌لاگ
@@ -168,13 +190,13 @@ export class UserService {
       actor: { id: currentUser.id, name: currentUser.full_name, role_level: currentUser.role_level },
       target_user: { id: saved.id, name: saved.full_name, role_level: saved.role_level },
       message: `${currentUser.full_name} (نقش: ${roleFa(currentUser.role_level)}) کاربر ${saved.full_name} (نقش: ${roleFa(saved.role_level)}) را ایجاد کرد.`,
-      metadata: { created_user_id: saved.id, parent_id: parent?.id ?? null },
+      metadata: { created_user_id: saved.id, parent_id: parent?.id ?? null, sa_type: saved.sa_type ?? null },
       ip,
       user_agent: userAgent,
     });
 
     return saved;
-  }
+  } غ
 
   async findAll(roleLevel?: number): Promise<Users[]> {
     const where = roleLevel ? { role_level: roleLevel } : {};
@@ -301,7 +323,13 @@ export class UserService {
   async updateUserById(id: number, dto: UpdateUserDto, currentUser?: Users) {
     const user = await this.userRepo.findOne({ where: { id }, relations: ['parent'] });
     if (!user) throw new NotFoundException('کاربر پیدا نشد');
-
+    if (dto.sa_type !== undefined) {
+      if (user.role_level !== UserLevel.SUPER_ADMIN)
+        throw new BadRequestException('sa_type فقط برای سوپرادمین قابل تنظیم است');
+      const valid = Object.values(SuperAdminType).includes(dto.sa_type as any);
+      if (!valid) throw new BadRequestException('sa_type نامعتبر است');
+      user.sa_type = dto.sa_type as SuperAdminType;
+    }
     const isManager = currentUser?.role_level === UserLevel.MANAGER;
     const isSuperAdmin = currentUser?.role_level === UserLevel.SUPER_ADMIN;
 
@@ -312,7 +340,22 @@ export class UserService {
       const inTree = await this.isDescendantOf(currentUser!.id, id);
       if (!inTree) throw new ForbiddenException('کاربرِ هدف در زیرمجموعهٔ شما نیست');
     }
+    const beforeSaType = user.sa_type ?? null;
 
+    if (dto.sa_type !== undefined) {
+      if (user.role_level !== UserLevel.SUPER_ADMIN)
+        throw new BadRequestException('تنها سوپرادمین sa_type دارد');
+      if (!Object.values(SuperAdminType).includes(dto.sa_type as any))
+        throw new BadRequestException('sa_type نامعتبر است');
+
+      // اگر تغییر کرده:
+      if (beforeSaType !== dto.sa_type) {
+        // ابتدا خود کاربر و زیرشاخه‌ها
+        await this.cascadeSaType(user.id, dto.sa_type as SuperAdminType, currentUser!);
+        // user در cascade به‌روز شد؛ اگر لازم است دوباره بخوان:
+        user.sa_type = dto.sa_type as SuperAdminType;
+      }
+    }
     // 📸 Snapshot قبل از تغییر
     const before = {
       full_name: user.full_name,
@@ -373,7 +416,7 @@ export class UserService {
 
     // ✅ تشخیص تغییرات مهم برای سینک گروه SA
     const parentChanged = (before.parent_id ?? null) !== (saved.parent?.id ?? null);
-    const roleChanged   = before.role_level !== saved.role_level;
+    const roleChanged = before.role_level !== saved.role_level;
 
     // ✅ اگر والد یا نقش عوض شد، به ChatService خبر بده تا عضویت گروه SA Sync شود
     if (parentChanged || roleChanged) {
@@ -421,4 +464,68 @@ export class UserService {
 
     return saved;
   }
+  // users.service.ts
+  async cascadeSaType(rootId: number, saType: SuperAdminType, currentUser: Users) {
+    const root = await this.userRepo.findOne({ where: { id: rootId }, relations: ['parent'] });
+    if (!root) throw new NotFoundException('کاربر پیدا نشد');
+    if (root.role_level !== UserLevel.SUPER_ADMIN)
+      throw new BadRequestException('کَسکید sa_type فقط برای سوپرادمین مجاز است');
+
+    // کنترل دسترسی: مدیرکل آزاد؛ SA فقط روی درخت خودش
+    const isManager = currentUser.role_level === UserLevel.MANAGER;
+    const isSuperAdmin = currentUser.role_level === UserLevel.SUPER_ADMIN;
+    if (!isManager) {
+      const allowed = isSuperAdmin && (root.id === currentUser.id || await this.isDescendantOf(currentUser.id, root.id));
+      if (!allowed) throw new ForbiddenException('اجازهٔ اعمال روی این شاخه را ندارید');
+    }
+
+    await this.dataSource.transaction(async (trx) => {
+      const repo = trx.getRepository(Users);
+
+      // Postgres (WITH RECURSIVE)
+      if (this.dataSource.options.type === 'postgres') {
+        await trx.query(`
+        WITH RECURSIVE subtree AS (
+          SELECT id FROM users WHERE id = $1
+          UNION ALL
+          SELECT u.id FROM users u JOIN subtree s ON u.parent_id = s.id
+        )
+        UPDATE users SET sa_type = $2 WHERE id IN (SELECT id FROM subtree)
+      `, [rootId, saType]);
+      } else {
+        // Fallback (MySQL/SQLite): BFS در اپ‌لایه
+        const queue: number[] = [rootId];
+        const allIds: number[] = [];
+        while (queue.length) {
+          const id = queue.shift()!;
+          allIds.push(id);
+          const children = await repo.find({ where: { parent: { id } }, select: { id: true } as any, relations: ['parent'] });
+          children.forEach(c => queue.push(c.id));
+        }
+        if (allIds.length) {
+          await repo
+            .createQueryBuilder()
+            .update(Users)
+            .set({ sa_type: saType })
+            .whereInIds(allIds)
+            .execute();
+        }
+      }
+    });
+
+    // رویداد و آدیت
+    this.events.emit('users.sa_type_changed', { userId: rootId, sa_type: saType });
+    const { ip, userAgent } = RequestContext.get();
+    await this.audit.log({
+      topic: AuditTopic.USER_UPDATE,
+      actor: { id: currentUser.id, name: currentUser.full_name, role_level: currentUser.role_level },
+      target_user: { id: root.id, name: root.full_name, role_level: root.role_level },
+      message: `تعیین نوع SA به «${saType}» برای ${root.full_name} و تمام زیرشاخه‌ها`,
+      metadata: { sa_type: saType, root_id: rootId },
+      ip, user_agent: userAgent,
+    });
+
+    return { ok: true };
+  }
+
 }

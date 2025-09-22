@@ -16,7 +16,11 @@ import { Vehicle } from '../vehicles/vehicle.entity';
 import { Device } from '../entities/device.entity';
 import { RolePermission } from '../permissions/role-permission.entity';
 import { VehicleSettingProfile } from '../profiles/profiles.entity'; // ✅ 1. این خط را اضافه کنید
-
+export enum SuperAdminType {
+  FLEET = 'fleet',           // ناوگانی
+  DEVICE = 'device',         // مدیریت دستگاه
+  UNIVERSAL = 'universal',   // جامع
+}
 @Entity('users')
 export class Users {
   @PrimaryGeneratedColumn()
@@ -27,6 +31,14 @@ export class Users {
 
   @Column({ unique: true })
   phone: string;
+
+  @Index()
+  @Column({
+    type: 'enum',
+    enum: SuperAdminType,
+    nullable: true,                // ← برای سازگاری اولیه؛ بعداً می‌تونی اجباریش کنی
+  })
+  sa_type?: SuperAdminType | null;
 
   @Column()
   password: string;

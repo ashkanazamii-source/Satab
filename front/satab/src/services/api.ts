@@ -6,7 +6,9 @@ import qs from 'qs';
 let REQ_ID = 0;
 
 const api = axios.create({
-  baseURL: import.meta.env?.VITE_API_BASE || '/api',
+  baseURL: 'http://localhost:3000',
+  //baseURL: import.meta.env?.VITE_API_BASE || '/api',
+
   //headers: { 'Content-Type': 'application/json' },
 
   // مهم: برای فیلتر آرایه‌ها مثل topic[]=... یا topic=...&topic=...

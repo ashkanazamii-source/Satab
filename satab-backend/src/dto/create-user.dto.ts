@@ -8,10 +8,12 @@ import {
   IsInt,
   IsArray,
   MinLength,
-  Min
+  Min,
+  ValidateIf,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { UserLevel } from '../entities/role.entity';
+import { SuperAdminType } from '../users/users.entity'; // ⬅️ اضافه شد
 
 export class CreateUserPermissionDto {
   @IsEnum(UserLevel, { message: 'سطح نقش نامعتبر است.' })
@@ -44,6 +46,11 @@ export class UpdateUserDto {
   @IsOptional() @IsEnum(UserLevel)
   role_level?: UserLevel;
 
+  // اگر نیاز شد از سمت منیجر/ادمین تغییر کند
+  @IsOptional()
+  @IsEnum(SuperAdminType, { message: 'نوع سوپرادمین نامعتبر است.' })
+  sa_type?: SuperAdminType;
+
   // این فیلد مخصوص ست/حذف والد است
   @IsOptional()
   parent_id?: number | null;
@@ -54,6 +61,7 @@ export class UpdateUserDto {
   @IsOptional() @IsInt() @Min(0)
   max_drivers?: number;
 }
+
 export class CreateUserDto {
   @IsString({ message: 'نام کامل الزامی است.' })
   @MinLength(2, { message: 'نام باید حداقل ۲ حرف باشد.' })
@@ -68,6 +76,12 @@ export class CreateUserDto {
 
   @IsEnum(UserLevel, { message: 'سطح نقش نامعتبر است.' })
   role_level: UserLevel;
+
+  // ــــــــــــــ sa_type:
+  // هنگام ساخت سوپرادمین اجباری‌ست، در غیر این صورت نادیده گرفته می‌شود
+  @ValidateIf(o => o.role_level === UserLevel.SUPER_ADMIN)
+  @IsEnum(SuperAdminType, { message: 'نوع سوپرادمین نامعتبر است. (fleet/device/universal)' })
+  sa_type?: SuperAdminType;
 
   // ============== روابط بالادستی ممکن ==============
   @IsOptional()
@@ -89,8 +103,8 @@ export class CreateUserDto {
   // ============== محدودیت‌ها ==============
   @IsOptional()
   @IsInt({ message: 'حداکثر دستگاه باید عدد صحیح باشد.' })
-
   max_devices?: number;
+
   @IsOptional()
   @IsInt({ message: 'parent_id باید عدد صحیح باشد.' })
   parent_id?: number;
@@ -106,3 +120,4 @@ export class CreateUserDto {
   @Type(() => CreateUserPermissionDto)
   permissions?: CreateUserPermissionDto[];
 }
+

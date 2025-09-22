@@ -4,13 +4,75 @@ import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { Consumable } from './consumable.entity';
 import { CreateConsumableDto, UpdateConsumableDto } from '../dto/consumables.dto';
+type SAListOpts = {
+  from?: string | Date;
+  to?: string | Date;
+  vehicleId?: number;
+  mode?: 'km' | 'time';
+  limit?: number;
+  offset?: number;
+};
 
 @Injectable()
 export class ConsumablesService {
   constructor(
     @InjectRepository(Consumable) private readonly repo: Repository<Consumable>,
     @InjectDataSource() private readonly dataSource: DataSource,
-  ) {}
+  ) { }
+  async listForSuperAdmin(superAdminId: number, opts: SAListOpts = {}) {
+    const limit = Math.min(Math.max(opts.limit ?? 300, 1), 10_000);
+    const offset = Math.max(opts.offset ?? 0, 0);
+
+    return this.withMaster(async (m) => {
+      const where: string[] = ['v.owner_user_id IN (SELECT id FROM subordinates)'];
+      const params: any[] = [superAdminId];
+      let p = params.length;
+
+      if (opts.vehicleId != null) { where.push(`v.id = $${++p}`); params.push(opts.vehicleId); }
+      if (opts.mode) { where.push(`c.mode = $${++p}`); params.push(opts.mode); }
+      if (opts.from) { where.push(`c.created_at >= $${++p}`); params.push(new Date(opts.from as any)); }
+      if (opts.to) { where.push(`c.created_at <= $${++p}`); params.push(new Date(opts.to as any)); }
+
+      const rows = await m.query(
+        `
+      WITH RECURSIVE subordinates AS (
+        SELECT u.id
+        FROM users u
+        WHERE u.id = $1                         -- ریشه: خود سوپر ادمین
+
+        UNION ALL
+        SELECT c.id
+        FROM users c
+        JOIN subordinates s ON c.parent_id = s.id   -- همهٔ فرزندان درخت
+      )
+      SELECT
+        c.id,
+        c.vehicle_id        AS "vehicleId",
+        c.mode              AS "mode",
+        c.note              AS "note",
+        c.start_at          AS "startAt",
+        c.base_odometer_km  AS "baseOdometerKm",
+        c.created_at        AS "createdAt"
+      FROM consumables c
+      JOIN vehicles v ON v.id = c.vehicle_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY c.created_at DESC, c.id DESC
+      LIMIT ${limit} OFFSET ${offset}
+      `,
+        params,
+      );
+
+      return rows as Array<{
+        id: number;
+        vehicleId: number;
+        mode: 'km' | 'time';
+        note: string | null;
+        startAt: string | null;
+        baseOdometerKm: number | null;
+        createdAt: string;
+      }>;
+    });
+  }
 
   private toNumber(v: any): number | null {
     if (v === null || v === undefined || v === '') return null;

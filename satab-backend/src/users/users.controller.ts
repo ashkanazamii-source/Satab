@@ -9,12 +9,13 @@ import {
   Query,
   Put,
   NotFoundException,
-  Delete
+  Delete,
+  BadRequestException
 } from '@nestjs/common';
 import { UserService } from './users.service';
 import { CreateUserDto } from '../dto/create-user.dto';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { Users } from './users.entity';
+import { SuperAdminType, Users } from './users.entity';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AclGuard } from '../acl/acl.guard';
 import { ACL } from '../acl/acl.decorator';
@@ -131,5 +132,18 @@ export class UserController {
     await this.userService.deleteUserById(id, currentUser);
     return { ok: true };
   }
+
+  @Post(':id/cascade-sa-type')
+
+  async cascadeSaType(
+    @Param('id', ParseIntPipe) id: number,
+    @Body('sa_type') sa_type: SuperAdminType,
+    @CurrentUser() currentUser: Users,
+  ) {
+    if (!Object.values(SuperAdminType).includes(sa_type))
+      throw new BadRequestException('sa_type نامعتبر است');
+    return this.userService.cascadeSaType(id, sa_type, currentUser);
+  }
+
 }
 

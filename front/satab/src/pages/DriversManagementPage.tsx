@@ -1120,9 +1120,8 @@ function ManagerRoleSection({ user }: { user: User }) {
     }
   }
 
-  const tileUrl = useMapTiler && MT_KEY
-    ? `https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=${MT_KEY}`
-    : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+  const tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+
   const [defaultsOpen, setDefaultsOpen] = useState(false);
 
   // ====================================================================
@@ -3220,7 +3219,7 @@ function ManagerRoleSection({ user }: { user: User }) {
           {/* هدر پنل */}
           <Stack direction="row" alignItems="center" justifyContent="space-between" mb={1}>
             <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: .2 }}>
-              سوپر ادمین‌ها
+              سازمان ها
             </Typography>
             <Stack direction="row" spacing={1} alignItems="center">
               <Button
@@ -4979,7 +4978,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
     enabled: boolean;
     onPick: (lat: number, lng: number) => void;
   }) {
-    useMapEvent('click', (e) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
+    useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
     return null;
   }
   type Vehicle = {
@@ -5777,10 +5776,8 @@ function SuperAdminRoleSection({ user }: { user: User }) {
 
   // نقشه
   const [useMapTiler, setUseMapTiler] = useState(Boolean(MT_KEY));
-  const tileUrl =
-    useMapTiler && MT_KEY
-      ? `https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=${MT_KEY}`
-      : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+  const tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+
   const [focusLatLng, setFocusLatLng] = useState<[number, number] | undefined>(
     undefined
   );

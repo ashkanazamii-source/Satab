@@ -16,7 +16,9 @@ import { Chip } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
 import PublicIcon from '@mui/icons-material/Public';
 import { alpha, keyframes } from '@mui/material/styles';
-import { Paper, Typography, Avatar, Tooltip, Popper, Fade, LinearProgress } from '@mui/material';
+import {
+  Paper, Typography, Avatar, Tooltip, Popper, Fade, LinearProgress, Radio,
+} from '@mui/material';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -25,6 +27,12 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 
 
 
+type SAType = 'fleet' | 'device' | 'universal';
+const SA_TYPE_OPTS: { value: SAType; label: string }[] = [
+  { value: 'fleet', label: 'ناوگانی' },
+  { value: 'device', label: 'مدیریت دستگاه' },
+  { value: 'universal', label: 'جامع' },
+];
 
 
 
@@ -186,11 +194,12 @@ function UserCard({
   u,
   isRoot = false,
   onEdit, onDelete, onEditVehiclePolicy, onGrantMonitors,
-  currentUserId, currentUserRoleLevel, canDelete,
+  currentUserId, currentUserRoleLevel, canDelete, roleSaType
 }: any) {
   const roleColor =
     u.role_level === 2 ? royal.c2 :
       u.role_level === 1 ? '#60A5FA' : royal.c1;
+  const effectiveSaType: SAType | undefined = (u as any).sa_type ?? roleSaType; // 👈 مهم
 
   return (
     <Paper
@@ -236,7 +245,7 @@ function UserCard({
             {displayName(u)}
           </Typography>
           <Typography noWrap variant="caption" sx={{ color: roleColor, lineHeight: 1.1, maxWidth: '100%' }}>
-            ({roleNameFa(u.role_level)})
+            ({roleLabel(u.role_level, effectiveSaType)}) {/* 👈 اینجا */}
           </Typography>
         </Box>
 
@@ -341,6 +350,7 @@ const royal = {
 };
 // ---------- INTERFACE ----------
 interface User {
+  sa_type?: SAType; // فقط همینه؛ یک‌بار تعریف، اختیاری
   id: number;
   full_name: string;
   role_level: number;
@@ -354,7 +364,7 @@ function NodeCard({
   u,
   isRoot = false,
   onEdit, onDelete, onEditVehiclePolicy, onGrantMonitors,
-  currentUserId, currentUserRoleLevel, canDelete,
+  currentUserId, currentUserRoleLevel, canDelete, roleSaType
 }: {
   u: UserNode;
   isRoot?: boolean;
@@ -365,10 +375,12 @@ function NodeCard({
   currentUserId?: number;
   currentUserRoleLevel?: number;
   canDelete?: boolean;
+  roleSaType?: SAType
 }) {
   const roleColor =
     u.role_level === 2 ? royal.c2 :
       u.role_level === 1 ? '#60A5FA' : royal.c1;
+  const effectiveSaType: SAType | undefined = (u as any).sa_type ?? roleSaType; // 👈 مهم
 
   return (
     <Paper
@@ -483,7 +495,7 @@ function NodeCard({
               whiteSpace: 'nowrap', // یک خط
             }}
           >
-            ({roleNameFa(u.role_level)})
+            ({roleLabel(u.role_level, effectiveSaType)}) {/* 👈 اینجا */}
           </Typography>
         </Box>
       </Stack>
@@ -653,7 +665,7 @@ const orgTreeSx = {
 function OrgTreeNode({
   node,
   onEdit, onDelete, onEditVehiclePolicy, onGrantMonitors,
-  currentUserId, currentUserRoleLevel, canDelete,
+  currentUserId, currentUserRoleLevel, canDelete, roleSaType
 }: {
   node: UserNode;
   onEdit?: (u: UserNode) => void;
@@ -663,6 +675,7 @@ function OrgTreeNode({
   currentUserId?: number;
   currentUserRoleLevel?: number;
   canDelete?: boolean;
+  roleSaType?: SAType
 }) {
   const children = node.subordinates || [];
   return (
@@ -677,7 +690,9 @@ function OrgTreeNode({
         currentUserId={currentUserId}
         currentUserRoleLevel={currentUserRoleLevel}
         canDelete={canDelete}
+        roleSaType={roleSaType}   // 👈 مهم
       />
+
       {children.length > 0 && (
         <Box component="ul">
           {children.map((ch: UserNode) => (
@@ -691,6 +706,7 @@ function OrgTreeNode({
               currentUserId={currentUserId}
               currentUserRoleLevel={currentUserRoleLevel}
               canDelete={canDelete}
+              roleSaType={roleSaType}
             />
           ))}
         </Box>
@@ -702,18 +718,38 @@ function OrgTreeNode({
 
 
 // ---------- LABELS ----------
-function roleNameFa(level: number) {
-  switch (level) {
-    case 1: return 'مدیرکل';
-    case 2: return 'سوپرادمین';
-    case 3: return 'مدیر شعبه';
-    case 4: return 'مالک';
-    case 5: return 'تکنسین';
-    case 6: return 'راننده';
-    default: return '---';
+const ROLE_LABELS_DEFAULT: Record<number, string> = {
+  1: 'مدیرکل',
+  2: 'سازمان',
+  3: 'مدیر شعبه',
+  4: 'مالک',
+  5: 'تکنسین',
+  6: 'راننده',
+};
+
+// همون SAType موجود شما: 'fleet' | 'device' | 'universal'
+const ROLE_LABELS_FLEET: Partial<Record<number, string>> = {
+  1: 'مدیرکل',
+  2: 'سازمان',
+  3: 'مدیریت شهر',
+  4: 'مدیریت منطقه',
+  5: 'مسئول خط',
+  6: 'راننده',
+};
+declare global {
+  // اگر User را در همین فایل دارید، همین‌جا آپدیت کنید
+  interface User {
+    sa_type?: SAType; // ممکن است سرور برگرداند
   }
 }
 
+
+export function roleLabel(level: number, saType?: SAType): string {
+  if (saType === 'fleet' && ROLE_LABELS_FLEET[level]) {
+    return ROLE_LABELS_FLEET[level]!;
+  }
+  return ROLE_LABELS_DEFAULT[level] ?? '---';
+}
 const actionLabels: Record<string, string> = {
   create_user: 'ایجاد کاربر',
   grant_sub_permissions: 'دادن نقش‌های زیرمجموعه',
@@ -744,7 +780,10 @@ export default function RoleManagementPage() {
 
         if (me.role_level === 1) {
           const { data } = await api.get('/users/my-subordinates-flat');
-          setTree(buildTree(data, { id: me.id, full_name: me.full_name, role_level: me.role_level }));
+          setTree(buildTree(
+            data,
+            { id: me.id, full_name: me.full_name, role_level: me.role_level, sa_type: (me as any).sa_type }
+          ));
         }
       } catch {
         setUser(null);
@@ -1138,7 +1177,7 @@ function SuperAdminStrip({
           <Box sx={{ minWidth: 0 }}>
             <Typography noWrap fontWeight={700}>{displayName(sa)}</Typography>
             <Typography noWrap variant="caption" sx={{ color: royal.c2 }}>
-              (سوپرادمین)
+              ({roleLabel(2, (sa as any).sa_type)})
             </Typography>
           </Box>
         </Paper>
@@ -1157,6 +1196,7 @@ function AlwaysOpenTree({
   onDelete,
   onEditVehiclePolicy,
   onGrantMonitors,
+  roleSaType
 }: {
   root: UserNode;
   currentUserId: number;
@@ -1166,6 +1206,7 @@ function AlwaysOpenTree({
   onDelete?: (u: UserNode) => void;
   onEditVehiclePolicy?: (u: UserNode) => void;
   onGrantMonitors?: (u: UserNode) => void;
+  roleSaType?: SAType;
 }) {
   const render = (u: UserNode, depth = 0) => (
     <Box
@@ -1196,6 +1237,8 @@ function AlwaysOpenTree({
         currentUserId={currentUserId}
         currentUserRoleLevel={currentUserRoleLevel}
         canDelete={!!canDelete}
+        roleSaType={roleSaType}
+
       />
       {(u.subordinates || []).map(ch => render(ch, depth + 1))}
     </Box>
@@ -1216,7 +1259,8 @@ function UserTreeList({
   onGrantMonitors,          // ⬅️ جدید
   onManageVehicles,      // 👈 جدید
   onDelete,
-  canDelete
+  canDelete,
+  roleSaType
 }: {
   users: UserNode[];
   onEdit?: (u: UserNode) => void;
@@ -1229,6 +1273,7 @@ function UserTreeList({
   onManageVehicles?: (u: UserNode) => void;   // 👈 جدید
   onDelete?: (u: UserNode) => void;   // ✔ جدید
   canDelete?: boolean;
+  roleSaType?: SAType;
 }) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
@@ -1327,7 +1372,7 @@ function UserTreeList({
           <ListItemText
             primary={
               <span style={{ fontWeight: u.role_level <= 2 ? 'bold' : 'normal' }}>
-                {displayName(u)} <small>({roleNameFa(u.role_level)})</small>
+                {displayName(u)} <small>({roleLabel(u.role_level, (u as any).sa_type ?? roleSaType)})</small>
               </span>
             }
           />
@@ -1359,14 +1404,16 @@ function UserTreeList({
 // مرحله ۲: والد هر کاربر رو پیدا کن و به children اضافه کن
 function buildTree(
   flatUsers: User[],
-  root: { id: number; full_name: string; role_level: number }
+  root: { id: number; full_name: string; role_level: number; sa_type?: SAType }, // 👈 این خط
 ): UserNode[] {
   const map = new Map<number, UserNode>();
   const roots: UserNode[] = [];
 
   const base = flatUsers.some(u => u.id === root.id)
     ? flatUsers
-    : [{ id: root.id, full_name: root.full_name, role_level: root.role_level } as User, ...flatUsers];
+    : [{
+      id: root.id, full_name: root.full_name, role_level: root.role_level, sa_type: root.sa_type,           // ←← مهم
+    } as User, ...flatUsers];
 
   base.forEach(u => map.set(u.id, { ...u, subordinates: [] }));
 
@@ -1405,11 +1452,14 @@ export function SuperAdminFormDialog({
     password: string;
 
     permissions: { action: string; is_allowed: boolean }[];
+    sa_type: SAType;
   }>({
     full_name: '',
     phone: '',
     password: '',
     permissions: actions.map(action => ({ action, is_allowed: false })),
+    sa_type: 'fleet',                // 👈 پیش‌فرض
+
   });
 
   useEffect(() => {
@@ -1424,6 +1474,8 @@ export function SuperAdminFormDialog({
           is_allowed:
             initialData.permissions?.find((p: any) => p.action === action)?.is_allowed ?? false,
         })),
+        sa_type: (initialData.sa_type as SAType) ?? 'fleet',   // 👈 اگر از سرور آمد
+
       });
     } else {
       setForm({
@@ -1431,6 +1483,8 @@ export function SuperAdminFormDialog({
         phone: '',
         password: '',
         permissions: actions.map(action => ({ action, is_allowed: false })),
+        sa_type: 'fleet',                                      // 👈 پیش‌فرض
+
       });
     }
   }, [initialData, open]);
@@ -1508,6 +1562,24 @@ export function SuperAdminFormDialog({
               ))}
             </FormGroup>
           </Grid>
+          <Grid item xs={12}>
+            <Box sx={{ fontWeight: 700, mb: 1 }}>نوع سوپرادمین</Box>
+
+            <FormGroup row>
+              {SA_TYPE_OPTS.map(opt => (
+                <FormControlLabel
+                  key={opt.value}
+                  control={
+                    <Radio
+                      checked={form.sa_type === opt.value}
+                      onChange={() => setForm(f => ({ ...f, sa_type: opt.value }))}
+                    />
+                  }
+                  label={opt.label}
+                />
+              ))}
+            </FormGroup>
+          </Grid>
         </Grid>
       </DialogContent>
 
@@ -1543,7 +1615,7 @@ function ManagerRoleSection({
   const [addOpen, setAddOpen] = useState(false);
   const [addLoading, setAddLoading] = useState(false);
   const [treeLoading, setTreeLoading] = useState(false);
-  // داخل ManagerRoleSection:
+  const [selectedSaType, setSelectedSaType] = useState<SAType | undefined>(undefined);
   const [countryOpen, setCountryOpen] = useState(false);
   const [countrySA, setCountrySA] = useState<UserNode | null>(null);
 
@@ -1590,8 +1662,11 @@ function ManagerRoleSection({
   const refreshTree = async () => {
     setTreeLoading(true);
     const { data } = await api.get('/users/my-subordinates-flat');
-    setTree(
-      buildTree(data, { id: user.id, full_name: displayName(user), role_level: user.role_level }));
+    setTree(buildTree(
+      data,
+      { id: user.id, full_name: user.full_name, role_level: user.role_level, sa_type: (user as any).sa_type }
+    ));
+
     setTreeLoading(false);
   };
 
@@ -1631,7 +1706,18 @@ function ManagerRoleSection({
       setSelectedSAId(saList[0].id);
     }
   }, [saList, selectedSAId]);
-
+  // هر بار SA تغییر کرد، نوعش را از سرور بگیر (تا اگر در فلَت نبود، اینجا داشته باشیم)
+  useEffect(() => {
+    (async () => {
+      if (!selectedSAId) { setSelectedSaType(undefined); return; }
+      try {
+        const { data: saRow } = await api.get(`/users/${selectedSAId}`);
+        setSelectedSaType(saRow?.sa_type as SAType | undefined);
+      } catch {
+        setSelectedSaType(undefined);
+      }
+    })();
+  }, [selectedSAId]);
   // نود انتخابی (با تمام زیرمجموعه‌ها)
   const selectedSANode = useMemo(
     () => findNodeById(tree?.[0], selectedSAId ?? null),
@@ -1673,7 +1759,7 @@ function ManagerRoleSection({
                     currentUserId={user.id}
                     currentUserRoleLevel={user.role_level}
                     canDelete
-                  />
+                    roleSaType={(selectedSANode as any)?.sa_type ?? selectedSaType} />
                 </Box>
               </Box>
             </ScrollViewport>
@@ -1687,17 +1773,28 @@ function ManagerRoleSection({
 
 
       {/* افزودن سوپرادمین */}
+      // افزودن
       <SuperAdminFormDialog
         open={addOpen}
         onClose={() => setAddOpen(false)}
         onSubmit={async (data) => {
           setAddLoading(true);
-          await api.post('/users', { ...data, role_level: 2, permissions: data.permissions });
+          // 1) بساز
+          const { data: created } = await api.post('/users', {
+            ...data,
+            role_level: 2,
+            permissions: data.permissions,
+            sa_type: data.sa_type,
+          });
+          // 2) کَسکید نوع روی زیرمجموعه‌ها
+          await api.post(`/users/${created.id}/cascade-sa-type`, { sa_type: data.sa_type });
+
           setAddOpen(false);
           await refreshTree();
           setAddLoading(false);
         }}
       />
+
 
       {/* ویرایش سوپرادمین */}
       <SuperAdminFormDialog
@@ -1705,16 +1802,23 @@ function ManagerRoleSection({
         onClose={() => setEditData(null)}
         initialData={editData || undefined}
         onSubmit={async (data) => {
+          // 1) خود SA را آپدیت کن
           await api.put(`/users/${editData.id}`, {
             full_name: data.full_name,
             phone: data.phone,
-            password: data.password, // 👈 اضافه شد
+            password: data.password,
+            sa_type: data.sa_type,
           });
+          // 2) مجوزها (مثل قبل)
           await api.put(`/role-permissions/user/${editData.id}`, { permissions: data.permissions });
+          // 3) کَسکید روی همهٔ زیرمجموعه‌ها
+          await api.post(`/users/${editData.id}/cascade-sa-type`, { sa_type: data.sa_type });
+
           setEditData(null);
           await refreshTree();
         }}
       />
+
 
       {/* ⬇️ Dialog سهمیه ماشین‌ها */}
       <VehicleQuotaDialog
@@ -1748,7 +1852,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
   const handleOpenVehicle = () => setVehOpen(true);
   const [grantOpen, setGrantOpen] = useState(false);
   const [grantTarget, setGrantTarget] = useState<UserNode | null>(null);
-  // اگر خواستی روی کدِ هر نود هم کلیک باعث بازشدن همین دیالوگ شود:
+  const [saType, setSaType] = useState<SAType | undefined>(user.sa_type as SAType | undefined);
   const handleAddVehicleFromTree = (_u: UserNode) => setVehOpen(true);
   const [vehAccessOpen, setVehAccessOpen] = useState(false);
   const [vehAccessUser, setVehAccessUser] = useState<UserNode | null>(null);
@@ -1762,11 +1866,26 @@ function SuperAdminRoleSection({ user }: { user: User }) {
   const [grantableMap, setGrantableMap] =
     useState<Record<VehicleTypeCode, MonitorKey[]>>({} as any);
 
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await api.get(`/users/${user.id}`);
+        setSaType((data?.sa_type as SAType) ?? (user.sa_type as SAType | undefined));
+      } catch {
+        setSaType((user.sa_type as SAType | undefined) ?? undefined);
+      }
+    })();
+  }, [user.id]);
+
   const fetchSubordinates = async () => {
     const { data } = await api.get('/users/my-subordinates-flat');
-    setTree(buildTree(data, user));
+    // ریشه را با sa_type قطعی بساز تا درخت برچسب‌های فلیتی بگیرد
+    setTree(buildTree(
+      data,
+      { id: user.id, full_name: user.full_name, role_level: user.role_level, sa_type: saType }
+    ));
   };
-
   const checkPermissionBasics = async () => {
     try {
       const { data: mine } = await api.get(`/role-permissions/user/${user.id}`);
@@ -1818,6 +1937,9 @@ function SuperAdminRoleSection({ user }: { user: User }) {
 
   useEffect(() => {
     fetchSubordinates();
+  }, [saType]);
+
+  useEffect(() => {
     checkPermissionBasics();
     fetchGrantable();
   }, []);
@@ -1835,8 +1957,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
 
   return (
     <div>
-      <h2>مدیریت نقش‌ها (سوپرادمین)</h2>
-
+      <h2>مدیریت نقش‌ها ({roleLabel(user.role_level, saType)})</h2>
       <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
         {canCreate && (
           <Button variant="contained" onClick={() => setAddOpen(true)}>
@@ -1866,7 +1987,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
                 currentUserId={user.id}
                 currentUserRoleLevel={user.role_level}
                 canDelete={canDelete}
-              />
+                roleSaType={saType} />
             </Box>
           </Box>
         </ScrollViewport>
@@ -1890,6 +2011,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
           onCreated={fetchSubordinates}
           canGrant={canGrant}
           grantableMap={grantableMap}
+          saType={saType}
         />
       )}
 
@@ -1903,7 +2025,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
           setEditOpen(false);
           await fetchSubordinates();
         }}
-
+        roleSaType={saType}                    // ✅
       />
       {/* ⬇️ همین‌جا اضافه کن */}
       <AddVehicleDialog
@@ -2080,14 +2202,13 @@ export function AddVehicleDialog({
 
   // فرم + تکه‌های پلاک ایران
   const [form, setForm] = useState<{
-    role_level: number;
     name: string;
     country_code: CountryCode | '';
     plate_no: string;
-    plate_part1: string; // 2 رقم
-    plate_part2: string; // 1 حرف فارسی
-    plate_part3: string; // 3 رقم
-    plate_part4: string; // 2 رقم
+    plate_part1: string;
+    plate_part2: string;
+    plate_part3: string;
+    plate_part4: string;
     vehicle_type_code: VehicleTypeCode | '';
     tank_capacity_liters: number | '';
   }>({
@@ -2101,6 +2222,7 @@ export function AddVehicleDialog({
     vehicle_type_code: '',
     tank_capacity_liters: '',
   });
+
 
   type VehicleTypeCode =
     | 'bus'
@@ -2285,7 +2407,7 @@ export function AddVehicleDialog({
   const noTypeCapacity = !allowedTypes.length;
   const noCountryAllowed = !allowedCountries.length;
   const canSubmit =
-    !loading && !noTypeCapacity && !noCountryAllowed && !!pairedDeviceId; // اگر نمی‌خوای اجباری باشه، شرط آخر رو بردار
+    !saving && !loading && !noTypeCapacity && !noCountryAllowed && !!pairedDeviceId;
   const requestPairCode = async () => {
     try {
       setLoading(true);
@@ -2568,6 +2690,7 @@ function AddUserDialog({
   onCreated,
   canGrant,
   grantableMap,
+  saType,
 }: {
   open: boolean;
   onClose: () => void;
@@ -2575,6 +2698,8 @@ function AddUserDialog({
   onCreated: () => void;
   canGrant: boolean;
   grantableMap: Record<VehicleTypeCode, MonitorKey[]>;
+  saType?: SAType;      // ← این را به تایپ اضافه کن
+
 }) {
   // فرم پروفایل + نقش
   const [form, setForm] = useState({
@@ -2672,7 +2797,7 @@ function AddUserDialog({
     if (!open) return;
     (async () => {
       const { data } = await api.get('/users/my-subordinates-flat');
-      const all = [{ id: parentId, full_name: 'زیرمجموعه مستقیم من (سوپرادمین)', role_level: 2 }, ...data];
+      const all = [{ id: parentId, full_name: `زیرمجموعه مستقیم من (${roleLabel(2, saType)})`, role_level: 2 }, ...data];
       // فقط کسانی که نقش‌شان از کاربر جدید بالاتر است می‌توانند والد باشند
       const filtered = all.filter(u => u.role_level < form.role_level);
       // اگر parent انتخاب‌شده معتبر نیست، اولین گزینه را بگذار
@@ -2725,6 +2850,7 @@ function AddUserDialog({
     setErrors(e);
     return Object.keys(e).length === 0;
   };
+  const label = (lvl: number) => roleLabel(lvl, saType);
 
   // ثبت کاربر
   const handleSubmit = async () => {
@@ -2895,10 +3021,10 @@ function AddUserDialog({
               onChange={handleSelectChange}
               style={{ width: '100%', padding: 8, marginTop: 6 }}
             >
-              <option value={3}>مدیر شعبه</option>
-              <option value={4}>مالک</option>
-              <option value={5}>تکنسین</option>
-              <option value={6}>راننده</option>
+              <option value={3}>{label(3)}</option>
+              <option value={4}>{label(4)}</option>
+              <option value={5}>{label(5)}</option>
+              <option value={6}>{label(6)}</option>
             </select>
           </Grid>
 
@@ -2952,6 +3078,7 @@ function EditUserDialog({
   canGrant,
   grantableMap, // دیگه استفاده نمی‌کنیم ولی برای سازگاری می‌ذاریم
   onSaved,
+  roleSaType,
 }: {
   open: boolean;
   onClose: () => void;
@@ -2959,13 +3086,21 @@ function EditUserDialog({
   canGrant: boolean;
   grantableMap: Record<VehicleTypeCode, MonitorKey[]>;
   onSaved: () => void;
+  roleSaType?: SAType;
 }) {
-  // پروفایل/نقش
   const [savingInfo, setSavingInfo] = useState(false);
   const [savingRole, setSavingRole] = useState(false);
   const [formInfo, setFormInfo] = useState({ full_name: '', phone: '', password: '' });
   const [roleLevel, setRoleLevel] = useState<number>(4);
+  // بالای EditUserDialog
+  const [saType, setSaType] = useState<SAType>('fleet');
+  const effectiveSaType = roleSaType ?? saType;
 
+  useEffect(() => {
+    if (open && data?.role_level === 2) {
+      setSaType((data?.sa_type as SAType) ?? 'fleet');
+    }
+  }, [open, data]);
   // مجوزها
   const [myAllowed, setMyAllowed] = useState<Set<string>>(new Set());          // مجوزهای خودِ SA
   const [grantableActions, setGrantableActions] = useState<string[]>([]);       // اکشن‌هایی که SA می‌تواند واگذار کند
@@ -2978,6 +3113,7 @@ function EditUserDialog({
     // مقداردهی فیلدهای پروفایل/نقش
     setFormInfo({ full_name: data.full_name || '', phone: data.phone || '', password: '' });
     setRoleLevel(data.role_level ?? 4);
+    setSaType((data?.sa_type as SAType) ?? 'fleet');
 
     (async () => {
       try {
@@ -3093,7 +3229,32 @@ function EditUserDialog({
               ذخیره اطلاعات کاربر
             </Button>
           </Grid>
-
+          {data?.role_level === 2 && (
+            <Grid item xs={12}>
+              <Box sx={{ fontWeight: 700, mb: 1 }}>نوع سوپرادمین</Box>
+              <FormGroup row>
+                {SA_TYPE_OPTS.map(opt => (
+                  <FormControlLabel
+                    key={opt.value}
+                    control={<Radio checked={saType === opt.value} onChange={() => setSaType(opt.value)} />}
+                    label={opt.label}
+                  />
+                ))}
+              </FormGroup>
+              <Button
+                variant="contained"
+                onClick={async () => {
+                  // 1) خود SA
+                  await api.put(`/users/${data.id}`, { sa_type: saType });
+                  // 2) کَسکید
+                  await api.post(`/users/${data.id}/cascade-sa-type`, { sa_type: saType });
+                  await onSaved();
+                }}
+              >
+                ذخیره نوع (با اعمال به زیرمجموعه‌ها)
+              </Button>
+            </Grid>
+          )}
           {/* نقش */}
           <Grid item xs={12}>
             <label>نقش:</label>
@@ -3103,10 +3264,10 @@ function EditUserDialog({
               style={{ width: '100%', padding: 8, marginTop: 6 }}
               disabled={!canGrant}
             >
-              <option value={3}>مدیر شعبه</option>
-              <option value={4}>مالک</option>
-              <option value={5}>تکنسین</option>
-              <option value={6}>راننده</option>
+              <option value={3}>{roleLabel(3, effectiveSaType)}</option>
+              <option value={4}>{roleLabel(4, effectiveSaType)}</option>
+              <option value={5}>{roleLabel(5, effectiveSaType)}</option>
+              <option value={6}>{roleLabel(6, effectiveSaType)}</option>
             </select>
           </Grid>
           <Grid item xs={12}>
@@ -3539,6 +3700,7 @@ function ScrollViewport({
 function ScopedSubtreeSection({ user }: { user: User }) {
   const [tree, setTree] = useState<UserNode[]>([]);
   const [loading, setLoading] = useState(true);
+  const [roleSaType, setRoleSaType] = useState<SAType | undefined>(undefined);
 
   const [canCreate, setCanCreate] = useState(false);
   const [canEdit, setCanEdit] = useState(false);
@@ -3552,7 +3714,10 @@ function ScopedSubtreeSection({ user }: { user: User }) {
   // فقط زیرمجموعه‌های خود کاربر
   const refreshTree = async () => {
     const { data } = await api.get('/users/my-subordinates-flat');
-    setTree(buildTree(data, { id: user.id, full_name: user.full_name, role_level: user.role_level }));
+    setTree(buildTree(
+      data,
+      { id: user.id, full_name: user.full_name, role_level: user.role_level, sa_type: (user as any).sa_type }
+    ));
   };
 
   const loadMyPerms = async () => {
@@ -3582,7 +3747,17 @@ function ScopedSubtreeSection({ user }: { user: User }) {
       setLoading(false);
     })();
   }, []);
-
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data: sa } = await api.get('/users/me/ancestor-super-admin');
+        if (sa?.id) {
+          const { data: saRow } = await api.get(`/users/${sa.id}`);
+          setRoleSaType(saRow?.sa_type); // 'fleet' | 'device' | 'universal'
+        }
+      } catch { }
+    })();
+  }, []);
   const handleDeleteUser = async (u: UserNode) => {
     if (!canDelete) return;
     if (u.id === user.id) return alert('حذف خودتان مجاز نیست.');
@@ -3605,7 +3780,7 @@ function ScopedSubtreeSection({ user }: { user: User }) {
 
   return (
     <div>
-      <h2>مدیریت نقش‌ها ({roleNameFa(user.role_level)})</h2>
+      <h2>مدیریت نقش‌ها ({roleLabel(user.role_level, roleSaType)})</h2>
 
       <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 2 }}>
         {canCreate && (
@@ -3628,6 +3803,7 @@ function ScopedSubtreeSection({ user }: { user: User }) {
                 currentUserId={user.id}
                 currentUserRoleLevel={user.role_level}
                 canDelete={canDelete}
+                roleSaType={roleSaType}
               />
             </Box>
           </Box>
@@ -3645,6 +3821,8 @@ function ScopedSubtreeSection({ user }: { user: User }) {
           onCreated={refreshTree}
           canGrant={canGrant}              // اگر اجازهٔ واگذاری مجوز دارد
           grantableMap={EMPTY_GRANT_MAP}
+          saType={roleSaType}                  // ← اضافه شد
+
         />
       )}
 
@@ -3656,6 +3834,7 @@ function ScopedSubtreeSection({ user }: { user: User }) {
         canGrant={canGrant}
         grantableMap={EMPTY_GRANT_MAP}
         onSaved={async () => { setEditOpen(false); await refreshTree(); }}
+        roleSaType={roleSaType}
       />
     </div>
   );

@@ -28,17 +28,21 @@ export class AuthController {
   @UseGuards(JwtAuthGuard) // ✅ اضافه کن
   @Get('me')
   async getProfile(@CurrentUser() user: Users) {
-    // ممکنه req.user فقط id/role داشته باشه؛ از DB اسم رو بیار
+    // ممکنه req.user فقط id/role داشته باشه؛ از DB فیلدهای لازم رو بیار
     const row = await this.usersRepo.findOne({
       where: { id: user.id },
-      select: { id: true, full_name: true, role_level: true } as any,
+      // ⬅️ sa_type رو هم انتخاب کن
+      select: { id: true, full_name: true, role_level: true, sa_type: true } as any,
     });
+
     return {
       id: row?.id ?? user.id,
-      full_name: row?.full_name ?? '',   // ⬅️ اسم
+      full_name: row?.full_name ?? '',
       role_level: row?.role_level ?? user.role_level,
+      sa_type: row?.sa_type ?? null, // ⬅️ همین مهمه
     };
   }
+
 
 }
 

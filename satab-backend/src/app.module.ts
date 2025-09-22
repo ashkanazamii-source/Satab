@@ -29,6 +29,7 @@ import { OtpModule } from './sms/otp.module';
 import { ViolationsModule } from './telemetry/violations.module';
 import { TelemetryModule } from './telemetry/telemetry.module';
 import { ContextMiddleware } from './common/context.middleware';
+import { BoardModule } from './board/board.module';
 
 @Module({
   imports: [
@@ -74,6 +75,7 @@ import { ContextMiddleware } from './common/context.middleware';
     OtpModule,
     TelemetryModule,
     ViolationsModule,
+    BoardModule,
   ],
   providers: [
     // لاگ همهٔ درخواست‌های HTTP
