@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
+import React from 'react';
 import api from '../services/api';
 import { Portal, } from '@mui/material';
 import {
@@ -22,6 +23,19 @@ import {
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import RefreshIcon from '@mui/icons-material/Refresh';
+// +++
+import Drawer from '@mui/material/Drawer';
+import {
+  ListItemButton, ListItemIcon,
+} from '@mui/material';
+import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
+import DashboardOutlined from '@mui/icons-material/DashboardOutlined';
+import GroupsIcon from '@mui/icons-material/Groups';
+import DirectionsCarIcon from '@mui/icons-material/DirectionsCar';
+import InsightsRoundedIcon from '@mui/icons-material/InsightsRounded';
+import ListAltIcon from '@mui/icons-material/ListAlt';
+import ChatRoundedIcon from '@mui/icons-material/ChatRounded';
+import AltRouteOutlined from '@mui/icons-material/AltRouteOutlined';
 
 
 
@@ -1611,6 +1625,11 @@ function ManagerRoleSection({
   tree: UserNode[];
   setTree: React.Dispatch<React.SetStateAction<UserNode[]>>;
 }) {
+  // +++ کنار سایر state ها
+  const [sidebarOpen, setSidebarOpen] = React.useState(false);
+  const openSidebar = () => setSidebarOpen(true);
+  const closeSidebar = () => setSidebarOpen(false);
+
   const [editData, setEditData] = useState<any>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [addLoading, setAddLoading] = useState(false);
@@ -1724,7 +1743,75 @@ function ManagerRoleSection({
     [tree, selectedSAId]
   );
   return (
+
     <div>
+      {/* === Sidebar (عیناً از DashboardPage) === */}
+      <Drawer
+        anchor="left"
+        open={sidebarOpen}
+        onClose={closeSidebar}
+        PaperProps={{
+          sx: { width: 260, p: 1.5, direction: 'rtl' }
+        }}
+      >
+        <Typography variant="subtitle1" sx={{ mb: .5, px: .5 }}>ناوبری</Typography>
+        <List dense>
+          {[
+            { label: 'داشبورد', icon: <DashboardOutlined />, to: '/dashboard' },
+            { label: 'مدیریت نقش‌ها', icon: <GroupsIcon />, to: '/role-management' },
+            { label: 'مدیریت راننده/ناوگان', icon: <DirectionsCarIcon />, to: '/driver-management' },
+            { label: 'تحلیل‌ها', icon: <InsightsRoundedIcon />, to: '/analytics' },
+            { label: 'لاگ‌ها', icon: <ListAltIcon />, to: '/logs' },
+            { label: 'گفتگو', icon: <ChatRoundedIcon />, to: '/chat' },
+            { label: 'تعریف خط', icon: <AltRouteOutlined />, to: '/define-line' },
+          ].map((item, i) => (
+            <ListItem key={i} disablePadding>
+              <ListItemButton
+                component="a"
+                href={item.to}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={closeSidebar}
+              >
+                <ListItemIcon sx={{ minWidth: 36 }}>{item.icon}</ListItemIcon>
+                <ListItemText primary={item.label} />
+              </ListItemButton>
+            </ListItem>
+          ))}
+        </List>
+      </Drawer>
+
+      {/* ناحیه‌ی نامرئی برای هاور در لبه‌ی راست (نسخه‌ی تو: top=64px) */}
+      <Box
+        onMouseEnter={openSidebar}
+        sx={{
+          position: 'fixed',
+          top: 64,
+          left: 0,
+          width: 16,
+          height: 'calc(100vh - 64px)',
+          zIndex: (t) => t.zIndex.drawer + 1,
+          cursor: 'pointer',
+        }}
+      />
+
+      {/* دکمه‌ی همبرگری شناور در سمت چپ (نسخه‌ی تو: top=20,left=20) */}
+      <IconButton
+        onClick={openSidebar}
+        aria-label="باز کردن ناوبری"
+        sx={{
+          position: 'fixed',
+          top: 20,
+          left: 20,
+          zIndex: (t) => t.zIndex.drawer + 1,
+          bgcolor: 'background.paper',
+          boxShadow: 1,
+          '&:hover': { bgcolor: 'background.default' },
+        }}
+      >
+        <MenuRoundedIcon />
+      </IconButton>
+
       <h2>مدیریت نقش‌ها (مدیرکل)</h2>
 
       <Button variant="contained" onClick={() => setAddOpen(true)} sx={{ mb: 2 }}>
@@ -1844,6 +1931,11 @@ function ManagerRoleSection({
 
 // ====== سایر نقش‌ها با همان استایل قبلی ======
 function SuperAdminRoleSection({ user }: { user: User }) {
+  // +++ کنار سایر state ها
+  const [sidebarOpen, setSidebarOpen] = React.useState(false);
+  const openSidebar = () => setSidebarOpen(true);
+  const closeSidebar = () => setSidebarOpen(false);
+
   const [tree, setTree] = useState<UserNode[]>([]);
   const [addOpen, setAddOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -1957,6 +2049,73 @@ function SuperAdminRoleSection({ user }: { user: User }) {
 
   return (
     <div>
+      {/* === Sidebar (عیناً از DashboardPage) === */}
+      <Drawer
+        anchor="left"
+        open={sidebarOpen}
+        onClose={closeSidebar}
+        PaperProps={{
+          sx: { width: 260, p: 1.5, direction: 'rtl' }
+        }}
+      >
+        <Typography variant="subtitle1" sx={{ mb: .5, px: .5 }}>ناوبری</Typography>
+        <List dense>
+          {[
+            { label: 'داشبورد', icon: <DashboardOutlined />, to: '/dashboard' },
+            { label: 'مدیریت نقش‌ها', icon: <GroupsIcon />, to: '/role-management' },
+            { label: 'مدیریت راننده/ناوگان', icon: <DirectionsCarIcon />, to: '/driver-management' },
+            { label: 'تحلیل‌ها', icon: <InsightsRoundedIcon />, to: '/analytics' },
+            { label: 'لاگ‌ها', icon: <ListAltIcon />, to: '/logs' },
+            { label: 'گفتگو', icon: <ChatRoundedIcon />, to: '/chat' },
+            { label: 'تعریف خط', icon: <AltRouteOutlined />, to: '/define-line' },
+          ].map((item, i) => (
+            <ListItem key={i} disablePadding>
+              <ListItemButton
+                component="a"
+                href={item.to}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={closeSidebar}
+              >
+                <ListItemIcon sx={{ minWidth: 36 }}>{item.icon}</ListItemIcon>
+                <ListItemText primary={item.label} />
+              </ListItemButton>
+            </ListItem>
+          ))}
+        </List>
+      </Drawer>
+
+      {/* ناحیه‌ی نامرئی برای هاور در لبه‌ی راست (نسخه‌ی تو: top=64px) */}
+      <Box
+        onMouseEnter={openSidebar}
+        sx={{
+          position: 'fixed',
+          top: 64,
+          left: 0,
+          width: 16,
+          height: 'calc(100vh - 64px)',
+          zIndex: (t) => t.zIndex.drawer + 1,
+          cursor: 'pointer',
+        }}
+      />
+
+      {/* دکمه‌ی همبرگری شناور در سمت چپ (نسخه‌ی تو: top=20,left=20) */}
+      <IconButton
+        onClick={openSidebar}
+        aria-label="باز کردن ناوبری"
+        sx={{
+          position: 'fixed',
+          top: 20,
+          left: 20,
+          zIndex: (t) => t.zIndex.drawer + 1,
+          bgcolor: 'background.paper',
+          boxShadow: 1,
+          '&:hover': { bgcolor: 'background.default' },
+        }}
+      >
+        <MenuRoundedIcon />
+      </IconButton>
+
       <h2>مدیریت نقش‌ها ({roleLabel(user.role_level, saType)})</h2>
       <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
         {canCreate && (
@@ -2058,6 +2217,10 @@ function GrantMonitorDialog({
   const [loading, setLoading] = useState(false);
   const [perType, setPerType] = useState<Record<VehicleTypeCode, Set<MonitorKey>>>({} as any);
   const hasAnyGrantable = Object.keys(grantableMap || {}).length > 0;
+  // +++ کنار سایر state ها
+  const [sidebarOpen, setSidebarOpen] = React.useState(false);
+  const openSidebar = () => setSidebarOpen(true);
+  const closeSidebar = () => setSidebarOpen(false);
 
   useEffect(() => {
     if (!open || !targetUser?.id) return;
@@ -2118,6 +2281,73 @@ function GrantMonitorDialog({
 
   return (
     <Dialog open={open} onClose={() => onClose(false)} fullWidth>
+      {/* === Sidebar (عیناً از DashboardPage) === */}
+      <Drawer
+        anchor="left"
+        open={sidebarOpen}
+        onClose={closeSidebar}
+        PaperProps={{
+          sx: { width: 260, p: 1.5, direction: 'rtl' }
+        }}
+      >
+        <Typography variant="subtitle1" sx={{ mb: .5, px: .5 }}>ناوبری</Typography>
+        <List dense>
+          {[
+            { label: 'داشبورد', icon: <DashboardOutlined />, to: '/dashboard' },
+            { label: 'مدیریت نقش‌ها', icon: <GroupsIcon />, to: '/role-management' },
+            { label: 'مدیریت راننده/ناوگان', icon: <DirectionsCarIcon />, to: '/driver-management' },
+            { label: 'تحلیل‌ها', icon: <InsightsRoundedIcon />, to: '/analytics' },
+            { label: 'لاگ‌ها', icon: <ListAltIcon />, to: '/logs' },
+            { label: 'گفتگو', icon: <ChatRoundedIcon />, to: '/chat' },
+            { label: 'تعریف خط', icon: <AltRouteOutlined />, to: '/define-line' },
+          ].map((item, i) => (
+            <ListItem key={i} disablePadding>
+              <ListItemButton
+                component="a"
+                href={item.to}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={closeSidebar}
+              >
+                <ListItemIcon sx={{ minWidth: 36 }}>{item.icon}</ListItemIcon>
+                <ListItemText primary={item.label} />
+              </ListItemButton>
+            </ListItem>
+          ))}
+        </List>
+      </Drawer>
+
+      {/* ناحیه‌ی نامرئی برای هاور در لبه‌ی راست (نسخه‌ی تو: top=64px) */}
+      <Box
+        onMouseEnter={openSidebar}
+        sx={{
+          position: 'fixed',
+          top: 64,
+          left: 0,
+          width: 16,
+          height: 'calc(100vh - 64px)',
+          zIndex: (t) => t.zIndex.drawer + 1,
+          cursor: 'pointer',
+        }}
+      />
+
+      {/* دکمه‌ی همبرگری شناور در سمت چپ (نسخه‌ی تو: top=20,left=20) */}
+      <IconButton
+        onClick={openSidebar}
+        aria-label="باز کردن ناوبری"
+        sx={{
+          position: 'fixed',
+          top: 20,
+          left: 20,
+          zIndex: (t) => t.zIndex.drawer + 1,
+          bgcolor: 'background.paper',
+          boxShadow: 1,
+          '&:hover': { bgcolor: 'background.default' },
+        }}
+      >
+        <MenuRoundedIcon />
+      </IconButton>
+
       <DialogTitle>
         واگذاری دسترسی مانیتورینگ — {targetUser && displayName(targetUser)}
       </DialogTitle>

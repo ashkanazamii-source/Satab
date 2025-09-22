@@ -9,6 +9,7 @@ import 'leaflet/dist/leaflet.css';
 import ChatPage from './pages/ChatPage'; // صفحه‌ی لاگ‌ها
 import AnalyticsPage from './pages/AnalyticsPage'; // صفحه‌ی لاگ‌ها
 import DefineLinePage from './pages/DefineLinePage';
+import ShiftsPage from './pages/ShiftsPage';
 
 export default function App() {
   return (
@@ -23,6 +24,7 @@ export default function App() {
         <Route path="/chat" element={<ChatPage />} />
         <Route path="/analytics" element={<AnalyticsPage />} />
         <Route path="/define-line" element={<DefineLinePage />} />
+        <Route path="/shifts" element={<ShiftsPage />} />
 
         <Route
           path="/"

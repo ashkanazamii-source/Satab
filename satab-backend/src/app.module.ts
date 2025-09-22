@@ -23,13 +23,14 @@ import { GlobalExceptionFilter } from './audit/global-exception.filter';
 import { ChatModule } from './chat/chat.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { AnalyticsModule } from './analytics/analytics.module';
-import { ProfilesModule } from './profiles/profiles.module'; // ✅ ۱. این خط را برای import اضافه کنید
+import { ProfilesModule } from './profiles/profiles.module'; 
 import { PairingModule } from './pairing/pairing.module';
 import { OtpModule } from './sms/otp.module';
 import { ViolationsModule } from './telemetry/violations.module';
 import { TelemetryModule } from './telemetry/telemetry.module';
 import { ContextMiddleware } from './common/context.middleware';
 import { BoardModule } from './board/board.module';
+import { ShiftsModule } from './shifts/shifts.module';
 
 @Module({
   imports: [
@@ -76,6 +77,7 @@ import { BoardModule } from './board/board.module';
     TelemetryModule,
     ViolationsModule,
     BoardModule,
+    ShiftsModule,
   ],
   providers: [
     // لاگ همهٔ درخواست‌های HTTP

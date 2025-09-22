@@ -8,6 +8,18 @@ import {
     DialogActions, FormControl, InputLabel, Checkbox, FormControlLabel, ListItemSecondaryAction,
     CircularProgress
 } from '@mui/material';
+import Drawer from '@mui/material/Drawer';
+import {
+    ListItemButton, ListItemIcon,
+} from '@mui/material';
+import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
+import DashboardOutlined from '@mui/icons-material/DashboardOutlined';
+import GroupsIcon from '@mui/icons-material/Groups';
+import DirectionsCarIcon from '@mui/icons-material/DirectionsCar';
+import InsightsRoundedIcon from '@mui/icons-material/InsightsRounded';
+import ListAltIcon from '@mui/icons-material/ListAlt';
+import ChatRoundedIcon from '@mui/icons-material/ChatRounded';
+import AltRouteOutlined from '@mui/icons-material/AltRouteOutlined';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
@@ -183,6 +195,9 @@ export default function DefineLinePage() {
         id: number; owner_user_id: number; vehicle_type_code?: string;
     }>>([]);
     const [profiles, setProfiles] = React.useState<SettingsProfile[]>([]);
+    const [sidebarOpen, setSidebarOpen] = React.useState(false);
+    const openSidebar = () => setSidebarOpen(true);
+    const closeSidebar = () => setSidebarOpen(false);
 
     const [vehTab, setVehTab] = React.useState<string>('all');
     const vehicleTypeLabel = React.useCallback((t?: string) => {
@@ -818,9 +833,6 @@ export default function DefineLinePage() {
         }
     };
 
-
-
-
     const readVehicleStations = React.useCallback(async (vid: number) => {
         try {
             const { data } = await api.get(`/vehicles/${vid}/stations`);
@@ -1117,7 +1129,75 @@ export default function DefineLinePage() {
 
 
     return (
+
         <LocalizationProvider dateAdapter={AdapterDayjs}>
+            {/* === Sidebar (عیناً از DashboardPage) === */}
+            <Drawer
+                anchor="left"
+                open={sidebarOpen}
+                onClose={closeSidebar}
+                PaperProps={{
+                    sx: { width: 260, p: 1.5, direction: 'rtl' }
+                }}
+            >
+                <Typography variant="subtitle1" sx={{ mb: .5, px: .5 }}>ناوبری</Typography>
+                <List dense>
+                    {[
+                        { label: 'داشبورد', icon: <DashboardOutlined />, to: '/dashboard' },
+                        { label: 'مدیریت نقش‌ها', icon: <GroupsIcon />, to: '/role-management' },
+                        { label: 'مدیریت راننده/ناوگان', icon: <DirectionsCarIcon />, to: '/driver-management' },
+                        { label: 'تحلیل‌ها', icon: <InsightsRoundedIcon />, to: '/analytics' },
+                        { label: 'لاگ‌ها', icon: <ListAltIcon />, to: '/logs' },
+                        { label: 'گفتگو', icon: <ChatRoundedIcon />, to: '/chat' },
+                        { label: 'تعریف خط', icon: <AltRouteOutlined />, to: '/define-line' },
+                    ].map((item, i) => (
+                        <ListItem key={i} disablePadding>
+                            <ListItemButton
+                                component="a"
+                                href={item.to}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={closeSidebar}
+                            >
+                                <ListItemIcon sx={{ minWidth: 36 }}>{item.icon}</ListItemIcon>
+                                <ListItemText primary={item.label} />
+                            </ListItemButton>
+                        </ListItem>
+                    ))}
+                </List>
+            </Drawer>
+
+            {/* ناحیه‌ی نامرئی برای هاور در لبه‌ی راست (نسخه‌ی تو: top=64px) */}
+            <Box
+                onMouseEnter={openSidebar}
+                sx={{
+                    position: 'fixed',
+                    top: 64,
+                    left: 0,
+                    width: 16,
+                    height: 'calc(100vh - 64px)',
+                    zIndex: (t) => t.zIndex.drawer + 1,
+                    cursor: 'pointer',
+                }}
+            />
+
+            {/* دکمه‌ی همبرگری شناور در سمت چپ (نسخه‌ی تو: top=20,left=20) */}
+            <IconButton
+                onClick={openSidebar}
+                aria-label="باز کردن ناوبری"
+                sx={{
+                    position: 'fixed',
+                    top: 20,
+                    left: 20,
+                    zIndex: (t) => t.zIndex.drawer + 1,
+                    bgcolor: 'background.paper',
+                    boxShadow: 1,
+                    '&:hover': { bgcolor: 'background.default' },
+                }}
+            >
+                <MenuRoundedIcon />
+            </IconButton>
+
             <Box p={2.5} sx={{ direction: 'rtl' }}>
                 {/* کنترل‌های ترسیم مسیر */}
 

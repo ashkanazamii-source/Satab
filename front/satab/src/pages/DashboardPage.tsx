@@ -35,7 +35,7 @@ import {
   List,
   ListItem, ListItemButton, ListItemIcon, ListItemText
 } from '@mui/material';
-
+import CalendarMonthRoundedIcon from '@mui/icons-material/CalendarMonthRounded';
 import DashboardOutlined from '@mui/icons-material/DashboardOutlined';
 import PersonOutline from '@mui/icons-material/PersonOutline';
 import DirectionsBusFilled from '@mui/icons-material/DirectionsBusFilled';
@@ -910,6 +910,8 @@ function FleetModeActions() {
             { label: 'لاگ‌ها', icon: <ListAltIcon />, to: '/logs' },
             { label: 'گفتگو', icon: <ChatRoundedIcon />, to: '/chat' },
             { label: 'تعریف خط', icon: <AltRouteOutlined />, to: '/define-line' },
+            { label: 'تعیین شیفت‌ها', icon: <CalendarMonthRoundedIcon />, to: '/shifts' },
+
           ].map((item, i) => (
             <ListItem key={i} disablePadding>
               <ListItemButton
