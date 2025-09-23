@@ -77,16 +77,59 @@ type Shift = {
     route_id?: ID | null;
     station_start_id?: ID | null;
     station_end_id?: ID | null;
-    /** تاریخ به صورت YYYY-MM-DD */
-    date: string;
-    /** HH:mm */
-    start_time: string;
-    /** HH:mm */
-    end_time: string;
+    date: string;           // YYYY-MM-DD (برنامه)
+    start_time: string;     // HH:mm (برنامه)
+    end_time: string;       // HH:mm (برنامه)
     type: ShiftType;
     note?: string;
     status: ShiftStatus;
+
+    // --- جدید:
+    has_start_confirm?: boolean;   // راننده شروع را تأیید کرده؟
+    has_end_confirm?: boolean;     // راننده پایان را تأیید کرده؟
+    actual_start_time?: string | null; // HH:mm واقعی (اختیاری)
+    actual_end_time?: string | null;   // HH:mm واقعی (اختیاری)
+    tardy_minutes?: number;      // ← اضافه
+    is_unfinished?: boolean;     // ← اضافه (نام را با بک‌اند هماهنگ کن)
 };
+
+// ====== APIهای رویدادی شیفت ======
+async function confirmShiftStart(id: ID): Promise<Shift> {
+    const res = await api.post(`/shifts/${id}/confirm-start`, {}); // سرور زمان فعلی را ثبت می‌کند
+    return res.data;
+}
+async function confirmShiftEnd(id: ID): Promise<Shift> {
+    const res = await api.post(`/shifts/${id}/confirm-end`, {});   // سرور زمان فعلی را ثبت می‌کند
+    return res.data;
+}
+
+/** اطمینان از ساخت اضافه‌کاری برای شیفتی که پایانش تأیید نشده و از end_time رد شده
+ *  سرور اگر لازم باشد یک Overtime(PENDING) می‌سازد و برمی‌گرداند. */
+async function ensureOvertimeForShift(id: ID): Promise<{ created?: boolean; overtime?: Overtime | null }> {
+    const res = await api.post(`/shifts/${id}/ensure-overtime`, {});
+    return res.data ?? { created: false, overtime: null };
+}
+function hmToMinutes(hhmm: string) {
+    const [h, m] = (hhmm || '0:0').split(':').map(Number);
+    return (h * 60) + m;
+}
+function nowHM() {
+    const d = new Date();
+    return `${fmt2(d.getHours())}:${fmt2(d.getMinutes())}`;
+}
+function isOvertimeActive(s: Shift): boolean {
+    if (!s.has_start_confirm || s.has_end_confirm) return false;
+    return hmToMinutes(nowHM()) > hmToMinutes(s.end_time);
+}
+function estimateOvertimeMinutes(s: Shift): number {
+    // اگر امروز همان تاریخ شیفت نیست، برآورد نکن (به سرور واگذار)
+    const isToday = ymd(new Date()) === s.date;
+    if (!isToday) return 0;
+    if (!s.has_start_confirm || s.has_end_confirm) return 0;
+    const endPlan = hmToMinutes(s.end_time);
+    const cur = hmToMinutes(nowHM());
+    return Math.max(0, cur - endPlan);
+}
 
 type MonthRef = { y: number; m: number }; // m: 1..12
 
@@ -248,7 +291,17 @@ const mapDriverSafe = (u: FlatUser) => ({
     phone: u.phone || undefined,
     branch_name: u.branch_name || undefined,
 });
-
+type OvertimeStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+type Overtime = {
+    id: ID;
+    driver_id: ID;
+    /** تاریخ میلادی "YYYY-MM-DD" */
+    date: string;
+    /** مدت به دقیقه */
+    minutes: number;
+    note?: string;
+    status: OvertimeStatus;
+};
 /** =========================
  *  Component
  *  ========================= */
@@ -270,8 +323,145 @@ export default function ShiftsPage() {
         extraDriverIds: [],
         dates: [],
     });
+    // -- Assignments API (منبع حقیقت حضور/غیاب) --
+    type Assignment = {
+        started_at: string;
+        ended_at?: string | null;
+        vehicle_id?: number | null; // اگر API نمی‌دهد، حذف کن و فیلتر را بردار
+    };
+
+    // -- Assignments API
+    async function fetchAssignmentHistory(driverId: ID): Promise<Assignment[]> {
+        const res = await api.get(`/assignments/history/${driverId}`);
+        return Array.isArray(res.data) ? res.data : (res.data?.items ?? []);
+    }
+
+    async function fetchCurrentAssignment(driverId: ID): Promise<Assignment | null> {
+        const res = await api.get(`/assignments/current/${driverId}`);
+        return res.data ?? null;
+    }
+
+    function toDateTime(ymdStr: string, hm: string) {
+        const [y, m, d] = ymdStr.split('-').map(Number);
+        const [hh, mm] = hm.split(':').map(Number);
+        return new Date(y, (m || 1) - 1, d || 1, hh || 0, mm || 0, 0, 0);
+    }
+
+    function overlap(aStart: Date, aEnd: Date, bStart: Date, bEnd: Date) {
+        return aStart <= bEnd && bStart <= aEnd;
+    }
+    function toDateTimeSpan(s: Shift) {
+        const start = toDateTime(s.date, s.start_time);
+        let end = toDateTime(s.date, s.end_time);
+        if (end <= start) end = new Date(end.getTime() + 24 * 60 * 60 * 1000);
+        return { start, end };
+    }
+
+    /** فیلدهای شیفت را صرفاً از روی بازه‌های انتساب مشتق می‌کند */
+    function deriveFromAssignments(
+        s: Shift,
+        assigns: Assignment[],
+        now = new Date(),
+    ): Pick<Shift, 'has_start_confirm' | 'has_end_confirm' | 'actual_start_time' | 'actual_end_time'> & {
+        tardy_minutes: number; unfinished: boolean
+    } {
+        const { start: shiftStart, end: shiftEnd } = toDateTimeSpan(s);
+
+        const eff = assigns
+            .filter(a => !s.vehicle_id || a.vehicle_id === s.vehicle_id)
+            .map(a => ({ start: new Date(a.started_at), end: a.ended_at ? new Date(a.ended_at) : now }))
+            .filter(a => overlap(a.start, a.end, shiftStart, shiftEnd))
+            .sort((a, b) => a.start.getTime() - b.start.getTime());
+
+        const hasStart = eff.length > 0;
+        const actualStart = hasStart ? eff[0].start : null;
+        const lastEnd = hasStart ? eff[eff.length - 1].end : null;
+
+        // سگمنت‌های بریده به بازهٔ شیفت
+        const segments = eff
+            .map(e => ({
+                start: e.start < shiftStart ? shiftStart : e.start,
+                end: e.end > shiftEnd ? shiftEnd : e.end,
+            }))
+            .filter(seg => seg.start < seg.end)
+            .sort((a, b) => a.start.getTime() - b.start.getTime());
+
+        // وجود هر فاصله‌ای = خروج وسط شیفت
+        let hadGap = false;
+        if (segments.length > 0) {
+            // گپ ابتدای شیفت
+            if (segments[0].start.getTime() > shiftStart.getTime()) hadGap = true;
+            // گپ‌های میانی
+            for (let i = 1; i < segments.length && !hadGap; i++) {
+                if (segments[i - 1].end.getTime() < segments[i].start.getTime()) {
+                    hadGap = true;
+                }
+            }
+            // گپ انتهای شیفت (اگر تا پایان پوشش نداشته باشد)
+            if (segments[segments.length - 1].end.getTime() < shiftEnd.getTime()) hadGap = true;
+        } else {
+            // هیچ پوششی در کل بازه
+            hadGap = true;
+        }
+
+        const hasEnd = !!(hasStart && lastEnd && lastEnd >= shiftEnd);
+
+        const hhmm = (d: Date | null) =>
+            d ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : null;
+
+        const tardy_minutes = actualStart && actualStart > shiftStart
+            ? Math.round((actualStart.getTime() - shiftStart.getTime()) / 60000)
+            : 0;
+
+        return {
+            has_start_confirm: hasStart,
+            has_end_confirm: hasEnd,
+            actual_start_time: hhmm(actualStart),
+            actual_end_time: hhmm(lastEnd),
+            tardy_minutes,
+            unfinished: hadGap, // ← هر گپ، شیفت را «ناتمام» می‌کند حتی اگر پایان پوشش داده شده باشد
+            // اگر می‌خواهی «اصلاً شروع نکرده» هم ناتمام بماند، همین مقدار مناسب است چون hadGap=true می‌شود.
+        };
+    }
 
 
+
+
+    // APIهای نمونه — در صورت تفاوت بک‌اند، فقط اینها را هماهنگ کن
+    async function fetchOvertimes(params?: { status?: OvertimeStatus; q?: string; from?: string; to?: string; limit?: number; }): Promise<Overtime[]> {
+        const res = await api.get('/overtimes', { params });
+        // انتظار: آرایهٔ سادۀ Overtime
+        return Array.isArray(res.data) ? res.data : (res.data?.items ?? []);
+    }
+    async function approveOvertime(id: ID): Promise<Overtime> {
+        const res = await api.post(`/overtimes/${id}/approve`, {});
+        return res.data;
+    }
+    // (اختیاری) تأیید گروهی سمت سرور اگر داشتی بهتره از این استفاده کنی
+    async function approveOvertimesBulk(ids: ID[]): Promise<{ ok: ID[]; failed: ID[] }> {
+        const res = await api.post(`/overtimes/approve-bulk`, { ids });
+        return res.data ?? { ok: [], failed: [] };
+    }
+    const ensuredRef = React.useRef<Set<ID>>(new Set());
+    const todayYMD = ymd(new Date());
+    const [overtimeOpen, setOvertimeOpen] = React.useState(false);
+    const [overtimes, setOvertimes] = React.useState<Overtime[]>([]);
+    const [ovLoading, setOvLoading] = React.useState(false);
+    const [ovQ, setOvQ] = React.useState('');
+    const [ovSelected, setOvSelected] = React.useState<ID[]>([]);
+    // همه‌ی آیتم‌های PENDINGِ فهرستِ فعلی
+    const pendingVisibleIds = React.useMemo(
+        () => overtimes.filter(o => o.status === 'PENDING').map(o => o.id),
+        [overtimes]
+    );
+    const allChecked = pendingVisibleIds.length > 0 && pendingVisibleIds.every(id => ovSelected.includes(id));
+    const someChecked = pendingVisibleIds.some(id => ovSelected.includes(id));
+
+    function minutesToHM(mins: number) {
+        const h = Math.floor(mins / 60);
+        const m = mins % 60;
+        return `${h}:${fmt2(m)}`;
+    }
     const [drivers, setDrivers] = React.useState<Driver[]>([]);
     const [driverQ, setDriverQ] = React.useState('');
     const [driverId, setDriverId] = React.useState<ID | ''>('');
@@ -353,6 +543,69 @@ export default function ShiftsPage() {
         return () => { alive = false; };
     }, [driverQ]);  // ← هر بار جستجو عوض شد، همین لیست را محلی فیلتر می‌کنیم
 
+    // poll assignments & ensure overtime
+    React.useEffect(() => {
+        if (!driverId) return;
+        let cancel = false;
+        let timer: any = null;
+
+        const tick = async () => {
+            try {
+                const [hist, cur] = await Promise.all([
+                    fetchAssignmentHistory(driverId as ID),
+                    fetchCurrentAssignment(driverId as ID),
+                ]);
+                if (cancel) return;
+                const assigns = [...hist, ...(cur ? [cur] : [])];
+
+                setShifts(prev => prev.map(s => {
+                    const enriched = deriveFromAssignments(s, assigns);
+                    const patch: Partial<Shift> = {};
+                    const isActiveStatus = s.status === 'PUBLISHED' || s.status === 'LOCKED';
+                    const isToday = s.date === todayYMD;
+
+                    // فقط وقتی امروز و شیفت فعال است، بک‌اند را آپدیت کن
+                    if (isActiveStatus && isToday) {
+                        if (enriched.tardy_minutes !== s.tardy_minutes) patch.tardy_minutes = enriched.tardy_minutes;
+                        if (enriched.unfinished !== s.is_unfinished) patch.is_unfinished = enriched.unfinished;
+                        if (enriched.has_start_confirm !== s.has_start_confirm) patch.has_start_confirm = enriched.has_start_confirm;
+                        if (enriched.has_end_confirm !== s.has_end_confirm) patch.has_end_confirm = enriched.has_end_confirm;
+                        if (enriched.actual_start_time !== s.actual_start_time) patch.actual_start_time = enriched.actual_start_time;
+                        if (enriched.actual_end_time !== s.actual_end_time) patch.actual_end_time = enriched.actual_end_time;
+
+                        if (Object.keys(patch).length) {
+                            updateShift(s.id, patch).catch(() => {/* no-op */ });
+                        }
+                    }
+                    const { end: shiftEnd } = toDateTimeSpan(s);
+                    const now = new Date();
+                    // شرط اضافه‌کاری خودکار
+                    const nowStr = nowHM(); // ← تابعی که بالا داری
+                    const overtimeCond =
+                        isActiveStatus &&
+                        enriched.has_start_confirm &&
+                        !enriched.has_end_confirm &&
+                        now.getTime() > shiftEnd.getTime();
+                    if (overtimeCond && !ensuredRef.current.has(s.id)) {
+                        ensuredRef.current.add(s.id);
+                        ensureOvertimeForShift(s.id).catch(() => {
+                            setSnack({ open: true, sev: 'error', msg: 'ثبت خودکار اضافه‌کاری ناموفق بود' });
+                        });
+                    }
+
+                    return { ...s, ...enriched };
+                }));
+
+            } catch (e) {
+                // ساکت یا snack سبک
+            } finally {
+                timer = setTimeout(tick, 60000); // هر ۶۰ ثانیه
+            }
+        };
+
+        tick();
+        return () => { cancel = true; if (timer) clearTimeout(timer); };
+    }, [driverId]);
 
     const [dialogOpen, setDialogOpen] = React.useState(false);
     const [editing, setEditing] = React.useState<Shift | null>(null);
@@ -482,21 +735,9 @@ export default function ShiftsPage() {
 
 
 
-    /** load support lists */
-    React.useEffect(() => {
-        let ok = true;
-        (async () => {
-            try {
-                const [v, s, r] = await Promise.all([fetchVehicles(), fetchStations(), fetchRoutes()]);
-                if (!ok) return;
-                setVehicles(v); setStations(s); setRoutes(r);
-            } catch (e: any) {
-                setSnack({ open: true, sev: 'error', msg: 'خطا در بارگذاری داده‌های پشتیبان' });
-            }
-        })();
-        return () => { ok = false; };
-    }, []);
 
+
+    /** load shifts */
     /** load shifts */
     React.useEffect(() => {
         if (!driverId) { setShifts([]); return; }
@@ -504,15 +745,31 @@ export default function ShiftsPage() {
         (async () => {
             setLoading(true);
             try {
+                // 1) خودِ برنامهٔ شیفت‌ها
                 const list = await fetchShifts(driverId as ID, monthFrom, monthTo);
+
+                // 2) منبع حقیقت حضور/غیاب از روی assignments
+                const [hist, cur] = await Promise.all([
+                    fetchAssignmentHistory(driverId as ID),
+                    fetchCurrentAssignment(driverId as ID),
+                ]);
+                const assigns = [...hist, ...(cur ? [cur] : [])];
+
+                // 3) تزریق وضعیت حضور/پایان/زمان‌های واقعی به هر شیفت
+                const enriched = list.map(s => ({
+                    ...s,
+                    ...deriveFromAssignments(s, assigns),
+                }));
+
                 if (!ok) return;
-                setShifts(list);
+                setShifts(enriched);
             } catch {
-                setSnack({ open: true, sev: 'error', msg: 'خطا در دریافت شیفت‌ها' });
+                setSnack({ open: true, sev: 'error', msg: 'خطا در دریافت شیفت/انتساب' });
             } finally {
                 setLoading(false);
             }
         })();
+        return () => { ok = false; };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [driverId, jmonth.jy, jmonth.jm]);
 
@@ -524,10 +781,29 @@ export default function ShiftsPage() {
         }
         return map;
     }, [shifts]);
+    React.useEffect(() => {
+        let alive = true;
+        if (!overtimeOpen) return;
+        (async () => {
+            try {
+                setOvLoading(true);
+                const rows = await fetchOvertimes({ status: 'PENDING', q: ovQ, from: monthFrom, to: monthTo, limit: 500 });
+                if (!alive) return;
+                setOvertimes(rows);
+                setOvSelected([]);
+            } catch {
+                setSnack({ open: true, sev: 'error', msg: 'خطا در دریافت اضافه‌کاری‌ها' });
+            } finally {
+                setOvLoading(false);
+            }
+        })();
+        return () => { alive = false; };
+        // فقط وقتی دیالوگ باز شود یا جستجو/بازه عوض شود
+    }, [overtimeOpen, ovQ, monthFrom, monthTo]);
 
     /** helpers */
     const openCreate = (date?: string) => {
-        if (!driverId) { setSnack({ open: true, sev: 'info', msg: 'لطفاً ابتدا راننده را انتخاب کنید' }); return; }
+        //if (!driverId) { setSnack({ open: true, sev: 'info', msg: 'لطفاً ابتدا راننده را انتخاب کنید' }); return; }
         setEditing(null);
         setDraft({
             driver_id: driverId as ID,
@@ -555,7 +831,7 @@ export default function ShiftsPage() {
     const onSave = async () => {
         try {
             // اعتبارسنجی
-            if (!draft.driver_id) throw new Error('راننده نامعتبر است');
+            //if (!draft.driver_id) throw new Error('راننده نامعتبر است');
             if (!draft.date) throw new Error('تاریخ نامعتبر است');
             if (!draft.start_time || !draft.end_time) throw new Error('ساعت شروع/پایان را وارد کنید');
             const start = Number(draft.start_time.replace(':', ''));
@@ -653,37 +929,252 @@ export default function ShiftsPage() {
                 </Stack>
 
                 <Stack direction="row" spacing={1}>
-                    <Button variant="outlined" startIcon={<RefreshRoundedIcon />} onClick={() => {
-                        if (driverId) {
-                            setLoading(true);
-                            fetchShifts(driverId as ID, monthFrom, monthTo).then(setShifts).finally(() => setLoading(false));
+                    <Button
+                        variant="outlined"
+                        startIcon={<AccessTimeRoundedIcon />}  // همین آیکونی که قبلاً ایمپورت داری
+                        onClick={() => setOvertimeOpen(true)}
+                    >
+                        اضافه‌کاری
+                    </Button>
+
+                    <Button variant="outlined" startIcon={<RefreshRoundedIcon />} onClick={async () => {
+                        if (!driverId) return;
+                        setLoading(true);
+                        try {
+                            const [list, hist, cur] = await Promise.all([
+                                fetchShifts(driverId as ID, monthFrom, monthTo),
+                                fetchAssignmentHistory(driverId as ID),
+                                fetchCurrentAssignment(driverId as ID),
+                            ]);
+                            const assigns = [...hist, ...(cur ? [cur] : [])];
+                            setShifts(list.map(s => ({ ...s, ...deriveFromAssignments(s, assigns) })));
+                        } finally {
+                            setLoading(false);
                         }
                     }}>
                         بروزرسانی
                     </Button>
+
                     <Button variant="contained" startIcon={<AddRoundedIcon />} onClick={() => openCreate()}>
                         افزودن شیفت
                     </Button>
                 </Stack>
             </Stack>
+            <Dialog open={overtimeOpen} onClose={() => setOvertimeOpen(false)} fullWidth maxWidth="md">
+                <DialogTitle sx={{ fontWeight: 900 }}>اضافه‌کاری</DialogTitle>
+                <DialogContent dividers>
+                    {/* نوار ابزار بالا */}
+                    <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} alignItems={{ xs: 'stretch', md: 'center' }} sx={{ mb: 2 }}>
+                        <TextField
+                            size="small"
+                            label="جستجوی راننده / توضیح"
+                            value={ovQ}
+                            onChange={(e) => setOvQ(e.target.value)}
+                            InputProps={{ startAdornment: <InputAdornment position="start"><SearchRoundedIcon /></InputAdornment> }}
+                            sx={{ minWidth: 260 }}
+                        />
+                        <Chip
+                            icon={<TodayRoundedIcon />}
+                            label={`بازه: ${fmtJalali(firstDate)} تا ${fmtJalali(lastDate)}`}
+                            sx={{ ml: 'auto' }}
+                        />
+                        <Button
+                            size="small"
+                            startIcon={<RefreshRoundedIcon />}
+                            onClick={() => { setOvQ(q => q + ' '); }} // تریگر رفرش
+                        >
+                            بروزرسانی
+                        </Button>
+                    </Stack>
+
+                    {/* لیست اضافه‌کاری‌ها */}
+                    <Paper variant="outlined" sx={{ maxHeight: 420, overflow: 'auto' }}>
+                        {ovLoading ? (
+                            <Stack alignItems="center" justifyContent="center" sx={{ p: 3 }}>
+                                <CircularProgress size={24} />
+                            </Stack>
+                        ) : (
+                            <List dense>
+                                {overtimes.length === 0 && (
+                                    <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>
+                                        موردی برای این بازه یافت نشد.
+                                    </Typography>
+                                )}
+
+                                {overtimes.map(ot => {
+                                    const drv = drivers.find(d => d.id === ot.driver_id);
+                                    const selected = ovSelected.includes(ot.id);
+
+                                    return (
+                                        <ListItem
+                                            key={ot.id}
+                                            sx={{ borderBottom: '1px dashed', borderColor: 'divider' }}
+                                            secondaryAction={
+                                                <Stack direction="row" spacing={1} alignItems="center">
+                                                    <Chip
+                                                        size="small"
+                                                        label={
+                                                            ot.status === 'PENDING'
+                                                                ? 'منتظر تأیید'
+                                                                : ot.status === 'APPROVED'
+                                                                    ? 'تأیید شده'
+                                                                    : 'رد شده'
+                                                        }
+                                                        color={
+                                                            ot.status === 'APPROVED'
+                                                                ? 'success'
+                                                                : ot.status === 'PENDING'
+                                                                    ? 'warning'
+                                                                    : 'default'
+                                                        }
+                                                    />
+                                                    <FormControlLabel
+                                                        sx={{ ml: 'auto' }}
+                                                        control={
+                                                            <Checkbox
+                                                                checked={allChecked}
+                                                                indeterminate={!allChecked && someChecked}
+                                                                onChange={() => {
+                                                                    setOvSelected(prev =>
+                                                                        allChecked
+                                                                            ? prev.filter(id => !pendingVisibleIds.includes(id)) // لغو همهٔ PENDINGهای فهرست
+                                                                            : uniq([...prev, ...pendingVisibleIds])              // انتخاب همهٔ PENDINGهای فهرست
+                                                                    );
+                                                                }}
+                                                                disabled={pendingVisibleIds.length === 0}
+                                                            />
+                                                        }
+                                                        label="انتخاب همه"
+                                                    />
+
+                                                </Stack>
+                                            }
+                                        >
+                                            <ListItemText
+                                                primary={
+                                                    <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                                                        <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: 'wrap' }}>
+                                                            <Chip size="small" variant="outlined" label={drv ? drv.full_name : `راننده #${ot.driver_id}`} />
+                                                            <Chip size="small" icon={<AccessTimeRoundedIcon />} label={`${minutesToHM(ot.minutes)} ساعت`} />
+                                                            <Chip size="small" label={fmtJalali(toDate(ot.date))} />
+                                                        </Stack>
+                                                    </Stack>
+                                                }
+                                                secondary={ot.note ? <Typography variant="caption" color="text.secondary">{ot.note}</Typography> : null}
+                                            />
+                                        </ListItem>
+                                    );
+                                })}
+
+                            </List>
+                        )}
+                    </Paper>
+                </DialogContent>
+
+                {/* نوار پایینی: فقط راننده‌به‌راننده */}
+                <DialogActions>
+                    {(() => {
+                        const selectedItems = overtimes.filter(o => ovSelected.includes(o.id));
+                        const totalMinutes = selectedItems.reduce((sum, o) => sum + (o.minutes || 0), 0);
+
+                        return (
+                            <>
+                                <Stack direction="row" spacing={1} alignItems="center" sx={{ mr: 'auto', ml: 1 }}>
+                                    <Typography variant="body2" color="text.secondary">
+                                        {ovSelected.length
+                                            ? `انتخاب‌شده: ${ovSelected.length} مورد — جمع زمان: ${Math.floor(totalMinutes / 60)}:${fmt2(totalMinutes % 60)}`
+                                            : 'هیچ موردی انتخاب نشده است'}
+                                    </Typography>
+                                </Stack>
+
+                                <Button onClick={() => setOvertimeOpen(false)}>بستن</Button>
+
+                                <Button
+                                    variant="contained"
+                                    startIcon={<DoneAllRoundedIcon />}
+                                    disabled={!ovSelected.length}
+                                    onClick={async () => {
+                                        try {
+                                            setOvLoading(true);
+
+                                            // فقط PENDINGها را فرآوری کن
+                                            const pendingSelected = overtimes.filter(o => ovSelected.includes(o.id) && o.status === 'PENDING');
+                                            if (!pendingSelected.length) {
+                                                setSnack({ open: true, sev: 'info', msg: 'مورد PENDING برای تأیید انتخاب نشده' });
+                                                return;
+                                            }
+
+                                            // گروه‌بندی بر اساس راننده
+                                            const byDriver = new Map<ID, ID[]>();
+                                            pendingSelected.forEach(o => {
+                                                if (!byDriver.has(o.driver_id)) byDriver.set(o.driver_id, []);
+                                                byDriver.get(o.driver_id)!.push(o.id);
+                                            });
+
+                                            const okIds: ID[] = [];
+                                            const failedIds: ID[] = [];
+
+                                            // توابع (ممکنه همون قبلی‌هات باشن)
+                                            const bulkApprove = approveOvertimesBulk;
+                                            const singleApprove = approveOvertime;
+
+                                            for (const [driverIdKey, ids] of byDriver.entries()) {
+                                                try {
+                                                    const res = await bulkApprove(ids);
+                                                    okIds.push(...(res.ok ?? []));
+                                                    failedIds.push(...(res.failed ?? []));
+                                                } catch {
+                                                    // fallback: تک‌تک
+                                                    const results = await Promise.allSettled(ids.map(id => singleApprove(id)));
+                                                    results.forEach(r => {
+                                                        if (r.status === 'fulfilled') okIds.push(r.value.id);
+                                                        else failedIds.push(0 as any);
+                                                    });
+                                                }
+                                            }
+
+                                            // آپدیت UI
+                                            if (okIds.length) {
+                                                setOvertimes(prev => prev.map(x => okIds.includes(x.id) ? { ...x, status: 'APPROVED' } : x));
+                                                setOvSelected(prev => prev.filter(id => !okIds.includes(id)));
+                                            }
+
+                                            if (okIds.length && failedIds.length) {
+                                                setSnack({ open: true, sev: 'info', msg: `${okIds.length} مورد تأیید شد، ${failedIds.length} ناموفق` });
+                                            } else if (okIds.length) {
+                                                setSnack({ open: true, sev: 'success', msg: `${okIds.length} اضافه‌کاری تأیید شد` });
+                                            } else {
+                                                setSnack({ open: true, sev: 'error', msg: 'تأیید ناموفق بود' });
+                                            }
+
+                                            // (اختیاری) اگر لازم است شیفت‌های رانندهٔ انتخاب‌شده را هم رفرش کنی
+                                            if (driverId) {
+                                                try {
+                                                    const list = await fetchShifts(driverId as ID, monthFrom, monthTo);
+                                                    setShifts(list);
+                                                } catch { }
+                                            }
+                                        } catch {
+                                            setSnack({ open: true, sev: 'error', msg: 'خطا در تأیید اضافه‌کاری' });
+                                        } finally {
+                                            setOvLoading(false);
+                                        }
+                                    }}
+                                >
+                                    تأیید اضافه‌کاری
+                                </Button>
+                            </>
+                        );
+                    })()}
+                </DialogActions>
+
+            </Dialog>
+
+
 
             {/* Filters */}
             <Paper sx={{ p: 2, mb: 2 }}>
                 <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ xs: 'stretch', md: 'center' }}>
-                    <TextField
-                        label="جستجوی راننده"
-                        placeholder="نام/تلفن..."
-                        value={driverQ}
-                        onChange={(e) => setDriverQ(e.target.value)}
-                        InputProps={{
-                            endAdornment: (
-                                <InputAdornment position="end">
-                                    <SearchRoundedIcon fontSize="small" />
-                                </InputAdornment>
-                            ),
-                        }}
-                        sx={{ width: { xs: '100%', md: 260 } }}
-                    />
 
                     <TextField
                         select
@@ -753,6 +1244,7 @@ export default function ShiftsPage() {
                         byDate={byDate}
                         onCellClick={(date) => openCreate(date)}
                         onShiftClick={(s) => openEdit(s)}
+                        onShiftDelete={(s) => onDelete(s)}
                     />
 
                 </Paper>
@@ -1084,10 +1576,11 @@ function CalendarMonth(props: {
     byDate: Map<string, Shift[]>;
     onCellClick: (date: string) => void;
     onShiftClick: (s: Shift) => void;
+    onShiftDelete: (s: Shift) => void;
 }) {
-    const { jmonth, byDate, onCellClick, onShiftClick } = props;
+    const { jmonth, byDate, onCellClick, onShiftClick, onShiftDelete } = props;
     const rows = jMonthGrid(jmonth);
-    const weekDays = ['ش', 'ی', 'د', 'س', 'چ', 'پ', 'ج'];
+    const weekDays = ['شنبه', 'یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنج‌شنبه', 'جمعه'];
 
     return (
         <Box sx={{ direction: 'rtl' }}>
@@ -1125,6 +1618,8 @@ function CalendarMonth(props: {
                                             key={s.id}
                                             size="small"
                                             label={`${labelShiftType(s.type)} • ${s.start_time}–${s.end_time}`}
+                                            onDelete={(e) => { e.stopPropagation(); onShiftDelete(s); }}
+                                            deleteIcon={<DeleteRoundedIcon fontSize="small" />}
                                             onClick={(e) => { e.stopPropagation(); onShiftClick(s); }}
                                             color={chipColorByStatus(s.status)}
                                         />

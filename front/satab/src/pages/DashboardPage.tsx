@@ -540,13 +540,7 @@ function FleetModeActions() {
     });
   }, [markers]);
 
-  type FlatUser = {
-    id: number;
-    full_name: string;
-    role_level: number;
-    parent_id?: number | null;
-    parent_full_name?: string | null; // اگر بک‌اند برنمی‌گردونه، حذفش کن
-  };
+
   // ====== types & state (بالای کامپوننت، کنار بقیه stateها) ======
   type DriverUsageRow = {
     driverId: number;
@@ -595,31 +589,46 @@ function FleetModeActions() {
 
   useEffect(() => { fetchDriverUsageToday(); }, []);
 
-  const [drivers, setDrivers] = useState<FlatUser[]>([]);
-  const [driversLoading, setDriversLoading] = useState(false);
-  const [driversErr, setDriversErr] = useState<string | null>(null);
-  const [driverQ, setDriverQ] = useState('');
 
-  const fetchDrivers = async () => {
+  // ===== Drivers (زیرمجموعه‌های من) =====
+  type FlatUser = {
+    id: number;
+    full_name: string;
+    role_level: number;
+  };
+
+  const [drivers, setDrivers] = React.useState<FlatUser[]>([]);
+  const [driversLoading, setDriversLoading] = React.useState(false);
+  const [driversErr, setDriversErr] = React.useState<string | null>(null);
+  const [driverQ, setDriverQ] = React.useState('');
+
+  // ✅ تنها منبع حقیقت: زیرمجموعه‌های من
+  const fetchDrivers = React.useCallback(async () => {
     setDriversLoading(true);
     setDriversErr(null);
     try {
-      const { data } = await api.get('/users/my-subordinates-flat'); // SA/مدیرکل مجاز
+      const { data } = await api.get('/users/my-subordinates-flat'); // دامنه‌ی کاربر جاری
       const list: FlatUser[] = Array.isArray(data) ? data : (data?.items ?? []);
-      // فقط راننده‌ها (role_level=6)
       const onlyDrivers = list.filter(u => Number(u.role_level) === 6);
       setDrivers(onlyDrivers);
-    } catch (e) {
+      // ✅ همین‌جا تعداد راننده‌های زیرمجموعه را ست کن
+      setDriverCount(onlyDrivers.length);
+    } catch {
       setDriversErr('خطا در دریافت راننده‌ها');
+      setDrivers([]);
+      setDriverCount(0);
     } finally {
       setDriversLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchDrivers();
   }, []);
-  const filteredDrivers = useMemo(() => {
+
+  React.useEffect(() => {
+    // ❌ اینجا await لازم نیست
+    fetchDrivers();
+  }, [fetchDrivers]);
+
+  // فیلتر جستجو (فقط برای نمایش، روی driverCount اثری نمی‌گذاریم)
+  const filteredDrivers = React.useMemo(() => {
     const s = driverQ.trim().toLowerCase();
     if (!s) return drivers;
     return drivers.filter(u =>
@@ -627,6 +636,7 @@ function FleetModeActions() {
       String(u.id).includes(s)
     );
   }, [driverQ, drivers]);
+
 
   // === state ها
   const [consLoading, setConsLoading] = useState(false);
@@ -659,7 +669,7 @@ function FleetModeActions() {
     })();
     return () => { ok = false; };
   }, []);
-  useEffect(() => {
+  /*useEffect(() => {
     (async () => {
       try {
         const { data } = await api.get(`/users/super-admin/${user?.id}/subordinates`, { params: { depth: 'all' } });
@@ -670,9 +680,14 @@ function FleetModeActions() {
         setDriverCount(0);
       }
     })();
-  }, [user?.id]);
-  // خواندن مصرفی‌های سوپرادمین فعلی
-  useEffect(() => {
+  }, [user?.id]);*/
+
+
+  // 2) فراخوانی داخل useEffect بدون await
+  React.useEffect(() => {
+    fetchDrivers();           // ← اینجا await نمی‌خوایم
+  },
+   [fetchDrivers]); useEffect(() => {
     let ok = true;
     (async () => {
       setConsLoading(true);
@@ -700,7 +715,7 @@ function FleetModeActions() {
   type Node = { id: number; name: string; role_level?: number; children?: Node[] };
   const [tree, setTree] = useState<Node | null>(null);
   const [treeLoading, setTreeLoading] = useState(true);
-  useEffect(() => {
+  /*useEffect(() => {
     let ok = true;
     (async () => {
       try {
@@ -713,7 +728,7 @@ function FleetModeActions() {
       }
     })();
     return () => { ok = false; };
-  }, []);
+  }, []);*/
   useEffect(() => {
     let ok = true;
 
@@ -1335,36 +1350,7 @@ function FleetModeActions() {
 function DeviceModeActions() {
   return (
     <>
-      <ActionCard
-        icon={<PublicIcon />}
-        title="مدیریت دستگاه‌ها"
-        desc="جفت‌سازی، به‌روزرسانی Firmware و مانیتور سلامت"
-        onClick={() => window.open('/devices', '_blank', 'noopener,noreferrer')}
-      />
-      <ActionCard
-        icon={<DirectionsCarIcon />}
-        title="نصب و پیکربندی"
-        desc="تنظیم پارامترها و تست سنسورها"
-        onClick={() => window.open('/device-setup', '_blank', 'noopener,noreferrer')}
-      />
-      <ActionCard
-        icon={<InsightsRoundedIcon />}
-        title="گزارش‌های فنی"
-        desc="سیگنال، ولتاژ، قطعی‌ها و آلارم‌ها"
-        onClick={() => window.open('/device-analytics', '_blank', 'noopener,noreferrer')}
-      />
-      <ActionCard
-        icon={<ListAltIcon />}
-        title="لاگ فنی"
-        desc="Log های دیوایس و رخدادها"
-        onClick={() => window.open('/device-logs', '_blank', 'noopener,noreferrer')}
-      />
-      <ActionCard
-        icon={<ChatRoundedIcon />}
-        title="چت"
-        desc="گفت‌وگو و پشتیبانی لحظه‌ای"
-        onClick={() => window.open('/chat', '_blank', 'noopener,noreferrer')}
-      />
+
     </>
   );
 }
