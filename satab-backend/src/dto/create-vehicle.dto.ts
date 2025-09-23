@@ -50,6 +50,10 @@ export class CreateVehicleDto {
   // فقط برای تانکر ممکن است استفاده شود
   @IsOptional()
   tank_capacity_liters?: number;
+
+  @IsOptional()
+  @IsInt()
+  responsible_user_id?: number | null;
 }
 
 // ——————————————————————————————————————————————————————————————

@@ -113,5 +113,6 @@ export class Users {
 
   @UpdateDateColumn()
   updated_at: Date;
+  parent_id: any;
 }
 

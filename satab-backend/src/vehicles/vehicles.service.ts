@@ -98,11 +98,23 @@ export class VehiclesService {
 
   // vehicles.service.ts
   async listStationsByVehicleForUser(vehicleId: number, _currentUserId: number) {
+    // 👇 اگر می‌خواهی enforce شود:
+    try {
+      const allowed = await this.repo.createQueryBuilder('v')
+        .leftJoin('v.owner_user', 'ou')
+        .where('v.id = :vid', { vid: vehicleId })
+        .andWhere('(ou.id = :uid OR v.responsible_user_id = :uid)', { uid: _currentUserId })
+        .getOne();
+
+      if (!allowed) throw new ForbiddenException('دسترسی به این وسیله مجاز نیست');
+    } catch { /* اگر ACL جای دیگری enforce می‌شود، می‌توانی این را حذف کنی */ }
+
     return this.stationRepo.find({
-      where: { vehicle_id: vehicleId },   // فقط بر اساس ماشین
+      where: { vehicle_id: vehicleId },
       order: { id: 'ASC' },
     });
   }
+
 
   private async getUserRoleLevel(userId: number): Promise<number | null> {
     try {
@@ -263,13 +275,16 @@ export class VehiclesService {
 
   async deleteVehicleStation(vehicleId: number, id: number, actorUserId?: number) {
     if (actorUserId != null) {
-      const owners = await this.getAllowedOwnerIds(actorUserId);
-      const veh = await this.repo.findOne({
-        where: { id: vehicleId, owner_user: { id: In(owners) as any } },   // ✅ رابطه‌ای
-        relations: { owner_user: true },
-        select: { id: true, owner_user: { id: true } },                    // ✅ nested select
-      });
-      if (!veh) throw new NotFoundException('vehicle not found or not accessible');
+      const allowed = await this.repo.createQueryBuilder('v')
+        .leftJoin('v.owner_user', 'ou')
+        .where('v.id = :vid', { vid: vehicleId })
+        .andWhere('(ou.id IN (:...oids) OR v.responsible_user_id = :me)', {
+          oids: await this.getAllowedOwnerIds(actorUserId),
+          me: actorUserId,
+        })
+        .getOne();
+
+      if (!allowed) throw new NotFoundException('vehicle not found or not accessible');
     }
 
     const st = await this.stationRepo.findOne({ where: { id, vehicle_id: vehicleId } });
@@ -278,6 +293,7 @@ export class VehiclesService {
     await this.stationRepo.delete(id);
     this.gw.emitStationsChanged(st.vehicle_id, st.owner_user_id, { type: 'deleted', station_id: id });
   }
+
 
 
 
@@ -345,6 +361,16 @@ export class VehiclesService {
     } else {
       dto.tracker_imei = null as any;
     }
+    let respRel: any = null;
+    if ((dto as any).responsible_user_id != null) {
+      const rid = Number((dto as any).responsible_user_id);
+      if (!Number.isFinite(rid)) {
+        throw new BadRequestException('responsible_user_id نامعتبر است.');
+      }
+      const row = await this.ds.query('select id from users where id = $1 limit 1', [rid]);
+      if (!row?.[0]) throw new BadRequestException('کاربر مسئول یافت نشد');
+      respRel = { id: rid };
+    }
 
     // 1) کشور مجاز؟
     const allowed = await this.ds.getRepository('user_allowed_countries')
@@ -386,6 +412,7 @@ export class VehiclesService {
       const v = this.repo.create({
         ...dto,
         owner_user: { id: dto.owner_user_id } as any,
+        responsible_user: respRel,
         name: dto.name.trim(),
       });
       (v as any).plate_norm = normalizePlate(dto.plate_no);
@@ -419,19 +446,47 @@ export class VehiclesService {
     if (!pol || !pol.is_allowed) return [];
     return Array.isArray(pol.monitor_params) ? pol.monitor_params : [];
   }
+  private async isVehicleVisibleTo(userId: number, vehicleId: number): Promise<boolean> {
+    // مسئول همان ماشین + مالک/زیرمجموعه مثل قبل
+    const row = await this.repo.createQueryBuilder('v')
+      .leftJoin('v.owner_user', 'ou')
+      .where('v.id = :vid', { vid: vehicleId })
+      .andWhere('(ou.id = :uid OR v.responsible_user_id = :uid)', { uid: userId })
+      .getOne();
+    return !!row;
+  }
 
   async update(id: number, dto: UpdateVehicleDto) {
     const v = await this.repo.findOne({ where: { id } });
     if (!v) throw new NotFoundException('وسیله یافت نشد');
 
+    // ✅ نرمال‌سازی IMEI و چک یکتا (مثل قبل)
     if (dto.tracker_imei) {
       const imei = dto.tracker_imei.trim().toUpperCase();
       const dup = await this.repo.findOne({ where: { tracker_imei: imei, id: Not(id) } });
       if (dup) throw new BadRequestException('این UID/IMEI قبلاً ثبت شده است.');
-      dto.tracker_imei = imei;
+      v.tracker_imei = imei;
     }
 
+    // ✅ ست/حذف مسئول ماشین
+    if ('responsible_user_id' in dto) {
+      const rid = dto.responsible_user_id ?? null;
+
+      if (rid !== null) {
+        const row = await this.ds.query('select id from users where id = $1 limit 1', [rid]);
+        if (!row?.[0]) throw new BadRequestException('کاربر مسئول یافت نشد');
+      }
+
+      // روی رابطه ست کن
+      (v as any).responsible_user = rid ? ({ id: rid } as any) : null;
+
+      // جلوی assign مستقیم فیلد ID از dto را بگیر
+      delete (dto as any).responsible_user_id;
+    }
+
+    // سایر فیلدها
     Object.assign(v, dto);
+
     try {
       return await this.repo.save(v);
     } catch (e: any) {
@@ -441,6 +496,7 @@ export class VehiclesService {
       throw e;
     }
   }
+
 
   // vehicles.service.ts
   async findOne(id: number) {
@@ -484,35 +540,69 @@ export class VehiclesService {
     return rows.map((r: any) => Number(r.id));
   }
 
-  async list(params: { currentUserId?: number; owner_user_id?: number; country_code?: string; vehicle_type_code?: string; page?: number; limit?: number; }) {
-    const { currentUserId, owner_user_id, country_code, vehicle_type_code, page = 1, limit = 20 } = params;
+  async list(params: {
+    currentUserId?: number;
+    owner_user_id?: number;
+    country_code?: string;
+    vehicle_type_code?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const {
+      currentUserId,
+      owner_user_id,
+      country_code,
+      vehicle_type_code,
+      page = 1,
+      limit = 20,
+    } = params;
 
-    const qb = this.repo.createQueryBuilder('v').leftJoin('v.owner_user', 'ou').orderBy('v.id', 'DESC');
+    const qb = this.repo.createQueryBuilder('v')
+      .leftJoin('v.owner_user', 'ou')
+      .orderBy('v.id', 'DESC');
 
+    // 1) اگر admin می‌خواهد فقط یک owner مشخص را ببیند، همان را فیلتر کن
     if (owner_user_id != null) {
       qb.andWhere('ou.id = :owner_user_id', { owner_user_id: Number(owner_user_id) });
     } else if (currentUserId) {
-      // ⬇️ منیجر: هیچ محدودیتی
+      // 2) نقش‌ها:
       const role = await this.getUserRoleLevel(currentUserId);
-      if (role !== 1) {
+
+      if (role === 1) {
+        // مدیرکل: بدون محدودیت
+      } else {
+        // سایر نقش‌ها: owner در زیرمجموعه یا مسئول خود کاربر
         const ids = await this.getSubtreeUserIds(currentUserId);
-        if (ids.length) qb.andWhere('ou.id IN (:...ids)', { ids });
-        else qb.andWhere('1=0');
+        if (ids.length) {
+          qb.andWhere('(ou.id IN (:...ids) OR v.responsible_user_id = :me)', {
+            ids,
+            me: currentUserId,
+          });
+        } else {
+          // زیردستی ندارد → فقط ماشین‌هایی که خودش مسئول‌شان است
+          qb.andWhere('v.responsible_user_id = :me', { me: currentUserId });
+        }
       }
     }
 
+    // 3) فیلترهای اختیاری
     if (country_code) qb.andWhere('v.country_code = :country_code', { country_code });
     if (vehicle_type_code) qb.andWhere('v.vehicle_type_code = :vehicle_type_code', { vehicle_type_code });
 
+    // 4) صفحه‌بندی
     qb.skip((page - 1) * limit).take(limit);
 
     const [items, total] = await qb.getManyAndCount();
 
+    // 5) ایستگاه‌ها را ضمیمه کن (بدون N+1)
     const vehIds = items.map(v => v.id);
     let itemsWithStations: any[] = items.map(v => ({ ...v, stations: [] }));
 
     if (vehIds.length) {
-      const stRows = await this.stationRepo.find({ where: { vehicle_id: In(vehIds) as any }, order: { id: 'ASC' } });
+      const stRows = await this.stationRepo.find({
+        where: { vehicle_id: In(vehIds) as any },
+        order: { id: 'ASC' },
+      });
       const byVid = new Map<number, any[]>();
       for (const s of stRows) {
         const arr = byVid.get(s.vehicle_id) || [];
@@ -525,8 +615,113 @@ export class VehiclesService {
     return { items: itemsWithStations, total, page, limit };
   }
 
+  async bulkAssignResponsible(
+    targetUserId: number,
+    vehicleIds: number[],
+    actorUserId: number,
+  ) {
+    // 0) ورودی
+    const ids = Array.from(new Set((vehicleIds || [])
+      .map(n => Number(n)).filter(n => Number.isFinite(n) && n > 0)));
 
-  /////////////////////////////////////////////////////////////////////////////////////////////////////
+    // 1) وجود کاربر مقصد
+    const u = await this.ds.query('select id, role_level from users where id=$1 limit 1', [targetUserId]);
+    if (!u?.[0]) throw new BadRequestException('کاربر مقصد (مسئول) یافت نشد');
+
+    // 2) دامنهٔ مالکین مجاز برای actor (به‌جای ردکردن با نقش)
+    //    - اگر مدیرکل بود: کل SA/Ownerها
+    //    - در غیر این صورت: از منطق قبلی getAllowedOwnerIds
+    const actorRole = await this.getUserRoleLevel(actorUserId); // ← امن‌تر و یکدست
+    let allowedOwnerIds: number[] = [];
+
+    if (actorRole === 1) {
+      // مدیرکل: همهٔ SA و Owner
+      try {
+        const rows = await this.ds.query('select id from users where role_level = any($1)', [[2, 4]]);
+        allowedOwnerIds = rows.map((r: any) => Number(r.id)).filter(Number.isFinite);
+      } catch { /* ignore */ }
+    } else {
+      // بقیه (از جمله SA=2): دامنهٔ مجاز خودش
+      allowedOwnerIds = await this.getAllowedOwnerIds(actorUserId);
+    }
+
+    if (!allowedOwnerIds.length) {
+      throw new ForbiddenException('مالکِ مجاز برای واگذاری در دسترس نیست');
+    }
+
+    // 3) فقط خودروهایی را بپذیر که در دامنهٔ allowedOwnerIds باشند
+    let allowedVehIds: number[] = [];
+    if (ids.length) {
+      const rows = await this.repo.createQueryBuilder('v')
+        .leftJoin('v.owner_user', 'ou')
+        .select(['v.id'])
+        .where('v.id IN (:...ids)', { ids })
+        .andWhere('ou.id IN (:...owners)', { owners: allowedOwnerIds })
+        .getRawMany();
+      allowedVehIds = rows.map((r: any) => Number(r.v_id)).filter(Number.isFinite);
+    }
+
+    // 4) تراکنش: پاک‌سازی انتساب‌های قبلی targetUser در همین دامنه + ست لیست جدید
+    await this.ds.transaction(async (m) => {
+      const qb = m.createQueryBuilder();
+
+      // پاک‌سازی مسئولیت‌های قبلی این کاربر فقط برای ownerهای مجاز
+      await qb.update(Vehicle)
+        .set({ responsible_user: null as any })
+        .where('responsible_user_id = :uid', { uid: targetUserId })
+        .andWhere('owner_user_id IN (:...owners)', { owners: allowedOwnerIds })
+        .execute();
+
+      // ست لیست جدید
+      if (allowedVehIds.length) {
+        await qb.update(Vehicle)
+          .set({ responsible_user: { id: targetUserId } as any })
+          .where('id IN (:...ids)', { ids: allowedVehIds })
+          .execute();
+      }
+    });
+
+    return {
+      ok: true,
+      target_user_id: targetUserId,
+      assigned_vehicle_ids: allowedVehIds,
+      skipped_vehicle_ids: ids.filter(x => !allowedVehIds.includes(x)),
+    };
+  }
+  // vehicles.service.ts (داخل کلاس VehiclesService)
+  async listMineByRole(actorUserId: number, limit = 1000) {
+    const role = await this.getUserRoleLevel(actorUserId);
+
+    const qb = this.repo.createQueryBuilder('v')
+      .leftJoin('v.owner_user', 'ou')
+      .leftJoin('v.responsible_user', 'ru')
+      .select([
+        'v',            // همه فیلدهای Vehicle
+        'ou.id',        // برای دسترسی به owner_user_id
+        'ru.id',        // برای دسترسی به responsible_user_id
+      ])
+      .orderBy('v.id', 'DESC')
+      .take(Math.max(1, Math.min(2000, Number(limit) || 1000)));
+
+    if (role === 1) {
+      // مدیرکل: بدون محدودیت
+      // هیچ where اضافه نمی‌کنیم
+    } else if (role === 2) {
+      // سوپراَدمین: فقط خودروهایی که owner خودش هست
+      qb.where('ou.id = :me', { me: actorUserId });
+    } else if (role != null && role >= 3 && role <= 5) {
+      // نقش‌های عملیاتی: فقط خودروهایی که خودش مسئولشونه
+      qb.where('ru.id = :me', { me: actorUserId });
+    } else {
+      // نقش ناشناخته/غیرمجاز
+      qb.where('1=0');
+    }
+
+    const items = await qb.getMany();
+    return { items, total: items.length, limit };
+  }
+
+
   async getCurrentRouteWithMeta(vehicleId: number) {
     const v = await this.repo.findOne({ where: { id: vehicleId }, select: ['id', 'current_route_id'] });
     if (!v?.current_route_id) return null;
@@ -968,7 +1163,7 @@ export class VehiclesService {
     if (!ownerId) return { items: [], total: 0, page: 1, limit };
 
     const qb = this.repo.createQueryBuilder('v')
-      .where('v.owner_user_id = :oid', { oid: ownerId })
+      .where('(v.owner_user_id = :oid OR v.responsible_user_id = :me)', { oid: ownerId, me: userId })
       .orderBy('v.plate_no', 'ASC')
       .take(limit);
 
@@ -977,6 +1172,7 @@ export class VehiclesService {
         vt: this.normType(vehicleTypeCode),
       });
     }
+
 
     const [items, total] = await qb.getManyAndCount();
     return { items, total, page: 1, limit };

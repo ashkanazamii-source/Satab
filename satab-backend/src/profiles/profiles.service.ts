@@ -4,95 +4,163 @@ import { Repository } from 'typeorm';
 import { CreateProfileDto } from '../dto/create-profile.dto';
 import { UpdateProfileDto } from '../dto/update-profile.dto';
 import { VehicleSettingProfile } from './profiles.entity';
+import { Users } from '../users/users.entity';
 
 @Injectable()
 export class ProfilesService {
-  /**
-   * NestJS به صورت خودکار Repository مربوط به VehicleSettingProfile را تزریق می‌کند.
-   * دیگر نیازی به مدیریت دستی کانکشن Pool نیست.
-   * @param profilesRepository - ریپازیتوری برای تعامل با جدول پروفایل‌ها
-   */
   constructor(
     @InjectRepository(VehicleSettingProfile)
     private readonly profilesRepository: Repository<VehicleSettingProfile>,
+    @InjectRepository(Users)
+    private readonly usersRepository: Repository<Users>,
   ) {}
 
-  /**
-   * یک پروفایل جدید برای کاربر مشخص شده ایجاد می‌کند.
-   * @param createProfileDto - داده‌های پروفایل جدید
-   * @param userId - شناسه کاربری که پروفایل را ایجاد می‌کند
-   */
   async create(createProfileDto: CreateProfileDto, userId: number): Promise<VehicleSettingProfile> {
     const newProfile = this.profilesRepository.create({
       ...createProfileDto,
-      user: { id: userId }, // اتصال پروفایل به کاربر از طریق شناسه‌اش
+      user: { id: userId },
     });
-
     return this.profilesRepository.save(newProfile);
   }
 
-  /**
-   * تمام پروفایل‌های متعلق به یک کاربر را باز می‌گرداند.
-   * @param userId - شناسه کاربر
-   */
-  async findAll(userId: number): Promise<VehicleSettingProfile[]> {
-    return this.profilesRepository.find({
-      where: { user: { id: userId } },
-      order: { createdAt: 'DESC' },
+  // ===== Helpers (بدون parent_id) =====
+
+  /** بالارفتن از زنجیره‌ی والدین تا رسیدن به سوپرادمین (role_level === 2) */
+  private async findTopSuperAdminId(userId: number): Promise<number> {
+    // با relation parent بالا می‌رویم؛ بدون دسترسی به ستون parent_id
+    let current = await this.usersRepository.findOne({
+      where: { id: userId },
+      relations: ['parent'],
     });
+    const visited = new Set<number>();
+    let steps = 0;
+
+    while (current && steps++ < 1000 && !visited.has(current.id)) {
+      visited.add(current.id);
+
+      if (current.role_level === 2) {
+        return current.id; // خودش SA است
+      }
+
+      if (!current.parent) break; // به انتهای زنجیره رسیدیم
+
+      // والد بعدی را با relation parent لود کن تا باز هم بتوانیم بالا برویم
+      current = await this.usersRepository.findOne({
+        where: { id: current.parent.id },
+        relations: ['parent'],
+      });
+    }
+
+    throw new ForbiddenException('سوپرادمین بالادستی پیدا نشد یا دسترسی وجود ندارد.');
   }
 
+  /** بررسی می‌کند بیننده مجاز است پروفایل‌های owner را ببیند یا نه. */
+  private async assertViewerCanSeeOwner(viewerId: number, ownerId: number): Promise<void> {
+    const viewer = await this.usersRepository.findOne({
+      where: { id: viewerId },
+      relations: ['parent'],
+    });
+    if (!viewer) throw new NotFoundException('کاربر بیننده یافت نشد.');
+
+    // خودش
+    if (viewerId === ownerId) return;
+
+    // مدیرکل (۱) همه را می‌بیند
+    if (viewer.role_level === 1) return;
+
+    // اگر بیننده SA است، فقط پروفایل‌های خودش را می‌بیند
+    if (viewer.role_level === 2) {
+      if (ownerId !== viewer.id) {
+        throw new ForbiddenException('دسترسی به پروفایل‌های این مالک مجاز نیست.');
+      }
+      return;
+    }
+
+    // نقش‌های ۳..۵ فقط پروفایل‌های SA بالادستیِ خودشان را می‌بینند
+    if (viewer.role_level >= 3 && viewer.role_level <= 5) {
+      const topSAId = await this.findTopSuperAdminId(viewer.id);
+      if (ownerId === topSAId) return;
+      throw new ForbiddenException('دسترسی به پروفایل‌های این مالک مجاز نیست.');
+    }
+
+    // راننده و پایین‌تر (۶ به بعد): مجوز ندارند
+    throw new ForbiddenException('دسترسی ندارید.');
+  }
+
+  // ===== خواندن با منطق دسترسی =====
+
   /**
-   * یک پروفایل خاص را پیدا کرده و مالکیت آن را بررسی می‌کند.
-   * این یک تابع داخلی برای جلوگیری از تکرار کد است.
-   * @param id - شناسه پروفایل
-   * @param userId - شناسه کاربری که درخواست داده
+   * همه‌ی پروفایل‌هایی که برای بیننده قابل مشاهده است.
+   * - اگر ownerUserId وجود داشته باشد: فقط همان owner بعد از چک مجوز
+   * - اگر نباشد:
+   *   - SA: پروفایل‌های خودش
+   *   - نقش‌های ۳..۵: پروفایل‌های SA بالادستی
+   *   - مدیرکل ۱: همه‌ی پروفایل‌ها
    */
+  async findAllVisible(viewerUserId: number, ownerUserId?: number): Promise<VehicleSettingProfile[]> {
+    // مدیرکل: همه (بدون owner)
+    const viewer = await this.usersRepository.findOne({
+      where: { id: viewerUserId },
+      relations: ['parent'],
+    });
+    if (!viewer) throw new NotFoundException('کاربر بیننده یافت نشد.');
+
+    if (ownerUserId != null) {
+      await this.assertViewerCanSeeOwner(viewerUserId, ownerUserId);
+      return this.profilesRepository.find({
+        where: { user: { id: ownerUserId } },
+        order: { createdAt: 'DESC' },
+      });
+    }
+
+    if (viewer.role_level === 1) {
+      // همه را برگردان
+      return this.profilesRepository.find({ order: { createdAt: 'DESC' } });
+    }
+
+    if (viewer.role_level === 2) {
+      // SA: فقط خودش
+      return this.profilesRepository.find({
+        where: { user: { id: viewer.id } },
+        order: { createdAt: 'DESC' },
+      });
+    }
+
+    if (viewer.role_level >= 3 && viewer.role_level <= 5) {
+      // ۳..۵: SA بالادستی
+      const topSAId = await this.findTopSuperAdminId(viewer.id);
+      return this.profilesRepository.find({
+        where: { user: { id: topSAId } },
+        order: { createdAt: 'DESC' },
+      });
+    }
+
+    // نقش‌های پایین‌تر (راننده و …): هیچ
+    return [];
+  }
+
+  // ===== مالکیت برای ادیت/حذف =====
+
   private async findOneAndVerifyOwnership(id: number, userId: number): Promise<VehicleSettingProfile> {
     const profile = await this.profilesRepository.findOne({
       where: { id },
-      relations: ['user'], // ✅ رابطه با کاربر را نیز بارگذاری می‌کند
+      relations: ['user'],
     });
-
-    if (!profile) {
-      throw new NotFoundException(`پروفایل با شناسه ${id} یافت نشد.`);
-    }
-
+    if (!profile) throw new NotFoundException(`پروفایل با شناسه ${id} یافت نشد.`);
     if (profile.user.id !== userId) {
       throw new ForbiddenException('شما اجازه دسترسی به این پروفایل را ندارید.');
     }
-
     return profile;
   }
 
-  /**
-   * یک پروفایل موجود را به‌روزرسانی می‌کند.
-   * @param id - شناسه پروفایل برای ویرایش
-   * @param updateProfileDto - داده‌های جدید
-   * @param userId - شناسه کاربر برای بررسی مالکیت
-   */
   async update(id: number, updateProfileDto: UpdateProfileDto, userId: number): Promise<VehicleSettingProfile> {
-    // 1. ابتدا پروفایل را پیدا کرده و مالکیت آن را بررسی می‌کنیم
     const profileToUpdate = await this.findOneAndVerifyOwnership(id, userId);
-
-    // 2. داده‌های جدید را با داده‌های موجود ادغام می‌کنیم
-    const updatedProfile = Object.assign(profileToUpdate, updateProfileDto);
-    
-    // 3. پروفایل به‌روز شده را ذخیره می‌کنیم
-    return this.profilesRepository.save(updatedProfile);
+    Object.assign(profileToUpdate, updateProfileDto);
+    return this.profilesRepository.save(profileToUpdate);
   }
 
-  /**
-   * یک پروفایل را حذف می‌کند.
-   * @param id - شناسه پروفایل برای حذف
-   * @param userId - شناسه کاربر برای بررسی مالکیت
-   */
   async remove(id: number, userId: number): Promise<void> {
-    // ابتدا پروفایل را پیدا کرده و مالکیت آن را بررسی می‌کنیم
     await this.findOneAndVerifyOwnership(id, userId);
-
-    // اگر مالکیت تایید شد، حذف را انجام می‌دهیم
     await this.profilesRepository.delete(id);
   }
 }
-

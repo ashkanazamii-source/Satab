@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import React from 'react';
 import api from '../services/api';
-import { Portal, } from '@mui/material';
+import { MenuItem, Portal, } from '@mui/material';
 import {
   Dialog, DialogTitle, DialogContent, DialogActions,
   TextField, Checkbox, FormGroup, FormControlLabel, Grid,
@@ -2221,6 +2221,51 @@ function GrantMonitorDialog({
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
   const openSidebar = () => setSidebarOpen(true);
   const closeSidebar = () => setSidebarOpen(false);
+  const [vehLoading, setVehLoading] = useState(false);
+  const [vehicles, setVehicles] = useState<any[]>([]);
+  const [selectedVehIds, setSelectedVehIds] = useState<Set<number>>(new Set());
+  const [vehQuery, setVehQuery] = useState('');
+  const [vehTypeFilter, setVehTypeFilter] = useState<VehicleTypeCode | ''>('');
+  const pageSize = 500; // یا هر مقدار مناسب
+  useEffect(() => {
+    if (!open) return;
+    // اگر user هدف مشخص نیست، بخش ماشین‌ها را هم خالی کن
+    if (!targetUser?.id) { setVehicles([]); setSelectedVehIds(new Set()); return; }
+
+    (async () => {
+      setVehLoading(true);
+      try {
+        // سوپرادمین همهٔ ماشین‌ها را می‌بیند (list فعلی‌ات responsible_user را هم برمی‌گرداند)
+        const { data } = await api.get('/vehicles', {
+          params: { page: 1, limit: pageSize, /* اختیاری: owner_user_id, country_code, vehicle_type_code */ }
+        });
+
+        const items = Array.isArray(data?.items) ? data.items : [];
+        setVehicles(items);
+
+        // پیش‌انتخاب: هر ماشینی که مسئول فعلی‌اش targetUser است
+        const pre = new Set<number>();
+        items.forEach((v: any) => {
+          if (v?.responsible_user_id === targetUser.id || v?.responsible_user?.id === targetUser.id) {
+            pre.add(Number(v.id));
+          }
+        });
+        setSelectedVehIds(pre);
+      } finally {
+        setVehLoading(false);
+      }
+    })();
+  }, [open, targetUser]);
+  const vehiclesFiltered = React.useMemo(() => {
+    const q = vehQuery.trim().toLowerCase();
+    return vehicles.filter((v: any) => {
+      if (vehTypeFilter && v.vehicle_type_code !== vehTypeFilter) return false;
+      if (!q) return true;
+      const name = (v.name || '').toLowerCase();
+      const plate = (v.plate_no || '').toLowerCase();
+      return name.includes(q) || plate.includes(q);
+    });
+  }, [vehicles, vehQuery, vehTypeFilter]);
 
   useEffect(() => {
     if (!open || !targetUser?.id) return;
@@ -2265,11 +2310,18 @@ function GrantMonitorDialog({
     if (!targetUser?.id) return;
     setLoading(true);
     try {
+      // 1) ذخیرهٔ پرمیشن‌های مانیتورینگ
       const policies = (Object.keys(grantableMap) as VehicleTypeCode[]).map(vt => ({
         vehicle_type_code: vt,
         monitor_params: Array.from(perType[vt] || []),
       }));
       await api.put(`/vehicle-policies/user/${targetUser.id}/bounded`, { policies });
+
+      // 2) واگذاری مسئولیت ماشین‌ها (Bulk)
+      await api.put(`/vehicles/responsible/bulk/${targetUser.id}`, {
+        vehicle_ids: Array.from(selectedVehIds),
+      });
+
       onClose(true);
     } catch (e) {
       console.error(e);
@@ -2358,33 +2410,123 @@ function GrantMonitorDialog({
               شما پرمیشن قابل‌واگذاری فعالی ندارید.
             </Box>
           ) : (
-            (Object.keys(grantableMap) as VehicleTypeCode[]).map(vt => (
-              <Box key={vt} sx={{ border: '1px solid #eee', borderRadius: 1, p: 2, mb: 1 }}>
-                <Box sx={{ fontWeight: 600, mb: 1 }}>
-                  {VEHICLE_TYPES.find(t => t.code === vt)?.label || vt}
+            <>
+              {(Object.keys(grantableMap) as VehicleTypeCode[]).map(vt => (
+                <Box key={vt} sx={{ border: '1px solid #eee', borderRadius: 1, p: 2, mb: 1 }}>
+                  <Box sx={{ fontWeight: 600, mb: 1 }}>
+                    {VEHICLE_TYPES.find(t => t.code === vt)?.label || vt}
+                  </Box>
+                  <FormGroup>
+                    <Grid container spacing={1}>
+                      {grantableMap[vt].map(mk => (
+                        <Grid item xs={12} sm={6} md={4} key={`${vt}-${mk}`}>
+                          <FormControlLabel
+                            control={
+                              <Checkbox
+                                checked={(perType[vt] || new Set()).has(mk)}
+                                onChange={(e) => toggle(vt, mk as MonitorKey, e.target.checked)}
+                              />
+                            }
+                            label={MONITOR_PARAMS.find(m => m.key === mk)?.label || mk}
+                          />
+                        </Grid>
+                      ))}
+                    </Grid>
+                  </FormGroup>
                 </Box>
-                <FormGroup>
-                  <Grid container spacing={1}>
-                    {grantableMap[vt].map(mk => (
-                      <Grid item xs={12} sm={6} md={4} key={`${vt}-${mk}`}>
-                        <FormControlLabel
-                          control={
-                            <Checkbox
-                              checked={(perType[vt] || new Set()).has(mk)}
-                              onChange={(e) => toggle(vt, mk as MonitorKey, e.target.checked)}
-                            />
-                          }
-                          label={MONITOR_PARAMS.find(m => m.key === mk)?.label || mk}
-                        />
-                      </Grid>
-                    ))}
+              ))}
+
+              {/* ====== اینجــا بلوک انتخاب ماشین‌ها می‌آید ====== */}
+              <Box sx={{ mt: 3 }}>
+                <Box sx={{ fontWeight: 700, mb: 1.5 }}>تعیین ماشین‌های تحت مسئولیت</Box>
+
+                {/* فیلترها */}
+                <Grid container spacing={1} sx={{ mb: 1 }}>
+                  <Grid item xs={12} sm={6} md={4}>
+                    <TextField
+                      size="small"
+                      fullWidth
+                      placeholder="جستجوی نام/پلاک"
+                      value={vehQuery}
+                      onChange={(e) => setVehQuery(e.target.value)}
+                    />
                   </Grid>
-                </FormGroup>
+                  <Grid item xs={12} sm={6} md={3}>
+                    <TextField
+                      size="small"
+                      select
+                      fullWidth
+                      label="نوع خودرو"
+                      value={vehTypeFilter}
+                      onChange={(e) => setVehTypeFilter(e.target.value as any)}
+                    >
+                      <MenuItem value="">همه</MenuItem>
+                      {VEHICLE_TYPES.map(vt => (
+                        <MenuItem key={vt.code} value={vt.code}>{vt.label}</MenuItem>
+                      ))}
+                    </TextField>
+                  </Grid>
+                  <Grid item xs />
+                  <Grid item>
+                    <Button
+                      size="small"
+                      onClick={() => setSelectedVehIds(new Set(vehiclesFiltered.map(v => v.id)))}
+                    >
+                      انتخاب همهٔ نتایج
+                    </Button>
+                  </Grid>
+                  <Grid item>
+                    <Button size="small" onClick={() => setSelectedVehIds(new Set())}>
+                      حذف انتخاب
+                    </Button>
+                  </Grid>
+                </Grid>
+
+                {/* جدول/لیست ماشین‌ها */}
+                <Box sx={{ border: '1px solid #eee', borderRadius: 1, overflow: 'hidden' }}>
+                  {vehLoading ? (
+                    <Box sx={{ p: 2 }}>در حال بارگذاری ماشین‌ها…</Box>
+                  ) : (
+                    <List dense sx={{ maxHeight: 380, overflow: 'auto' }}>
+                      {vehiclesFiltered.map((v: any) => {
+                        const checked = selectedVehIds.has(v.id);
+                        const handleToggle = () => {
+                          setSelectedVehIds(prev => {
+                            const n = new Set(prev);
+                            checked ? n.delete(v.id) : n.add(v.id);
+                            return n;
+                          });
+                        };
+                        return (
+                          <ListItem key={v.id} divider
+                            secondaryAction={<Checkbox edge="end" onChange={handleToggle} checked={checked} />}
+                          >
+                            <ListItemText
+                              primary={v.name || 'بدون نام'}
+                              secondary={
+                                <>
+                                  <span>پلاک: {v.plate_no}</span>{' — '}
+                                  <span>نوع: {v.vehicle_type_code}</span>{' — '}
+                                  <span>مسئول فعلی: {v.responsible_user?.full_name || v.responsible_user_id || '—'}</span>
+                                </>
+                              }
+                            />
+                          </ListItem>
+                        );
+                      })}
+                      {!vehiclesFiltered.length && (
+                        <ListItem><ListItemText primary="موردی یافت نشد." /></ListItem>
+                      )}
+                    </List>
+                  )}
+                </Box>
               </Box>
-            ))
+              {/* ====== پایان بلوک انتخاب ماشین‌ها ====== */}
+            </>
           )
         )}
       </DialogContent>
+
       <DialogActions>
         <Button onClick={() => onClose(false)} disabled={loading}>انصراف</Button>
         <Button variant="contained" onClick={handleSave} disabled={loading || !hasAnyGrantable}>

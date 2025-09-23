@@ -687,26 +687,26 @@ function FleetModeActions() {
   React.useEffect(() => {
     fetchDrivers();           // ← اینجا await نمی‌خوایم
   },
-   [fetchDrivers]); useEffect(() => {
-    let ok = true;
-    (async () => {
-      setConsLoading(true);
-      setConsErr(null);
-      try {
-        // اگر user.id در دسترسه:
-        const { data } = await api.get(`/super-admins/${user?.id}/consumables`, {
-          params: { limit: 300 },
-        });
-        const rows: ConsumableRow[] = Array.isArray(data) ? data : (data?.items ?? []);
-        if (ok) setConsumables(rows);
-      } catch (e: any) {
-        if (ok) setConsErr('خطا در دریافت مصرفی‌ها');
-      } finally {
-        if (ok) setConsLoading(false);
-      }
-    })();
-    return () => { ok = false; };
-  }, [user?.id]);
+    [fetchDrivers]); useEffect(() => {
+      let ok = true;
+      (async () => {
+        setConsLoading(true);
+        setConsErr(null);
+        try {
+          // اگر user.id در دسترسه:
+          const { data } = await api.get(`/super-admins/${user?.id}/consumables`, {
+            params: { limit: 300 },
+          });
+          const rows: ConsumableRow[] = Array.isArray(data) ? data : (data?.items ?? []);
+          if (ok) setConsumables(rows);
+        } catch (e: any) {
+          if (ok) setConsErr('خطا در دریافت مصرفی‌ها');
+        } finally {
+          if (ok) setConsLoading(false);
+        }
+      })();
+      return () => { ok = false; };
+    }, [user?.id]);
 
   type MiniVehicle = { id: number; plate_no: string; last_location?: { lat: number; lng: number } };
   const [mapLoading, setMapLoading] = useState(true);
@@ -715,20 +715,8 @@ function FleetModeActions() {
   type Node = { id: number; name: string; role_level?: number; children?: Node[] };
   const [tree, setTree] = useState<Node | null>(null);
   const [treeLoading, setTreeLoading] = useState(true);
-  /*useEffect(() => {
-    let ok = true;
-    (async () => {
-      try {
-        const { data } = await api.get('/users/my-subordinates-flat'); // نیاز به لاگین (JwtAuthGuard)
-        const items = Array.isArray(data) ? data : (data?.items ?? []);
-        const cnt = items.filter((u: any) => Number(u.role_level) === 6).length;
-        if (ok) setDriverCount(cnt);
-      } catch {
-        if (ok) setDriverCount(0);
-      }
-    })();
-    return () => { ok = false; };
-  }, []);*/
+
+
   useEffect(() => {
     let ok = true;
 

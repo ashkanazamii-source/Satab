@@ -307,31 +307,52 @@ export default function DefineLinePage() {
         (async () => {
             if (!me?.id) return;
 
-            // اگر خود کاربر SA است: ماشین‌های خودش
-            if (me.role_level === 2) {
-                await loadVehiclesForSA(me.id);
-                return;
-            }
-
-            // اگر مدیر/اپراتور است (۳..۵): ماشین‌های SA والد
-            if (me.role_level >= 3 && me.role_level <= 5) {
-                const parent = await resolveParentSA(me.id);
-                if (!alive) return;
-                if (parent?.id) {
-                    await loadVehiclesForSA(parent.id);
-                } else {
-                    // اگر SA والد پیدا نشد، چیزی لود نکن
+            // مدیرکل (۱): همه را می‌بیند
+            if (me.role_level === 1) {
+                try {
+                    const { data } = await api.get('/vehicles', { params: { limit: 1000 } });
+                    const items = Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
+                    vehiclesRef.current = (items || []).map((v: any) => ({
+                        id: Number(v?.id),
+                        owner_user_id: Number(v?.owner_user_id ?? v?.ownerUserId),
+                        vehicle_type_code: v?.vehicle_type_code ?? v?.vehicleTypeCode,
+                        ...v,
+                    })).filter((v: any) => Number.isFinite(v.id));
+                } catch {
                     vehiclesRef.current = [];
                 }
                 return;
             }
 
-            // سایر نقش‌ها: الان نیاز نیست چیزی بیاد
+            // سوپر ادمین (۲): فقط ماشین‌های متعلق به خودش
+            if (me.role_level === 2) {
+                await loadVehiclesForSA(me.id);
+                return;
+            }
+
+            // نقش‌های ۳..۵: فقط ماشین‌هایی که خودش مسئولشونه
+            if (me.role_level >= 3 && me.role_level <= 5) {
+                try {
+                    const { data } = await api.get('/vehicles/responsible/my', { params: { limit: 1000 } });
+                    const items = Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
+                    vehiclesRef.current = (items || []).map((v: any) => ({
+                        id: Number(v?.id),
+                        owner_user_id: Number(v?.owner_user_id ?? v?.ownerUserId),
+                        vehicle_type_code: v?.vehicle_type_code ?? v?.vehicleTypeCode,
+                        ...v,
+                    })).filter((v: any) => Number.isFinite(v.id));
+                } catch {
+                    vehiclesRef.current = [];
+                }
+                return;
+            }
+
+            // سایر نقش‌ها: چیزی لود نکن
             vehiclesRef.current = [];
         })();
 
         return () => { alive = false; };
-    }, [me?.id, me?.role_level, loadVehiclesForSA, resolveParentSA]);
+    }, [me?.id, me?.role_level, loadVehiclesForSA]);
 
     useEffect(() => {
         let alive = true;
@@ -944,18 +965,55 @@ export default function DefineLinePage() {
         setDrawingRoute(false);
     };
 
+    // داخل DefineLinePage.tsx
     const loadProfiles = React.useCallback(async () => {
         setProfilesLoading(true);
         try {
-            const { data } = await api.get('/vehicle-setting-profiles');
-            setProfiles(Array.isArray(data) ? data : []);
+            // کاربر جاری باید مشخص باشد
+            if (!me?.id) {
+                setProfiles([]);
+                return;
+            }
+
+            // پارام‌های درخواست به سرور
+            const params: Record<string, any> = {};
+
+            if (me.role_level === 2) {
+                // سوپرادمین: فقط پروفایل‌های خودش
+                params.owner_user_id = me.id;
+            } else if (me.role_level >= 3 && me.role_level <= 5) {
+                // نقش‌های ۳..۵: پروفایل‌های سوپرادمین والد
+                const parent = await resolveParentSA(me.id);
+                if (parent?.id) {
+                    params.owner_user_id = parent.id;
+                } else {
+                    // اگر والد SA پیدا نشد، چیزی نمایش نده
+                    setProfiles([]);
+                    return;
+                }
+            }
+            // نقش ۱ (مدیرکل/ادمین کل): params خالی = طبق بک‌اند شما «همه» یا محدوده مجاز
+
+            const { data } = await api.get('/vehicle-setting-profiles', {
+                params,
+                validateStatus: s => s < 500,
+            });
+
+            // بک‌اند ممکنه items بده یا آرایه خام
+            const rows =
+                Array.isArray(data) ? data :
+                    Array.isArray(data?.items) ? data.items :
+                        [];
+
+            setProfiles(rows);
         } catch (e) {
             console.error('Failed to fetch profiles', e);
             setProfiles([]);
         } finally {
             setProfilesLoading(false);
         }
-    }, []);
+    }, [me?.id, me?.role_level, resolveParentSA]);
+
 
     const handleCreateNewProfile = () => {
         resetForms();
@@ -1381,7 +1439,7 @@ export default function DefineLinePage() {
                                         ))}
                                     {profiles.length === 0 && !profilesLoading && (
                                         <Typography color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>
-                                            هنوز پروفایلی ثبت نشده است.
+                                            هنوز خطی ثبت نشده است.
                                         </Typography>
                                     )}
                                 </List>

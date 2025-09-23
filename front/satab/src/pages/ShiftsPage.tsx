@@ -22,7 +22,7 @@ import MapRoundedIcon from '@mui/icons-material/MapRounded';
 import NotesRoundedIcon from '@mui/icons-material/NotesRounded';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded';
-
+import { Tabs, Tab } from '@mui/material';
 import api from '../services/api';
 
 /** =========================
@@ -315,7 +315,115 @@ export default function ShiftsPage() {
         dt.setDate(dt.getDate() + days);
         return `${dt.getFullYear()}-${fmt2(dt.getMonth() + 1)}-${fmt2(dt.getDate())}`;
     }
-    // تنظیمات تکثیر (m راننده × تاریخ‌های دلخواه)
+    // == داخل ShiftsPage ==
+    const [profileSelected, setProfileSelected] = React.useState<ShiftProfile | null>(null);
+    const [assignDriverIds, setAssignDriverIds] = React.useState<ID[]>([]);
+    const [applyPublish, setApplyPublish] = React.useState(false);
+    const [applyLoading, setApplyLoading] = React.useState(false);
+    const [driverQProfile, setDriverQProfile] = React.useState(''); // جستجوی محلیِ پنل پروفایل
+    const [editingProfile, setEditingProfile] = React.useState<ShiftProfile | null>(null);
+    async function updateShiftProfile(id: number, payload: { name?: string; payload?: ShiftProfilePayload }) {
+        const res = await api.put(`/shift-profiles/${id}`, payload);
+        return res.data;
+    }
+    async function deleteShiftProfile(id: number) {
+        await api.delete(`/shift-profiles/${id}`);
+    }
+
+    // کلاینت برای اعمال پروفایل
+    async function applyShiftProfile(
+        profileId: ID,
+        payload: { driver_ids: ID[]; dates?: string[]; publish?: boolean; wipe_first?: boolean; wipe_scope?: 'dates' | 'all' }
+    ) {
+        const res = await api.post(`/shift-profiles/${profileId}/apply`, payload);
+        return res.data;
+    }
+
+
+
+    const [dialogMode, setDialogMode] = React.useState<'shift' | 'profile'>('shift');
+    const [profileCreateOpen, setProfileCreateOpen] = React.useState(false);
+    // درفت پروفایل (مثل شیفت ولی بدون driver_id و date)
+    // فرم ساخت/ویرایش پروفایل شیفت
+    const [profileDraft, setProfileDraft] = React.useState<ShiftProfilePayload>({
+        start_time: '08:00',
+        end_time: '16:00',
+        type: 'morning',
+        vehicle_id: null,
+        route_id: null,
+        station_start_id: null,
+        station_end_id: null,
+        note: '',
+        status: 'DRAFT',
+        apply_dates: [],   // ← انتخاب‌های تقویم
+    });
+    const [profileDates, setProfileDates] = React.useState<string[]>([]); // سینک با apply_dates
+    const onCreateProfile = async () => {
+        try {
+            const name = (profileName || '').trim();
+            if (!name) throw new Error('نام پروفایل را وارد کنید');
+
+            if (!profileDraft.start_time || !profileDraft.end_time) {
+                throw new Error('ساعت شروع/پایان را وارد کنید');
+            }
+            const start = Number(profileDraft.start_time.replace(':', ''));
+            const end = Number(profileDraft.end_time.replace(':', ''));
+            if (end <= start) throw new Error('ساعت پایان باید بعد از ساعت شروع باشد');
+
+            // آماده کردن payload نهایی
+            const payload: ShiftProfilePayload = {
+                ...profileDraft,
+                apply_dates: (profileDates && profileDates.length) ? uniq(sortYmdAsc(profileDates)) : [],
+            };
+            const created = await createShiftProfile(profileName.trim(), payload);
+
+            setShiftProfiles(prev => [created, ...prev]);
+
+            setSnack({ open: true, sev: 'success', msg: 'پروفایل با موفقیت ذخیره شد' });
+
+            // ریست فرم
+            setProfileName('');
+            setProfileDraft({
+                start_time: '08:00',
+                end_time: '16:00',
+                type: 'morning',
+                vehicle_id: null,
+                route_id: null,
+                station_start_id: null,
+                station_end_id: null,
+                note: '',
+                status: 'DRAFT',
+                apply_dates: [],
+            });
+            setProfileDates([]);
+
+            // می‌تونی دیالوگ رو باز نگه داری؛ اگر می‌خوای ببندیش:
+            // setProfileOpen(false);
+        } catch (e: any) {
+            setSnack({ open: true, sev: 'error', msg: e?.message ?? 'خطا در ذخیره پروفایل' });
+        }
+    };
+
+
+    // نام پروفایل (از قبل داری؛ اگر نداشتی:)
+
+    // وضعیت ذخیره
+    const [profileSaving, setProfileSaving] = React.useState(false);
+
+    type ShiftProfilePayload = {
+        start_time: string;
+        end_time: string;
+        type: ShiftType;
+        vehicle_id?: ID | null;
+        route_id?: ID | null;
+        station_start_id?: ID | null;
+        station_end_id?: ID | null;
+        note?: string | null;
+        status?: ShiftStatus;
+        /** تاریخ‌های میلادی "YYYY-MM-DD" که کاربر برای این پروفایل انتخاب می‌کند */
+        apply_dates?: string[];   // ← اضافه شد
+    };
+
     const [bulk, setBulk] = React.useState<{
         extraDriverIds: ID[];
         dates: string[]; // تاریخ‌های میلادی "YYYY-MM-DD"
@@ -329,6 +437,133 @@ export default function ShiftsPage() {
         ended_at?: string | null;
         vehicle_id?: number | null; // اگر API نمی‌دهد، حذف کن و فیلتر را بردار
     };
+    // ==== Profile Dialog states ====
+    const [profileOpen, setProfileOpen] = React.useState(false);
+
+    // لیست پروفایل‌های شیفت
+    type ShiftProfile = {
+        id: number;
+        name: string;
+        payload: ShiftProfilePayload;
+    };
+
+    const [shiftProfiles, setShiftProfiles] = React.useState<ShiftProfile[]>([]);
+
+    // وقتی می‌خواهیم همان دیالوگِ شیفت را در «حالت ساخت پروفایل» باز کنیم:
+    const [saveAsProfile, setSaveAsProfile] = React.useState<null | { returnToProfiles: boolean }>(null);
+    const [profileName, setProfileName] = React.useState('');
+    async function fetchShiftProfiles(): Promise<ShiftProfile[]> {
+        const { data } = await api.get('/shift-profiles', { validateStatus: s => s < 500 }).catch(() => ({ data: [] }));
+        return Array.isArray(data) ? data : (data?.items ?? []);
+    }
+    async function createShiftProfile(name: string, payload: ShiftProfilePayload): Promise<ShiftProfile> {
+        const res = await api.post('/shift-profiles', { name, payload });
+        return res.data;
+    }
+    React.useEffect(() => {
+        let alive = true;
+        (async () => {
+            try {
+                const [v, s, r] = await Promise.all([fetchVehicles(), fetchStations(), fetchRoutes()]);
+                if (!alive) return;
+                setVehicles(v);
+                setStations(s);
+                setRoutes(r);
+            } catch {
+                // no-op
+            }
+        })();
+        return () => { alive = false; };
+    }, []);
+    const onSaveProfile = async () => {
+        try {
+            const name = (profileName || '').trim();
+            if (!name) throw new Error('نام پروفایل را وارد کنید');
+            if (!profileDraft.start_time || !profileDraft.end_time) {
+                throw new Error('ساعت شروع/پایان را وارد کنید');
+            }
+            const start = Number(profileDraft.start_time.replace(':', ''));
+            const end = Number(profileDraft.end_time.replace(':', ''));
+            if (end <= start) throw new Error('ساعت پایان باید بعد از ساعت شروع باشد');
+
+            setProfileSaving(true);
+
+            // payload نهایی: تاریخ‌ها همیشه از UI (profileDates)
+            const finalPayload: ShiftProfilePayload = {
+                ...profileDraft,
+                apply_dates: (profileDates && profileDates.length) ? uniq(sortYmdAsc(profileDates)) : [],
+            };
+
+            if (editingProfile) {
+                // ---- UPDATE ----
+                const updated = await updateShiftProfile(editingProfile.id, {
+                    name,
+                    payload: finalPayload,
+                });
+
+                // اگر API کل آبجکت را برنمی‌گرداند، خودت local state را بساز:
+                setShiftProfiles(prev =>
+                    prev.map(x => x.id === editingProfile.id
+                        ? { ...x, name, payload: { ...finalPayload, apply_dates: [...(finalPayload.apply_dates ?? [])] } }
+                        : x
+                    )
+                );
+
+                // اگر پروفایل انتخاب‌شده همین بود، انتخاب را هم آپدیت کن
+                setProfileSelected(sel =>
+                    sel?.id === editingProfile.id
+                        ? { ...sel, name, payload: { ...finalPayload, apply_dates: [...(finalPayload.apply_dates ?? [])] } }
+                        : sel
+                );
+
+                setSnack({ open: true, sev: 'success', msg: 'پروفایل ویرایش شد' });
+            } else {
+                // ---- CREATE ----
+                const created = await createShiftProfile(name, finalPayload);
+                setShiftProfiles(prev => [created, ...prev]);
+                setSnack({ open: true, sev: 'success', msg: 'پروفایل با موفقیت ذخیره شد' });
+            }
+
+            // ریست و بستن
+            setProfileCreateOpen(false);
+            setEditingProfile(null);
+            setProfileName('');
+            setProfileDraft({
+                start_time: '08:00',
+                end_time: '16:00',
+                type: 'morning',
+                vehicle_id: null,
+                route_id: null,
+                station_start_id: null,
+                station_end_id: null,
+                note: '',
+                status: 'DRAFT',
+                apply_dates: [],
+            });
+            setProfileDates([]);
+        } catch (e: any) {
+            setSnack({ open: true, sev: 'error', msg: e?.message ?? 'خطا در ذخیره پروفایل' });
+        } finally {
+            setProfileSaving(false);
+        }
+    };
+
+
+    React.useEffect(() => {
+        if (!profileOpen) return;
+        let alive = true;
+        (async () => {
+            try {
+                const rows = await fetchShiftProfiles();
+                if (!alive) return;
+                setShiftProfiles(rows);
+            } catch {
+                if (!alive) return;
+                setShiftProfiles([]);
+            }
+        })();
+        return () => { alive = false; };
+    }, [profileOpen]);
 
     // -- Assignments API
     async function fetchAssignmentHistory(driverId: ID): Promise<Assignment[]> {
@@ -542,6 +777,63 @@ export default function ShiftsPage() {
 
         return () => { alive = false; };
     }, [driverQ]);  // ← هر بار جستجو عوض شد، همین لیست را محلی فیلتر می‌کنیم
+    // تب‌های پنل پروفایل: 0=همه راننده‌ها، 1=بدون شیفت
+    const [profileTab, setProfileTab] = React.useState(0);
+
+    // راننده‌هایی که در هیچ‌کدام از apply_dates پروفایل، شیفت ندارند
+    const [remainingDrivers, setRemainingDrivers] = React.useState<Driver[]>([]);
+    const [remLoading, setRemLoading] = React.useState(false);
+
+    React.useEffect(() => {
+        // وقتی پروفایل عوض شد یا تاریخ‌هایش تغییر کرد یا لیست راننده‌ها عوض شد، «بدون شیفت» را دوباره محاسبه کن
+        if (!profileSelected || !(profileSelected.payload.apply_dates?.length)) {
+            setRemainingDrivers([]);
+            return;
+        }
+        const dates = Array.from(new Set(profileSelected.payload.apply_dates.filter(Boolean)));
+        if (!dates.length) { setRemainingDrivers([]); return; }
+
+        // از/تا برای یک بار گرفتن بازه
+        const from = dates.slice().sort((a, b) => a.localeCompare(b))[0];
+        const to = dates.slice().sort((a, b) => b.localeCompare(a))[0];
+        const dateSet = new Set(dates);
+
+        // برای کنترل فشار روی سرور: هم‌زمانی محدود
+        const limit = 10; // حداکثر درخواست همزمان
+        let idx = 0;
+        const driversCopy = drivers.slice();
+        const result: Driver[] = [];
+
+        const runner = async () => {
+            while (idx < driversCopy.length) {
+                const i = idx++;
+                const d = driversCopy[i];
+                try {
+                    const list = await fetchShifts(d.id, from, to);
+                    const hasAny = (list || []).some(s => dateSet.has(s.date));
+                    if (!hasAny) result.push(d); // یعنی هیچ شیفتی تو این تاریخ‌ها نداره
+                } catch {
+                    // اگر خطا شد، فرض نکن بدون شیفته؛ صرفاً رد شو
+                }
+            }
+        };
+
+        (async () => {
+            setRemLoading(true);
+            try {
+                // limit تا روتین موازی
+                await Promise.all(Array.from({ length: Math.min(limit, driversCopy.length) }, () => runner()));
+                setRemainingDrivers(result);
+            } finally {
+                setRemLoading(false);
+            }
+        })();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [
+        profileSelected?.id,
+        JSON.stringify(profileSelected?.payload?.apply_dates ?? []),
+        JSON.stringify(drivers.map(d => d.id)) // تغییر معنی‌دار لیست رانندگان
+    ]);
 
     // poll assignments & ensure overtime
     React.useEffect(() => {
@@ -830,15 +1122,46 @@ export default function ShiftsPage() {
 
     const onSave = async () => {
         try {
-            // اعتبارسنجی
-            //if (!draft.driver_id) throw new Error('راننده نامعتبر است');
-            if (!draft.date) throw new Error('تاریخ نامعتبر است');
+            // اعتبارسنجی مشترک زمان‌ها
             if (!draft.start_time || !draft.end_time) throw new Error('ساعت شروع/پایان را وارد کنید');
             const start = Number(draft.start_time.replace(':', ''));
             const end = Number(draft.end_time.replace(':', ''));
             if (end <= start) throw new Error('ساعت پایان باید بعد از ساعت شروع باشد');
 
-            // ویرایش: تکثیر نداریم
+            // === حالت ساخت پروفایل ===
+            if (saveAsProfile) {
+                const name = (profileName || '').trim();
+                if (!name) throw new Error('نام پروفایل را وارد کنید');
+
+                const payload: ShiftProfilePayload = {
+                    start_time: draft.start_time,
+                    end_time: draft.end_time,
+                    type: draft.type,
+                    vehicle_id: draft.vehicle_id ?? null,
+                    route_id: draft.route_id ?? null,
+                    station_start_id: draft.station_start_id ?? null,
+                    station_end_id: draft.station_end_id ?? null,
+                    note: draft.note ?? '',
+                    status: draft.status, // پیش‌فرض پروفایل (مثلاً DRAFT)
+                };
+
+                const created = await createShiftProfile(name, payload);
+
+                // لیست پروفایل‌ها را رفرش کن/append کن
+                setShiftProfiles(prev => [created, ...prev]);
+                setSnack({ open: true, sev: 'success', msg: 'پروفایل با موفقیت ذخیره شد' });
+
+                // بستن فرم و ماندن در دیالوگ پروفایل
+                setDialogOpen(false);
+                setSaveAsProfile(null);
+                setProfileName('');
+                setProfileOpen(true);
+
+                return; // مهم
+            }
+
+            // === حالت معمول (ایجاد/ویرایش شیفت) ===
+            // ویرایش
             if (editing) {
                 const updated = await updateShift(editing.id, { ...draft });
                 setShifts(prev => prev.map(x => x.id === editing.id ? updated : x));
@@ -847,7 +1170,8 @@ export default function ShiftsPage() {
                 return;
             }
 
-            // ایجاد: m راننده × تاریخ‌های دلخواه
+            // ایجاد (bulk)
+            if (!draft.date) throw new Error('تاریخ نامعتبر است');
             const targetDates = (bulk.dates && bulk.dates.length) ? uniq(sortYmdAsc(bulk.dates)) : [draft.date];
             const driverIds = uniq<ID>([draft.driver_id, ...bulk.extraDriverIds].filter(Boolean) as ID[]);
 
@@ -859,7 +1183,6 @@ export default function ShiftsPage() {
             }
 
             const results = await Promise.allSettled(payloads.map(p => createShift(p)));
-
             const successes: Shift[] = [];
             let failures = 0;
             results.forEach(r => {
@@ -879,9 +1202,10 @@ export default function ShiftsPage() {
 
             setDialogOpen(false);
         } catch (e: any) {
-            setSnack({ open: true, sev: 'error', msg: e?.message ?? 'خطا در ذخیره شیفت' });
+            setSnack({ open: true, sev: 'error', msg: e?.message ?? 'خطا در ذخیره' });
         }
     };
+
 
 
     const onDelete = async (s: Shift) => {
@@ -923,9 +1247,7 @@ export default function ShiftsPage() {
             <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
                 <Stack direction="row" spacing={1.5} alignItems="center">
                     <Typography variant="h5" fontWeight={900}>مدیریت شیفت رانندگان</Typography>
-                    <Tooltip title="راهنما">
-                        <InfoOutlinedIcon fontSize="small" />
-                    </Tooltip>
+
                 </Stack>
 
                 <Stack direction="row" spacing={1}>
@@ -954,12 +1276,563 @@ export default function ShiftsPage() {
                     }}>
                         بروزرسانی
                     </Button>
-
+                    <Button
+                        variant="outlined"
+                        onClick={() => setProfileOpen(true)}
+                    >
+                        افزودن پروفایل
+                    </Button>
                     <Button variant="contained" startIcon={<AddRoundedIcon />} onClick={() => openCreate()}>
                         افزودن شیفت
                     </Button>
                 </Stack>
             </Stack>
+            <Dialog open={profileOpen} onClose={() => setProfileOpen(false)} fullWidth maxWidth="lg">
+                <DialogTitle sx={{ fontWeight: 900 }}>پروفایل‌های شیفت</DialogTitle>
+                <DialogContent sx={{ p: 0 }}>
+                    <Box sx={{ display: 'flex', flexDirection: 'row', minHeight: '70vh' }}>
+                        {/* ستون راستِ راست: لیست + دکمه‌ی افزودن پروفایل شیفت */}
+                        <Box
+                            sx={{
+                                width: { xs: '100%', md: 400 },
+                                p: 2,
+                                borderRight: (t) => `1px solid ${t.palette.divider}`, // ← قبلاً borderLeft بود
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: 1.25,
+                            }}
+                        >
+                            <Stack direction="row" alignItems="center" justifyContent="space-between">
+                                <Typography variant="subtitle1" fontWeight={800}>لیست پروفایل‌ها</Typography>
+                                <Button
+                                    size="small"
+                                    variant="contained"
+                                    onClick={() => {
+                                        setEditingProfile(null);                 // 👈 بسیار مهم
+                                        setProfileName('');
+                                        setProfileDraft({
+                                            start_time: '08:00',
+                                            end_time: '16:00',
+                                            type: 'morning',
+                                            vehicle_id: null,
+                                            route_id: null,
+                                            station_start_id: null,
+                                            station_end_id: null,
+                                            note: '',
+                                            status: 'DRAFT',
+                                            apply_dates: [],
+                                        });
+                                        setProfileDates([]);                     // 👈 تاریخ‌های UI
+                                        setProfileCreateOpen(true);
+                                    }}
+
+                                >
+                                    افزودن پروفایل شیفت
+                                </Button>
+
+                            </Stack>
+
+                            <List dense sx={{ flex: 1, overflow: 'auto' }}>
+                                {shiftProfiles.length === 0 && (
+                                    <Typography variant="body2" color="text.secondary" sx={{ p: 1.5, textAlign: 'center' }}>
+                                        پروفایلی وجود ندارد.
+                                    </Typography>
+                                )}
+
+                                {shiftProfiles.map(p => (
+                                    <ListItem
+                                        key={p.id}
+                                        divider
+                                        secondaryAction={
+                                            <Stack direction="row" spacing={0.5}>
+                                                {/* ویرایش */}
+                                                <Tooltip title="ویرایش پروفایل">
+                                                    <IconButton
+                                                        size="small"
+                                                        onClick={() => {
+                                                            setEditingProfile(p);
+                                                            setProfileName(p.name);
+                                                            setProfileDraft({
+                                                                ...p.payload,
+                                                                apply_dates: p.payload.apply_dates ?? [],
+                                                            });
+                                                            setProfileDates([...(p.payload.apply_dates ?? [])]); // 👈 سنکرون UI تاریخ‌ها
+                                                            setProfileCreateOpen(true);
+                                                        }}
+                                                    >
+                                                        <EditRoundedIcon fontSize="small" />
+                                                    </IconButton>
+                                                </Tooltip>
+
+                                                {/* حذف */}
+                                                <Tooltip title="حذف پروفایل">
+                                                    <IconButton
+                                                        size="small"
+                                                        onClick={async () => {
+                                                            if (!window.confirm(`حذف پروفایل «${p.name}»؟`)) return;
+                                                            try {
+                                                                await deleteShiftProfile(p.id);
+                                                                setShiftProfiles(prev => prev.filter(x => x.id !== p.id));
+                                                                // اگر پروفایل انتخاب‌شده‌ی سمت چپ همین بود، پاکش کنیم
+                                                                setProfileSelected(sel => (sel?.id === p.id ? null : sel));
+                                                                setSnack({ open: true, sev: 'success', msg: 'پروفایل حذف شد' });
+                                                            } catch {
+                                                                setSnack({ open: true, sev: 'error', msg: 'حذف پروفایل ناموفق بود' });
+                                                            }
+                                                        }}
+                                                    >
+                                                        <DeleteRoundedIcon fontSize="small" />
+                                                    </IconButton>
+                                                </Tooltip>
+                                            </Stack>
+                                        }
+                                    >
+                                        <ListItemText
+                                            onClick={() => {
+                                                setProfileSelected(p);
+                                                setAssignDriverIds([]);
+                                                setDriverQProfile('');
+                                            }}
+                                            primary={
+                                                <Stack direction="row" spacing={1} alignItems="center">
+                                                    <Typography variant="subtitle2" fontWeight={800}>{p.name}</Typography>
+                                                    {/* نشان انتخاب‌شدن */}
+                                                    {profileSelected?.id === p.id && <Chip size="small" label="انتخاب شده" color="primary" />}
+                                                </Stack>
+                                            }
+                                            secondary={
+                                                <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: .5, flexWrap: 'wrap' }}>
+                                                    <Chip size="small" icon={<AccessTimeRoundedIcon />} label={`${p.payload.start_time}–${p.payload.end_time}`} />
+                                                    <Chip size="small" label={labelShiftType(p.payload.type)} />
+                                                    {!!p.payload.route_id && <Chip size="small" icon={<MapRoundedIcon />} label={`مسیر #${p.payload.route_id}`} />}
+                                                    {!!p.payload.vehicle_id && <Chip size="small" icon={<DirectionsBusFilledRoundedIcon />} label={`وسیله #${p.payload.vehicle_id}`} />}
+                                                    {!!(p.payload.apply_dates?.length) && (
+                                                        <Chip size="small" variant="outlined" label={`${p.payload.apply_dates.length} تاریخ`} />
+                                                    )}
+                                                </Stack>
+                                            }
+                                        />
+                                    </ListItem>
+                                ))}
+                            </List>
+
+                        </Box>
+
+                        {/* ستون چپ: انتساب پروفایل به راننده‌ها */}
+                        <Box sx={{ flex: 1, p: 2, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                            {!profileSelected ? (
+                                <Stack alignItems="center" justifyContent="center" sx={{ flex: 1, opacity: .8 }}>
+                                    <Typography variant="h6" color="text.secondary">یک پروفایل را از لیست سمت راست انتخاب کن</Typography>
+                                    <Typography variant="body2" color="text.secondary">بعد می‌تونی آن را به راننده‌ها اعمال کنی</Typography>
+                                </Stack>
+                            ) : (
+                                <>
+                                    {/* خلاصهٔ پروفایل */}
+                                    <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: 'wrap' }}>
+                                        <Typography variant="h6" fontWeight={800}>{profileSelected.name}</Typography>
+                                        <Chip size="small" icon={<AccessTimeRoundedIcon />} label={`${profileSelected.payload.start_time}–${profileSelected.payload.end_time}`} />
+                                        <Chip size="small" label={labelShiftType(profileSelected.payload.type as any)} />
+                                        {!!profileSelected.payload.route_id && <Chip size="small" icon={<MapRoundedIcon />} label={`مسیر #${profileSelected.payload.route_id}`} />}
+                                        {!!profileSelected.payload.vehicle_id && <Chip size="small" icon={<DirectionsBusFilledRoundedIcon />} label={`وسیله #${profileSelected.payload.vehicle_id}`} />}
+                                    </Stack>
+
+
+
+                                    {/* تب‌ها: همه راننده‌ها / بدون شیفت */}
+                                    <Tabs
+                                        value={profileTab}
+                                        onChange={(_, v) => setProfileTab(v)}
+                                        sx={{ borderBottom: (t) => `1px solid ${t.palette.divider}` }}
+                                    >
+                                        <Tab label={`همهٔ راننده‌ها (${drivers.length})`} />
+                                        <Tab label={`بدون شیفت (${remLoading ? '...' : remainingDrivers.length})`} />
+                                    </Tabs>
+
+                                    {/* جستجو + انتخاب همه بر اساس تب فعال */}
+                                    <Stack direction="row" spacing={1} alignItems="center">
+                                        <TextField
+                                            size="small"
+                                            label={profileTab === 0 ? 'جستجوی راننده…' : 'جستجو در راننده‌های بدون شیفت…'}
+                                            value={driverQProfile}
+                                            onChange={(e) => setDriverQProfile(e.target.value)}
+                                            sx={{ minWidth: 220 }}
+                                            InputProps={{ startAdornment: <InputAdornment position="start"><SearchRoundedIcon /></InputAdornment> }}
+                                        />
+                                        <FormControlLabel
+                                            control={
+                                                <Checkbox
+                                                    checked={(() => {
+                                                        const pool = (profileTab === 0 ? drivers : remainingDrivers).filter(d =>
+                                                            (d.full_name || '').toLowerCase().includes(driverQProfile.trim().toLowerCase()) ||
+                                                            String(d.phone || '').includes(driverQProfile.trim())
+                                                        ).map(d => d.id);
+                                                        return pool.length > 0 && pool.every(id => assignDriverIds.includes(id));
+                                                    })()}
+                                                    indeterminate={(() => {
+                                                        const pool = (profileTab === 0 ? drivers : remainingDrivers).filter(d =>
+                                                            (d.full_name || '').toLowerCase().includes(driverQProfile.trim().toLowerCase()) ||
+                                                            String(d.phone || '').includes(driverQProfile.trim())
+                                                        ).map(d => d.id);
+                                                        const some = pool.some(id => assignDriverIds.includes(id));
+                                                        const all = pool.length > 0 && pool.every(id => assignDriverIds.includes(id));
+                                                        return some && !all;
+                                                    })()}
+                                                    onChange={() => {
+                                                        const pool = (profileTab === 0 ? drivers : remainingDrivers).filter(d =>
+                                                            (d.full_name || '').toLowerCase().includes(driverQProfile.trim().toLowerCase()) ||
+                                                            String(d.phone || '').includes(driverQProfile.trim())
+                                                        ).map(d => d.id);
+                                                        const allSelected = pool.length > 0 && pool.every(id => assignDriverIds.includes(id));
+                                                        setAssignDriverIds(prev =>
+                                                            allSelected ? prev.filter(id => !pool.includes(id)) : uniq([...prev, ...pool])
+                                                        );
+                                                    }}
+                                                    disabled={(profileTab === 0 ? drivers.length === 0 : remainingDrivers.length === 0) || remLoading}
+                                                />
+                                            }
+                                            label="انتخاب همه (فیلتر فعلی)"
+                                        />
+                                        {profileTab === 1 && (
+                                            <Chip size="small" color="info" variant="outlined"
+                                                label={remLoading ? 'در حال محاسبهٔ راننده‌های بدون شیفت…' : 'فقط راننده‌های بدون شیفت نمایش داده شده‌اند'}
+                                            />
+                                        )}
+                                    </Stack>
+
+                                    {/* لیست راننده‌ها با چک‌باکس (بر اساس تب فعال) */}
+                                    <Paper variant="outlined" sx={{ p: .5, flex: 1, minHeight: 220, overflow: 'auto' }}>
+                                        <List dense>
+                                            {(() => {
+                                                const source = profileTab === 0 ? drivers : remainingDrivers;
+                                                const filtered = source.filter(d =>
+                                                    (d.full_name || '').toLowerCase().includes(driverQProfile.trim().toLowerCase()) ||
+                                                    String(d.phone || '').includes(driverQProfile.trim())
+                                                );
+
+                                                if (remLoading && profileTab === 1) {
+                                                    return (
+                                                        <Stack alignItems="center" justifyContent="center" sx={{ p: 2 }}>
+                                                            <CircularProgress size={20} />
+                                                        </Stack>
+                                                    );
+                                                }
+
+                                                if (filtered.length === 0) {
+                                                    return (
+                                                        <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>
+                                                            {profileTab === 0
+                                                                ? 'راننده‌ای در زیرمجموعه پیدا نشد.'
+                                                                : 'راننده‌ی بدون شیفت برای تاریخ‌های این پروفایل پیدا نشد.'}
+                                                        </Typography>
+                                                    );
+                                                }
+
+                                                return filtered.map(d => {
+                                                    const checked = assignDriverIds.includes(d.id);
+                                                    return (
+                                                        <ListItem key={d.id} disableGutters>
+                                                            <FormControlLabel
+                                                                control={
+                                                                    <Checkbox
+                                                                        checked={checked}
+                                                                        onChange={() => {
+                                                                            setAssignDriverIds(prev =>
+                                                                                checked ? prev.filter(x => x !== d.id) : [...prev, d.id]
+                                                                            );
+                                                                        }}
+                                                                    />
+                                                                }
+                                                                label={
+                                                                    <Stack direction="row" spacing={1} alignItems="center">
+                                                                        <Typography variant="body2">{d.full_name}</Typography>
+                                                                        {!!d.branch_name && <Chip size="small" variant="outlined" label={d.branch_name} />}
+                                                                        {!!d.phone && <Chip size="small" variant="outlined" label={d.phone} />}
+                                                                        {profileTab === 1 && <Chip size="small" label="بدون شیفت" color="warning" variant="outlined" />}
+                                                                    </Stack>
+                                                                }
+                                                            />
+                                                        </ListItem>
+                                                    );
+                                                });
+                                            })()}
+                                        </List>
+                                    </Paper>
+
+
+                                </>
+                            )}
+                        </Box>
+
+
+                    </Box>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setProfileOpen(false)}>بستن</Button>
+                </DialogActions>
+            </Dialog>
+
+            <Dialog
+                open={profileCreateOpen}
+                onClose={() => setProfileCreateOpen(false)}
+                fullWidth
+                maxWidth="md"
+            >
+                <DialogTitle sx={{ fontWeight: 900 }}>
+                    {editingProfile ? 'ویرایش پروفایل شیفت' : 'افزودن پروفایل شیفت'}
+                </DialogTitle>
+
+
+                <DialogContent dividers>
+                    <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
+                        {/* ستون راست: نام + زمان‌ها + نوع + یادداشت */}
+                        <Stack flex={1} spacing={2}>
+                            <TextField
+                                label="نام پروفایل"
+                                value={profileName}
+                                onChange={(e) => setProfileName(e.target.value)}
+                                required
+                            />
+
+                            <Stack direction="row" spacing={2}>
+                                <TextField
+                                    label="شروع"
+                                    type="time"
+                                    value={profileDraft.start_time}
+                                    onChange={(e) => setProfileDraft({ ...profileDraft, start_time: e.target.value })}
+                                    InputLabelProps={{ shrink: true }}
+                                />
+                                <TextField
+                                    label="پایان"
+                                    type="time"
+                                    value={profileDraft.end_time}
+                                    onChange={(e) => setProfileDraft({ ...profileDraft, end_time: e.target.value })}
+                                    InputLabelProps={{ shrink: true }}
+                                />
+                            </Stack>
+
+                            <TextField
+                                select
+                                label="نوع شیفت"
+                                value={profileDraft.type}
+                                onChange={(e) => setProfileDraft({ ...profileDraft, type: e.target.value as ShiftType })}
+                            >
+                                <MenuItem value="morning">صبح</MenuItem>
+                                <MenuItem value="evening">عصر</MenuItem>
+                                <MenuItem value="night">شب</MenuItem>
+                            </TextField>
+
+                            <TextField
+                                multiline
+                                minRows={3}
+                                label="یادداشت"
+                                placeholder="توضیحات..."
+                                value={profileDraft.note ?? ''}
+                                onChange={(e) => setProfileDraft({ ...profileDraft, note: e.target.value })}
+                            />
+                        </Stack>
+
+                        <Divider orientation="vertical" flexItem />
+
+                        {/* ستون چپ: وسیله/مسیر/ایستگاه‌ها + وضعیت انتشار پیش‌فرض */}
+                        <Stack flex={1} spacing={2}>
+                            <TextField
+                                select
+                                label="وسیله (اختیاری)"
+                                value={profileDraft.vehicle_id ?? ''}
+                                onChange={(e) =>
+                                    setProfileDraft({
+                                        ...profileDraft,
+                                        vehicle_id: e.target.value === '' ? null : Number(e.target.value),
+                                    })
+                                }
+                            >
+                                <MenuItem value="">—</MenuItem>
+                                {vehicles.map(v => (
+                                    <MenuItem key={v.id} value={v.id}>
+                                        {v.name}{v.plate_no ? ` — ${v.plate_no}` : ''}
+                                    </MenuItem>
+                                ))}
+                            </TextField>
+
+                            <TextField
+                                select
+                                label="مسیر (اختیاری)"
+                                value={profileDraft.route_id ?? ''}
+                                onChange={(e) =>
+                                    setProfileDraft({
+                                        ...profileDraft,
+                                        route_id: e.target.value === '' ? null : Number(e.target.value),
+                                    })
+                                }
+                            >
+                                <MenuItem value="">—</MenuItem>
+                                {routes.map(r => (
+                                    <MenuItem key={r.id} value={r.id}>{r.name}</MenuItem>
+                                ))}
+                            </TextField>
+
+                            <Stack direction="row" spacing={2}>
+                                <TextField
+                                    select
+                                    label="ایستگاه شروع (اختیاری)"
+                                    value={profileDraft.station_start_id ?? ''}
+                                    onChange={(e) =>
+                                        setProfileDraft({
+                                            ...profileDraft,
+                                            station_start_id: e.target.value === '' ? null : Number(e.target.value),
+                                        })
+                                    }
+                                    sx={{ flex: 1 }}
+                                >
+                                    <MenuItem value="">—</MenuItem>
+                                    {stations.map(s => (
+                                        <MenuItem key={s.id} value={s.id}>{s.name}</MenuItem>
+                                    ))}
+                                </TextField>
+
+                                <TextField
+                                    select
+                                    label="ایستگاه پایان (اختیاری)"
+                                    value={profileDraft.station_end_id ?? ''}
+                                    onChange={(e) =>
+                                        setProfileDraft({
+                                            ...profileDraft,
+                                            station_end_id: e.target.value === '' ? null : Number(e.target.value),
+                                        })
+                                    }
+                                    sx={{ flex: 1 }}
+                                >
+                                    <MenuItem value="">—</MenuItem>
+                                    {stations.map(s => (
+                                        <MenuItem key={s.id} value={s.id}>{s.name}</MenuItem>
+                                    ))}
+                                </TextField>
+                            </Stack>
+
+                            <FormControlLabel
+                                control={
+                                    <Checkbox
+                                        checked={profileDraft.status !== 'DRAFT'}
+                                        onChange={(e) =>
+                                            setProfileDraft({ ...profileDraft, status: e.target.checked ? 'PUBLISHED' : 'DRAFT' })
+                                        }
+                                    />
+                                }
+                                label="انتشار پیش‌فرض (هنگام استفاده از این پروفایل)"
+                            />
+                        </Stack>
+                    </Stack>
+
+                    {/* ===== تاریخ‌های دلخواه (اختیاری) مثل دیالوگ شیفت ===== */}
+                    <Divider sx={{ my: 2 }} />
+                    <Typography variant="subtitle2" fontWeight={800}>تاریخ‌های دلخواه (اختیاری)</Typography>
+
+                    {/* افزودن تکی با ورودی جلالی */}
+                    <Stack direction="row" spacing={1} alignItems="flex-end" sx={{ mt: 1 }}>
+                        <JalaliDateInput
+                            label="تاریخ جدید (شمسی)"
+                            valueYMD={''}
+                            onChangeYMD={(ymd) => {
+                                if (!ymd) return;
+                                setProfileDates(prev => uniq(sortYmdAsc([...prev, ymd])));
+                            }}
+                            placeholder="مثلاً ۱۴۰۴-۰۷-۱۲"
+                        />
+                        <Typography variant="caption" color="text.secondary" sx={{ mb: .5 }}>
+                            تاریخ را وارد کن و فوکوس را خارج کن تا اضافه شود
+                        </Typography>
+                    </Stack>
+
+                    {/* کنترل‌های سریع */}
+                    <Stack direction="row" spacing={1} sx={{ my: 1 }}>
+                        <Button
+                            size="small"
+                            onClick={() => {
+                                const all = (jMonthGrid(jmonth).flat().filter(Boolean) as string[]);
+                                setProfileDates(prev => uniq(sortYmdAsc([...prev, ...all])));
+                            }}
+                        >
+                            انتخاب همهٔ ماه
+                        </Button>
+                        <Button size="small" onClick={() => setProfileDates([])}>
+                            پاک‌کردن انتخاب‌ها
+                        </Button>
+                    </Stack>
+
+                    {/* گرید روزهای ماه (6×7) با تیک */}
+                    <Stack spacing={1} sx={{ mb: 1 }}>
+                        {jMonthGrid(jmonth).map((row, ri) => (
+                            <Stack key={ri} direction="row" spacing={1}>
+                                {row.map((cell, ci) => {
+                                    const selected = !!cell && profileDates.includes(cell as string);
+                                    return (
+                                        <Paper
+                                            key={ci}
+                                            variant="outlined"
+                                            sx={{ flex: 1, p: .5, minHeight: 56, opacity: cell ? 1 : 0.4 }}
+                                        >
+                                            {cell ? (
+                                                <FormControlLabel
+                                                    sx={{ m: 0, width: '100%' }}
+                                                    control={
+                                                        <Checkbox
+                                                            checked={selected}
+                                                            onChange={() => {
+                                                                setProfileDates(prev => {
+                                                                    const exists = prev.includes(cell as string);
+                                                                    return exists
+                                                                        ? prev.filter(x => x !== (cell as string))
+                                                                        : uniq(sortYmdAsc([...prev, cell as string]));
+                                                                });
+                                                            }}
+                                                            size="small"
+                                                        />
+                                                    }
+                                                    label={
+                                                        <Stack direction="row" justifyContent="space-between" sx={{ width: '100%' }}>
+                                                            <Typography variant="body2">{fmtJalali(toDate(cell as string))}</Typography>
+                                                            <Typography variant="caption" color="text.secondary">روز {gYmdToJDay(cell as string)}</Typography>
+                                                        </Stack>
+                                                    }
+                                                />
+                                            ) : null}
+                                        </Paper>
+                                    );
+                                })}
+                            </Stack>
+                        ))}
+                    </Stack>
+
+                    {/* چیپ تاریخ‌های انتخاب‌شده */}
+                    <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }}>
+                        {(profileDates.length ? sortYmdAsc(profileDates) : []).map(d => (
+                            <Chip
+                                key={d}
+                                label={fmtJalali(toDate(d))}
+                                onDelete={() => setProfileDates(prev => prev.filter(x => x !== d))}
+                                variant="outlined"
+                                sx={{ mb: 1 }}
+                            />
+                        ))}
+                    </Stack>
+                </DialogContent>
+
+                <DialogActions>
+                    <Button onClick={() => setProfileCreateOpen(false)}>بستن</Button>
+                    <Button
+                        variant="contained"
+                        onClick={onSaveProfile}
+                        startIcon={<AddRoundedIcon />}
+                        disabled={profileSaving}
+                    >
+                        {editingProfile ? 'ذخیره تغییرات' : 'ذخیره پروفایل'}
+                    </Button>
+
+                </DialogActions>
+            </Dialog>
+
+
+
             <Dialog open={overtimeOpen} onClose={() => setOvertimeOpen(false)} fullWidth maxWidth="md">
                 <DialogTitle sx={{ fontWeight: 900 }}>اضافه‌کاری</DialogTitle>
                 <DialogContent dividers>
@@ -1182,7 +2055,7 @@ export default function ShiftsPage() {
                         value={driverId}
                         onChange={(e) => setDriverId(Number(e.target.value))}
                         sx={{ minWidth: 280 }}
-                        helperText={drivers.length ? `${drivers.length} راننده یافت شد` : 'راننده‌ای در دامنهٔ سوپرادمین پیدا نشد'}
+                        helperText={drivers.length ? `${drivers.length} راننده یافت شد` : 'راننده‌ای در دامنهٔ سازمان پیدا نشد'}
                     >
                         {drivers.length === 0 ? (
                             <MenuItem value="" disabled>— موردی نیست —</MenuItem>

@@ -50,6 +50,7 @@ export enum VehicleStatus {
 @Entity('vehicles')
 @Index(['country_code', 'plate_norm'], { unique: true })
 @Index(['country_code', 'plate_no'])
+@Index(['responsible_user']) // ⬅️ برای فیلتر سریع
 // توجه: TypeORM با اشاره به relation «owner_user» ایندکس را روی ستون FK (owner_user_id) می‌سازد
 @Index(['owner_user', 'name_norm'], { unique: true, where: '"name_norm" IS NOT NULL' })
 @Index(['device_uid'], { unique: true, where: '"device_uid" IS NOT NULL' })
@@ -67,6 +68,13 @@ export class Vehicle {
   // --- نام نمایشی خودرو ---
   @Column({ type: 'varchar', length: 64, nullable: true })
   name?: string | null;
+
+  @ManyToOne(() => Users, { onDelete: 'SET NULL', eager: true, nullable: true })
+  @JoinColumn({ name: 'responsible_user_id' })
+  responsible_user?: Users | null;
+
+  @RelationId((v: Vehicle) => v.responsible_user)
+  responsible_user_id?: number | null
 
   @Column({ type: 'varchar', length: 80, nullable: true })
   name_norm?: string | null;

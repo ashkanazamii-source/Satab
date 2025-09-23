@@ -54,6 +54,25 @@ export class VehiclesController {
   getRouteGeofenceState(@Param('id', ParseIntPipe) id: number) {
     return this.service.getCurrentRouteGeofenceState(id);
   }
+  // ✅ واگذاری/به‌روزرسانی مسئولِ ماشین‌ها برای یک کاربر هدف (bulk)
+  @ACL({ roles: [1, 2] }) // 1=مدیرکل (global), 2=سوپرادمین
+  @Put('responsible/bulk/:userId')
+  async bulkAssignResponsible(
+    @Req() req: any,
+    @Param('userId', ParseIntPipe) userId: number,
+    @Body() body: { vehicle_ids: number[] },
+  ) {
+    if (!Array.isArray(body?.vehicle_ids)) {
+      throw new BadRequestException('vehicle_ids باید آرایه‌ای از اعداد باشد.');
+    }
+    return this.service.bulkAssignResponsible(userId, body.vehicle_ids, +req.user.id);
+  }
+  // vehicles.controller.ts (بالای روت‌های پارامتریک)
+  @ACL({ roles: [1, 2, 3, 4, 5] })
+  @Get('responsible/my')
+  async listMine(@Req() req: any, @Query('limit', new DefaultValuePipe(1000), ParseIntPipe) limit: number) {
+    return this.service.listMineByRole(+req.user.id, limit);
+  }
 
   // ژئوفنس مسیر جاری: رویدادها
   @ACL({ roles: [1, 2, 3, 4, 5] })
