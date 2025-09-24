@@ -198,8 +198,621 @@ export default function DefineLinePage() {
     const [sidebarOpen, setSidebarOpen] = React.useState(false);
     const openSidebar = () => setSidebarOpen(true);
     const closeSidebar = () => setSidebarOpen(false);
+    // دیالوگ کمکی
+    const [auxLineOpen, setAuxLineOpen] = React.useState(false);
+    // === Multi-waypoint routing (route & trip) ===
+    const [multiPicking, setMultiPicking] = React.useState(false);
+    const [multiStops, setMultiStops] = React.useState<TmpLatLng[]>([]);
+    const [multiBusy, setMultiBusy] = React.useState(false);
 
-    const [vehTab, setVehTab] = React.useState<string>('all');
+    // ساخت رشته مختصات "lon,lat;lon,lat;..."
+    const toCoordStr = (pts: TmpLatLng[]) =>
+        pts.map(p => `${p.lng},${p.lat}`).join(';');
+
+    // مسیر با ترتیب همان نقاط (route service)
+    async function fetchOsrmRouteMulti(points: TmpLatLng[]) {
+        if (!points || points.length < 2) {
+            alert('حداقل دو نقطه لازم است.');
+            return;
+        }
+        setMultiBusy(true);
+        try {
+            const url = `https://router.project-osrm.org/route/v1/driving/${toCoordStr(points)}?overview=full&geometries=geojson&alternatives=false&steps=false`;
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`OSRM HTTP ${res.status}`);
+            const data = await res.json();
+            const coords: [number, number][] = data?.routes?.[0]?.geometry?.coordinates || [];
+            if (!coords.length) throw new Error('مسیر معتبری برنگشت.');
+            setRoutePoints(coords.map(([lon, lat]) => ({ lat, lng: lon })));
+        } catch (e: any) {
+            console.error('OSRM multi-route failed', e);
+            alert(e?.message || 'خطا در دریافت مسیر چندنقطه‌ای');
+        } finally {
+            setMultiBusy(false);
+            setMultiPicking(false);
+        }
+    }
+
+    // کوتاه‌ترین مسیر بین همه نقاط (trip service = بهینه‌سازی ترتیب)
+    async function fetchOsrmTripOptimized(points: TmpLatLng[], roundtrip = false) {
+        if (!points || points.length < 2) {
+            alert('حداقل دو نقطه لازم است.');
+            return;
+        }
+        setMultiBusy(true);
+        try {
+            const params =
+                `?roundtrip=${roundtrip ? 'true' : 'false'}&source=first&destination=${roundtrip ? 'any' : 'last'}&overview=full&geometries=geojson`;
+            const url = `https://router.project-osrm.org/trip/v1/driving/${toCoordStr(points)}${params}`;
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`OSRM HTTP ${res.status}`);
+            const data = await res.json();
+
+            // مسیر
+            const tripCoords: [number, number][] = data?.trips?.[0]?.geometry?.coordinates || [];
+            if (!tripCoords.length) throw new Error('Trip معتبر برنگشت.');
+
+            setRoutePoints(tripCoords.map(([lon, lat]) => ({ lat, lng: lon })));
+
+            // اگر خواستی ترتیب بازچینش‌شدهٔ نقاط را هم داشته باشی:
+            // const orderedIdx = (data?.waypoints || []).map((w: any) => w.waypoint_index);
+            // console.log('بهترین ترتیب نقاط:', orderedIdx);
+
+        } catch (e: any) {
+            console.error('OSRM trip failed', e);
+            alert(e?.message || 'خطا در محاسبهٔ کوتاه‌ترین مسیر');
+        } finally {
+            setMultiBusy(false);
+            setMultiPicking(false);
+        }
+    }
+    const [roadRoutePicking, setRoadRoutePicking] = React.useState(false); // حالت انتخاب مبدأ/مقصد
+    const [roadStart, setRoadStart] = React.useState<TmpLatLng | null>(null);
+    const [roadEnd, setRoadEnd] = React.useState<TmpLatLng | null>(null);
+    const [routingBusy, setRoutingBusy] = React.useState(false);
+
+    // درخواست به OSRM (driving). توجه: ترتیب lon,lat در URL مهم است!
+    async function fetchOsrmRoute(a: TmpLatLng, b: TmpLatLng) {
+        const buildUrl = (A: TmpLatLng, B: TmpLatLng) =>
+            `https://router.project-osrm.org/route/v1/driving/${A.lng},${A.lat};${B.lng},${B.lat}` +
+            `?overview=full&geometries=geojson&alternatives=false&steps=false`;
+
+        setRoutingBusy(true);
+        try {
+            const res = await fetch(buildUrl(a, b));
+            if (!res.ok) throw new Error(`OSRM HTTP ${res.status}`);
+            const data = await res.json();
+
+            const coords: [number, number][] =
+                data?.routes?.[0]?.geometry?.coordinates || [];
+
+            if (!coords.length) throw new Error('مسیر معتبری برنگشت.');
+
+            // GeoJSON coords: [lon, lat] → به {lat,lng}
+            const pts = coords.map(([lon, lat]) => ({ lat, lng: lon }));
+
+            // نتیجه: ست‌کردن routePoints برای نقشه/ادیتور
+            setRoutePoints(pts);
+            // اگر می‌خوای کریدور هم بلافاصله آپدیت شود، routeThreshold قبلاً هست.
+            // setDrawingRoute(false); // اگر حالت ترسیم دستی فعال بود، خاموشش کن
+        } catch (e: any) {
+            console.error('OSRM routing failed', e);
+            alert(e?.message || 'خطا در دریافت مسیر از OSRM');
+        } finally {
+            setRoutingBusy(false);
+            setRoadRoutePicking(false);
+        }
+    }
+    function RoadRoutePicker({
+        enabled,
+        onDone,
+    }: {
+        enabled: boolean;
+        onDone: (a: TmpLatLng, b: TmpLatLng) => void;
+    }) {
+        const [first, setFirst] = React.useState<TmpLatLng | null>(null);
+
+        useMapEvent('click', (e: { latlng: TmpLatLng }) => {
+            if (!enabled) return;
+            const p = { lat: e.latlng.lat, lng: e.latlng.lng };
+            if (!first) {
+                setFirst(p);
+            } else {
+                onDone(first, p);
+                setFirst(null);
+            }
+        });
+
+        return null;
+    }
+
+    // کنترل‌های زمان‌بندی خط کمکی
+    const [auxStartNow, setAuxStartNow] = React.useState(true);
+    const [auxStartAt, setAuxStartAt] = React.useState<any>(null);  // dayjs | null
+    const [auxDurationH, setAuxDurationH] = React.useState<number>(24);
+    // ✅ دقیقاً مطابق بک‌اند NestJS شما:
+    // حتماً همین ثابت‌ها را همانطور که گفتی استفاده می‌کنیم:
+
+
+    const applyAuxProfileTemporarily = async () => {
+        if (!selectedProfile) { alert('لطفاً یک خط را انتخاب کنید.'); return; }
+        const vids = Array.from(selectedVehicleIds);
+        if (!vids.length) { alert('حداقل یک ماشین را انتخاب کنید.'); return; }
+
+        // زمان‌بندی
+        const hours = Number(auxDurationH || 0);
+        const durationMs = Math.max(1000, hours * 60 * 60 * 1000);
+        const startIso = auxStartNow
+            ? new Date().toISOString()
+            : (auxStartAt?.toDate?.()
+                ? auxStartAt.toDate().toISOString()
+                : new Date(auxStartAt as any).toISOString());
+
+        if (!auxStartNow && isNaN(+new Date(startIso))) { alert('زمان شروع نامعتبر است.'); return; }
+        const startDelay = Math.max(0, +new Date(startIso) - Date.now());
+
+        // 🔹 NEW: تایم‌هایی که باید برای بک‌اند هم بفرستیم
+        const duration_minutes = Math.max(1, Math.round(durationMs / 60000));
+        const untilIso = new Date(new Date(startIso).getTime() + durationMs).toISOString();
+
+        // هِلپرها
+        const toInt = (v: any, min = 1) => Math.max(min, Math.trunc(Number(v || 0)));
+        const isFiniteNum = (v: any) => Number.isFinite(Number(v));
+
+        // ------- Types & Type Guards -------
+        type CircleGF = { type: 'circle'; center: { lat: number; lng: number }; radius_m: number; tolerance_m?: number };
+        type PolyGF = { type: 'polygon'; points: Array<{ lat: number; lng: number }>; tolerance_m?: number };
+        type GF = CircleGF | PolyGF | null;
+
+        const isCircleGF = (g: GF): g is CircleGF => !!g && g.type === 'circle';
+        const isPolygonGF = (g: GF): g is PolyGF => !!g && g.type === 'polygon';
+
+        type Snap = {
+            stations: Array<{ name?: string; lat: number; lng: number; radius_m: number; order_no?: number }>;
+            geofence: GF;
+            route: null | { route_id?: number; threshold_m?: number; points?: Array<{ lat: number; lng: number }>; name?: string };
+        };
+
+        const readVehicleStations = async (vid: number) => {
+            try {
+                const { data } = await api.get(`/vehicles/${vid}/stations`, {
+                    params: { _: Date.now() }, headers: { 'Cache-Control': 'no-store' }, validateStatus: s => s < 500
+                });
+                const arr = Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
+                return (arr || []).map((s: any) => ({
+                    name: String(s?.name ?? ''),
+                    lat: Number(s?.lat ?? s?.latitude),
+                    lng: Number(s?.lng ?? s?.longitude),
+                    radius_m: Math.max(1, Number(s?.radius_m ?? s?.radiusM ?? s?.radius ?? 60)),
+                    order_no: isFiniteNum(s?.order_no) ? Number(s.order_no) : undefined,
+                })).filter((x: any) => Number.isFinite(x.lat) && Number.isFinite(x.lng));
+            } catch { return []; }
+        };
+
+        const readVehicleGeofence = async (vid: number): Promise<GF> => {
+            try {
+                const { data, status } = await api.get(`/vehicles/${vid}/geofence`, { validateStatus: s => s < 500 });
+                //if (status >= 400 || data == null) return null;
+                const type = String(data?.type ?? data?.geoType ?? '').toLowerCase();
+                if (type === 'circle') {
+                    const lat = Number(data?.centerLat ?? data?.center_lat ?? data?.center?.lat);
+                    const lng = Number(data?.centerLng ?? data?.center_lng ?? data?.center?.lng);
+                    const r = Math.max(1, Number(data?.radiusM ?? data?.radius_m ?? data?.radius));
+                    const tol = Math.max(0, Number(data?.toleranceM ?? data?.tolerance_m ?? 15));
+                    if (Number.isFinite(lat) && Number.isFinite(lng) && Number.isFinite(r)) {
+                        return { type: 'circle', center: { lat, lng }, radius_m: r, tolerance_m: tol };
+                    }
+                    return null;
+                }
+                const ptsRaw = data?.polygonPoints ?? data?.points ?? [];
+                const pts = (Array.isArray(ptsRaw) ? ptsRaw : []).map((p: any) => ({
+                    lat: Number(p?.lat ?? p?.latitude),
+                    lng: Number(p?.lng ?? p?.longitude),
+                })).filter((p: any) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+                const tol = Math.max(0, Number(data?.toleranceM ?? data?.tolerance_m ?? 15));
+                if (pts.length >= 3) return { type: 'polygon', points: pts, tolerance_m: tol };
+                return null;
+            } catch { return null; }
+        };
+
+        const readVehicleRouteSnap = async (vid: number): Promise<Snap['route']> => {
+            try {
+                const { data, status } = await api.get(`/vehicles/${vid}/routes/current`, { validateStatus: s => s < 500 });
+                if (status >= 400) return null;
+                const rid = Number(data?.route_id ?? data?.id ?? data?.route?.id);
+                const thr = Number(data?.threshold_m ?? data?.thresholdM ?? 60);
+                if (Number.isFinite(rid)) {
+                    return { route_id: rid, threshold_m: toInt(thr) };
+                }
+                return null;
+            } catch { return null; }
+        };
+
+        const snapshotVehicle = async (vid: number): Promise<Snap> => {
+            const [stations, geofence, route] = await Promise.all([
+                readVehicleStations(vid),
+                readVehicleGeofence(vid),
+                readVehicleRouteSnap(vid),
+            ]);
+            return { stations, geofence, route };
+        };
+
+        const clearVehicle = async (vid: number) => {
+            console.log(`[VID: ${vid}] Starting AGGRESSIVE CLEAR process...`);
+
+            // --- پاک کردن مسیر و ایستگاه‌ها (بدون تغییر) ---
+            await api.delete(`/vehicles/${vid}/routes/current`, { validateStatus: s => s < 500 }).catch(() => { /* ignore */ });
+            try {
+                const { data } = await api.get(`/vehicles/${vid}/stations`, { params: { _: Date.now() }, headers: { 'Cache-Control': 'no-store' } });
+                const list = Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
+                for (const s of list) {
+                    if (s?.id) {
+                        await api.delete(`/vehicles/${vid}/stations/${s.id}`, { validateStatus: s => s < 500 }).catch(() => { /* ignore */ });
+                    }
+                }
+            } catch (e) { /* ignore */ }
+            console.log(`[VID: ${vid}] Route and stations cleared.`);
+
+            // --- پاک‌سازی قدرتمند و با سماجت ژئوفنس ---
+            let isGeofenceCleared = false;
+            const maxTries = 4; // تا ۴ بار تلاش می‌کند
+
+            for (let i = 1; i <= maxTries; i++) {
+                console.log(`[VID: ${vid}] Geofence clear attempt #${i}...`);
+
+                // مرحله ۱: ارسال دستور DELETE
+                try {
+                    await api.delete(`/vehicles/${vid}/geofence`, { validateStatus: s => s < 500 });
+                    console.log(`[VID: ${vid}] Attempt #${i}: DELETE command sent.`);
+                } catch (e) {
+                    console.error(`[VID: ${vid}] Attempt #${i}: DELETE command failed`, e);
+                }
+
+                // مرحله ۲: کمی صبر می‌کنیم تا سرور پردازش کند (بسیار مهم)
+                await new Promise(resolve => setTimeout(resolve, 300)); // ۳۰۰ میلی‌ثانیه صبر
+
+                // مرحله ۳: با GET بررسی می‌کنیم که آیا واقعا پاک شده؟ این تنها حقیقت است.
+                let currentGeofence = null;
+                try {
+                    currentGeofence = await readVehicleGeofence(vid); // از تابع کمکی شما استفاده می‌کند
+                } catch (e) {
+                    console.error(`[VID: ${vid}] Attempt #${i}: Error while reading geofence after delete. Assuming it's cleared.`, e);
+                    isGeofenceCleared = true;
+                    break;
+                }
+
+                console.log(`[VID: ${vid}] Attempt #${i}: Verification GET returned:`, currentGeofence);
+
+                if (currentGeofence === null) {
+                    console.log(`%c[VID: ${vid}] SUCCESS: Geofence confirmed cleared on attempt #${i}.`, 'color: green; font-weight: bold;');
+                    isGeofenceCleared = true;
+                    break; // اگر موفق بود، از حلقه خارج شو
+                } else {
+                    console.warn(`[VID: ${vid}] WARN: Geofence still exists after attempt #${i}. Retrying...`);
+                }
+            }
+
+            // اگر بعد از تمام تلاش‌ها هنوز پاک نشده بود، کل عملیات را متوقف کن
+            if (!isGeofenceCleared) {
+                console.error(`[VID: ${vid}] CRITICAL FAILURE: Geofence could NOT be cleared after ${maxTries} attempts.`);
+                // این خطا باعث می‌شود که کل فرآیند متوقف شود و وارد catch در runStart شود
+                throw new Error(`خطای قطعی: ژئوفنس خودروی ${vid} پس از چندین تلاش پاک نشد. عملیات لغو شد.`);
+            }
+        };
+
+        const applyProfileToVehicle = async (vid: number, prof: SettingsProfile) => {
+            const { stations = [], geofence = null, route = null } = prof.settings || {};
+
+            // A) مسیر
+            if (route) {
+                const thr = toInt((route as any)?.threshold_m ?? 60);
+                if (isFiniteNum((route as any)?.id)) {
+                    await api.put(`/vehicles/${vid}/routes/current`, { route_id: Number((route as any).id), threshold_m: thr }, { validateStatus: s => s < 500 }).catch(() => { });
+                } else if (Array.isArray((route as any).points) && (route as any).points.length >= 2) {
+                    const createPayload = {
+                        name: (route as any).name || prof.name || `Route ${new Date().toISOString().slice(0, 10)}`,
+                        threshold_m: thr,
+                        points: (route as any).points.map((p: any) => ({ lat: Number(p.lat), lng: Number(p.lng) })),
+                    };
+                    const { data: created } = await api.post(`/vehicles/${vid}/routes`, createPayload, { validateStatus: s => s < 500 });
+                    const newRid = Number(created?.route_id ?? created?.id ?? created?.route?.id);
+                    if (Number.isFinite(newRid)) {
+                        await api.put(`/vehicles/${vid}/routes/current`, { route_id: newRid, threshold_m: thr }, { validateStatus: s => s < 500 }).catch(() => { });
+                    }
+                }
+            }
+
+            // B) ایستگاه‌ها
+            if (Array.isArray(stations) && stations.length) {
+                for (const st of stations) {
+                    const lat = Number(st?.lat), lng = Number(st?.lng);
+                    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+                    await api.post(`/vehicles/${vid}/stations`, {
+                        name: (st?.name || '').trim() || 'ایستگاه',
+                        lat, lng,
+                        radius_m: toInt(st?.radius_m ?? 60),
+                        ...(isFiniteNum(st?.order_no) ? { order_no: Number(st!.order_no) } : {}),
+                    }, { validateStatus: s => s < 500 }).catch(() => { });
+                }
+            }
+
+            // C) ژئوفنس (با نگه‌داشتن در متغیر محلی برای حفظ narrowing)
+            const g: GF = geofence;
+            if (isCircleGF(g)) {
+                await api.put(`/vehicles/${vid}/geofence`, {
+                    type: 'circle',
+                    centerLat: g.center.lat,
+                    centerLng: g.center.lng,
+                    radiusM: toInt(g.radius_m, 1),
+                    toleranceM: Math.max(0, Math.trunc(Number(g.tolerance_m ?? 15))),
+                }, { validateStatus: s => s < 500 })
+                    .catch(() => api.post(`/vehicles/${vid}/geofence`, {
+                        type: 'circle',
+                        centerLat: g.center.lat,
+                        centerLng: g.center.lng,
+                        radiusM: toInt(g.radius_m, 1),
+                        toleranceM: Math.max(0, Math.trunc(Number(g.tolerance_m ?? 15))),
+                    }, { validateStatus: s => s < 500 }).catch(() => { }));
+            } else if (isPolygonGF(g) && Array.isArray(g.points) && g.points.length >= 3) {
+                await api.put(`/vehicles/${vid}/geofence`, {
+                    type: 'polygon',
+                    polygonPoints: g.points.map(pt => ({ lat: Number(pt.lat), lng: Number(pt.lng) })),
+                    toleranceM: Math.max(0, Math.trunc(Number(g.tolerance_m ?? 15))),
+                }, { validateStatus: s => s < 500 })
+                    .catch(() => api.post(`/vehicles/${vid}/geofence`, {
+                        type: 'polygon',
+                        polygonPoints: g.points.map(pt => ({ lat: Number(pt.lat), lng: Number(pt.lng) })),
+                        toleranceM: Math.max(0, Math.trunc(Number(g.tolerance_m ?? 15))),
+                    }, { validateStatus: s => s < 500 }).catch(() => { }));
+            }
+        };
+
+        const restoreSnapshotToVehicle = async (vid: number, snap: Snap) => {
+            // پارکسازی/دلیت قبل از ری‌استور
+            await clearVehicle(vid);
+
+            // مسیر
+            const r = snap.route;
+            if (r) {
+                if (isFiniteNum(r.route_id)) {
+                    await api.put(`/vehicles/${vid}/routes/current`, {
+                        route_id: Number(r.route_id),
+                        ...(isFiniteNum(r.threshold_m) ? { threshold_m: toInt(r.threshold_m as number) } : {}),
+                    }, { validateStatus: s => s < 500 }).catch(() => { });
+                } else if (Array.isArray(r.points) && r.points.length >= 2) {
+                    const { data: created } = await api.post(`/vehicles/${vid}/routes`, {
+                        name: r.name || `Route Restore ${new Date().toISOString().slice(0, 10)}`,
+                        threshold_m: toInt(r.threshold_m ?? 60),
+                        points: r.points.map(p => ({ lat: Number(p.lat), lng: Number(p.lng) })),
+                    }, { validateStatus: s => s < 500 });
+                    const newRid = Number(created?.route_id ?? created?.id ?? created?.route?.id);
+                    if (Number.isFinite(newRid)) {
+                        await api.put(`/vehicles/${vid}/routes/current`, { route_id: newRid, threshold_m: toInt(r.threshold_m ?? 60) }, { validateStatus: s => s < 500 }).catch(() => { });
+                    }
+                }
+            }
+
+            // ایستگاه‌ها
+            for (const st of (snap.stations || [])) {
+                await api.post(`/vehicles/${vid}/stations`, {
+                    name: (st?.name || '').trim() || 'ایستگاه',
+                    lat: Number(st.lat), lng: Number(st.lng),
+                    radius_m: toInt(st.radius_m ?? 60),
+                    ...(isFiniteNum(st?.order_no) ? { order_no: Number(st.order_no) } : {}),
+                }, { validateStatus: s => s < 500 }).catch(() => { });
+            }
+
+            // ژئوفنس (fix کاملِ possibly null)
+            const g: GF = snap.geofence;
+            if (isCircleGF(g)) {
+                await api.put(`/vehicles/${vid}/geofence`, {
+                    type: 'circle',
+                    centerLat: g.center.lat,
+                    centerLng: g.center.lng,
+                    radiusM: toInt(g.radius_m, 1),
+                    toleranceM: Math.max(0, Math.trunc(Number(g.tolerance_m ?? 15))),
+                }, { validateStatus: s => s < 500 })
+                    .catch(() => api.post(`/vehicles/${vid}/geofence`, {
+                        type: 'circle',
+                        centerLat: g.center.lat,
+                        centerLng: g.center.lng,
+                        radiusM: toInt(g.radius_m, 1),
+                        toleranceM: Math.max(0, Math.trunc(Number(g.tolerance_m ?? 15))),
+                    }, { validateStatus: s => s < 500 }).catch(() => { }));
+            } else if (isPolygonGF(g)) {
+                await api.put(`/vehicles/${vid}/geofence`, {
+                    type: 'polygon',
+                    polygonPoints: g.points.map(pt => ({ lat: Number(pt.lat), lng: Number(pt.lng) })),
+                    toleranceM: Math.max(0, Math.trunc(Number(g.tolerance_m ?? 15))),
+                }, { validateStatus: s => s < 500 })
+                    .catch(() => api.post(`/vehicles/${vid}/geofence`, {
+                        type: 'polygon',
+                        polygonPoints: g.points.map(pt => ({ lat: Number(pt.lat), lng: Number(pt.lng) })),
+                        toleranceM: Math.max(0, Math.trunc(Number(g.tolerance_m ?? 15))),
+                    }, { validateStatus: s => s < 500 }).catch(() => { }));
+            }
+        };
+
+        // کار اصلی که در زمان شروع اجرا می‌شود:
+        const runStart = async () => {
+            setApplyBusy(true);
+            try {
+                // 1) اسنپ‌شات همه
+                const snapshots: Record<number, Snap> = {};
+                for (const vid of vids) {
+                    snapshots[vid] = await snapshotVehicle(vid);
+                }
+
+                // 2) پارکسازی/دلیت فعلی
+                for (const vid of vids) {
+                    await clearVehicle(vid);
+
+                }
+                console.log("--- CHECKING STATUS AFTER CLEARANCE ---");
+                for (const vid of vids) {
+                    const currentGeofence = await readVehicleGeofence(vid);
+                    console.log(`[VID: ${vid}] Geofence status after clear is:`, currentGeofence);
+                    if (currentGeofence) {
+                        console.error(`!!! CRITICAL FAILURE: Vehicle ${vid} STILL HAS a geofence.`, currentGeofence);
+                        alert(`خطای بحرانی: ژئوفنس خودروی ${vid} پاک نشده است!`);
+                        setApplyBusy(false); // متوقف کردن عملیات
+                        return; // خروج از تابع
+                    }
+                }
+                console.log("--- CLEARANCE CONFIRMED. PROCEEDING TO APPLY NEW PROFILE. ---");
+
+                // 3) اعمال خط کمکی
+                for (const vid of vids) {
+                    await applyProfileToVehicle(vid, selectedProfile);
+                }
+
+                // 🔹 NEW: زمان‌بندی را به بک‌اند هم اعلام کن
+                try {
+                    await api.post('/temporary-assignments', {
+                        vehicle_ids: vids,
+                        temp_profile: {
+                            id: selectedProfile.id,
+                            name: selectedProfile.name,
+                            settings: selectedProfile.settings,
+                        },
+                        start_at: startIso,
+                        duration_minutes,
+                        until: untilIso,
+                    }, { validateStatus: s => s < 500 });
+                } catch { /* اختیاری: لاگ خطای سمت سرور */ }
+
+                // 4) ذخیره اسنپ‌شات در localStorage تا ری‌استور بعدی
+                const restoreKey = `aux-restore-${Date.now()}`;
+                const until = Date.now() + durationMs;
+                localStorage.setItem(restoreKey, JSON.stringify({ vids, snapshots, until }));
+
+                // 5) زمان‌بندی ری‌استور (فرانت‌اندی)
+                window.setTimeout(async () => {
+                    try {
+                        const raw = localStorage.getItem(restoreKey);
+                        if (!raw) return;
+                        const payload = JSON.parse(raw);
+                        for (const vid of (payload.vids || [])) {
+                            const snap: Snap | undefined = payload.snapshots?.[vid];
+                            if (snap) {
+                                await restoreSnapshotToVehicle(vid, snap);
+                            }
+                        }
+                    } finally {
+                        localStorage.removeItem(restoreKey);
+                    }
+                }, durationMs);
+
+                alert('خط کمکی اعمال شد. پس از اتمام مدت، حالت قبلی بازگردانی می‌شود.');
+                setSelectedVehicleIds(new Set());
+                setSelectedProfileId(null);
+                setAuxLineOpen(false);
+            } catch (e: any) {
+                console.error('aux apply failed', e?.response?.data || e);
+                alert(e?.response?.data?.message || 'خطا در اعمال خط کمکی');
+            } finally {
+                setApplyBusy(false);
+            }
+        };
+
+        if (startDelay === 0) {
+            runStart();
+        } else {
+            // زمان‌بندی شروع در آینده
+            window.setTimeout(runStart, startDelay);
+            alert('برنامه‌ریزی شد تا در زمان تعیین‌شده اعمال شود.');
+            setAuxLineOpen(false);
+        }
+    };
+
+
+
+    // --- Remaining vehicles state ---
+    const [vehTab, setVehTab] = React.useState<string>('all'); // دارید، بماند
+    const [remLoading, setRemLoading] = React.useState(false);
+    const [remainingVehicleIds, setRemainingVehicleIds] = React.useState<Set<number>>(new Set());
+    const [vehicleStatusMap, setVehicleStatusMap] = React.useState<Record<number, { hasRoute: boolean; hasGeofence: boolean; stationCount: number }>>({});
+
+    // GET helpers to detect assignments (تحمل 404/204)
+    const hasCurrentRoute = async (vid: number) => {
+        try {
+            // اگر بک‌اند GET ندارد، هنوز هم اکثر سرویس‌ها همین endpoint را دارند
+            const { data, status } = await api.get(`/vehicles/${vid}/routes/current`, { validateStatus: s => s < 500 });
+            if (status >= 400) return false;
+            // هر کدام از این فیلدها کافی‌ست نشان دهد Route ست است
+            return Boolean(data?.route_id ?? data?.id ?? data?.route?.id);
+        } catch { return false; }
+    };
+
+    const hasAnyGeofence = async (vid: number) => {
+        try {
+            const { data, status } = await api.get(`/vehicles/${vid}/geofence`, { validateStatus: s => s < 500 });
+            if (status >= 400 || data == null) return false;
+            const type = String(data?.type ?? data?.geoType ?? '').toLowerCase();
+            if (type === 'circle') {
+                const lat = Number(data?.centerLat ?? data?.center_lat ?? data?.center?.lat);
+                const lng = Number(data?.centerLng ?? data?.center_lng ?? data?.center?.lng);
+                const r = Number(data?.radiusM ?? data?.radius_m ?? data?.radius);
+                return Number.isFinite(lat) && Number.isFinite(lng) && r > 0;
+            }
+            const ptsRaw = data?.polygonPoints ?? data?.points ?? [];
+            const pts = (Array.isArray(ptsRaw) ? ptsRaw : []).filter((p: any) =>
+                Number.isFinite(Number(p?.lat ?? p?.latitude)) && Number.isFinite(Number(p?.lng ?? p?.longitude))
+            );
+            return pts.length >= 3;
+        } catch { return false; }
+    };
+
+    const countStations = async (vid: number) => {
+        try {
+            const { data, status } = await api.get(`/vehicles/${vid}/stations`, {
+                params: { _: Date.now() }, headers: { 'Cache-Control': 'no-store' }, validateStatus: s => s < 500
+            });
+            if (status >= 400) return 0;
+            const arr = Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
+            return Array.isArray(arr) ? arr.length : 0;
+        } catch { return 0; }
+    };
+
+    // محاسبه‌ی «باقی‌مانده» با محدودیت کانکارنسی برای فشار نیاوردن به سرور
+    const computeRemainingVehicles = async () => {
+        const all = vehiclesRef.current || [];
+        if (!all.length) {
+            setRemainingVehicleIds(new Set());
+            setVehicleStatusMap({});
+            return;
+        }
+
+        setRemLoading(true);
+        try {
+            const statusMap: Record<number, { hasRoute: boolean; hasGeofence: boolean; stationCount: number }> = {};
+            const ids = all.map(v => v.id);
+            const concurrency = 6; // همزمانی ملایم
+            for (let i = 0; i < ids.length; i += concurrency) {
+                const batch = ids.slice(i, i + concurrency);
+                const results = await Promise.all(batch.map(async (vid) => {
+                    const [r, g, sc] = await Promise.all([
+                        hasCurrentRoute(vid),
+                        hasAnyGeofence(vid),
+                        countStations(vid),
+                    ]);
+                    statusMap[vid] = { hasRoute: r, hasGeofence: g, stationCount: sc };
+                    return { vid, r, g, sc };
+                }));
+                // می‌تونی این‌جا هم به‌روز کنی که UI فوری‌تر واکنش بده
+                setVehicleStatusMap(prev => ({ ...prev, ...statusMap }));
+            }
+            const remaining = new Set<number>(ids.filter(id => {
+                const s = statusMap[id];
+                return s && !s.hasRoute && !s.hasGeofence && s.stationCount === 0;
+            }));
+            setRemainingVehicleIds(remaining);
+            setVehicleStatusMap(statusMap);
+        } finally {
+            setRemLoading(false);
+        }
+    };
+
     const vehicleTypeLabel = React.useCallback((t?: string) => {
         const k = String(t || '').toLowerCase();
         const map: Record<string, string> = {
@@ -280,6 +893,16 @@ export default function DefineLinePage() {
 
         return opts as MonitorKey[];
     }, []);
+    // هر بار دیالوگ باز شد و تبِ remaining بود، یا وقتی کاربر به remaining سویچ کرد، محاسبه کن
+    React.useEffect(() => {
+        if (!vehiclesLineOpen) return;
+        if (vehTab !== 'remaining') return;
+        // اگر قبلاً محاسبه نشده یا لیست وسایل تغییر کرده، دوباره بساز
+        // ساده: هر بار remaining شد محاسبه کن
+        computeRemainingVehicles();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [vehiclesLineOpen, vehTab]);
+
 
     const resolveParentSA = React.useCallback(async (uid: number) => {
         try {
@@ -430,6 +1053,9 @@ export default function DefineLinePage() {
             return next;
         });
     };
+    React.useEffect(() => {
+        if (vehiclesLineOpen && vehTab === 'remaining') computeRemainingVehicles();
+    }, [selectedProfileId, vehiclesLineOpen, vehTab]);
 
     // انتخاب/لغو انتخاب همهٔ ماشین‌های لیستِ فیلترشده
     const toggleSelectAll = (list: Array<{ id: number }>, force?: boolean) => {
@@ -759,9 +1385,28 @@ export default function DefineLinePage() {
                     } catch { /* ignore */ }
 
                     // 3) حذف ژئوفنس موجود (اگر هر چی هست)
-                    await api.delete(`/vehicles/${vid}/geofence`, {
-                        validateStatus: s => s < 500,
-                    }).catch(() => { });
+                    await api.delete(`/vehicles/${vid}/geofence`, { validateStatus: s => s < 500 }).catch(() => { });
+
+                    try {
+                        const { data: gfAfter1 } = await api.get(`/vehicles/${vid}/geofence`, {
+                            headers: { 'Cache-Control': 'no-store' },
+                            validateStatus: s => s < 500,
+                        });
+
+                        // اگر هنوز آبجکت برگشت (null/empty نبود) دوباره حذف کن و دوباره چک کن
+                        if (gfAfter1) {
+                            await api.delete(`/vehicles/${vid}/geofence`, { validateStatus: s => s < 500 }).catch(() => { });
+
+                            const { data: gfAfter2 } = await api.get(`/vehicles/${vid}/geofence`, {
+                                headers: { 'Cache-Control': 'no-store' },
+                                validateStatus: s => s < 500,
+                            });
+
+                            if (gfAfter2) {
+                                logs.push(`⚠️ ژئوفنس هنوز هست (VID ${vid}) — بک‌اند پاسخ داد اما آبجکت برمی‌گرده. (برای دیباگ)`);
+                            }
+                        }
+                    } catch { /* ignore */ }
 
                     logs.push(`🗑️ حذف‌ها انجام شد: VID ${vid}`);
                 } catch (e: any) {
@@ -815,24 +1460,43 @@ export default function DefineLinePage() {
 
                     // C) ژئوفنس
                     if (geofence) {
-                        if (geofence.type === 'circle' && geofence.center && Number.isFinite(geofence.radius_m)) {
+                        // circle
+                        if (
+                            geofence.type === 'circle' &&
+                            geofence.center &&
+                            Number.isFinite(Number(geofence.radius_m))
+                        ) {
                             const payload = {
                                 type: 'circle',
                                 centerLat: Number(geofence.center.lat),
                                 centerLng: Number(geofence.center.lng),
-                                radiusM: toInt(geofence.radius_m, 1),
+                                radiusM: Math.max(1, Math.trunc(Number(geofence.radius_m))),
                                 toleranceM: Math.max(0, Math.trunc(Number(geofence.tolerance_m ?? 15))),
                             };
+
                             await api.put(`/vehicles/${vid}/geofence`, payload, { validateStatus: s => s < 500 })
-                                .catch(() => api.post(`/vehicles/${vid}/geofence`, payload, { validateStatus: s => s < 500 }).catch(() => { }));
-                        } else if (geofence.type === 'polygon' && Array.isArray(geofence.points) && geofence.points.length >= 3) {
+                                .catch(async () => {
+                                    // fallback برای کلاینت‌هایی که فقط POST می‌پذیرن
+                                    await api.post(`/vehicles/${vid}/geofence`, payload, { validateStatus: s => s < 500 }).catch(() => { });
+                                });
+                        }
+                        // polygon
+                        else if (
+                            geofence.type === 'polygon' &&
+                            Array.isArray(geofence.points) &&
+                            geofence.points.length >= 3
+                        ) {
                             const payload = {
                                 type: 'polygon',
                                 polygonPoints: geofence.points.map(p => ({ lat: Number(p.lat), lng: Number(p.lng) })),
                                 toleranceM: Math.max(0, Math.trunc(Number(geofence.tolerance_m ?? 15))),
                             };
+
                             await api.put(`/vehicles/${vid}/geofence`, payload, { validateStatus: s => s < 500 })
-                                .catch(() => api.post(`/vehicles/${vid}/geofence`, payload, { validateStatus: s => s < 500 }).catch(() => { }));
+                                .catch(async () => {
+                                    // fallback برای کلاینت‌هایی که فقط POST می‌پذیرن
+                                    await api.post(`/vehicles/${vid}/geofence`, payload, { validateStatus: s => s < 500 }).catch(() => { });
+                                });
                         }
                     }
 
@@ -1322,6 +1986,19 @@ export default function DefineLinePage() {
                                         <Polygon positions={corridorLatLngs} interactive={false} pathOptions={{ weight: 1, opacity: 0.2 }} />
                                     </>
                                 )}
+                                {/* کلیک‌گیر مسیر خیابانی (OSRM): دقیقاً ۲ کلیک → درخواست به OSRM */}
+                                <RoadRoutePicker
+                                    enabled={roadRoutePicking}
+                                    onDone={(a, b) => {
+                                        setRoadStart(a);
+                                        setRoadEnd(b);
+                                        fetchOsrmRoute(a, b);
+                                    }}
+                                />
+
+                                {/* مارکر مبدأ/مقصد وقتی انتخاب شده‌اند */}
+                                {roadStart && <Marker position={[roadStart.lat, roadStart.lng]} />}
+                                {roadEnd && <Marker position={[roadEnd.lat, roadEnd.lng]} />}
 
                                 <TileLayer
                                     url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -1466,11 +2143,277 @@ export default function DefineLinePage() {
                             <Button variant="contained" onClick={() => setVehiclesLineOpen(true)}>
                                 تعریف خط ماشین‌ها
                             </Button>
+                            <Button
+                                variant="contained"
+                                onClick={() => {
+                                    setAuxLineOpen(true);
+                                    setVehTab('all');              // لیست کامل طبق رول (۱=همه، ۲=مال خود، ۳..۵=مسئول)
+                                }}
+                            >
+                                تعریف خط کمکی
+                            </Button>
+
                         </Stack>
 
                     </Stack>
                 </Paper>
             </Box>
+            <Dialog
+                open={auxLineOpen}
+                onClose={() => setAuxLineOpen(false)}
+                fullWidth
+                maxWidth="xl"
+            >
+                <DialogTitle>تعریف خط کمکی</DialogTitle>
+
+                <DialogContent sx={{ p: 0 }}>
+                    <Box
+                        sx={{
+                            width: { xs: '100vw', md: '90vw' },
+                            maxWidth: 1400,
+                            height: { xs: '80vh', md: '70vh' },
+                            display: 'flex',
+                            flexDirection: 'row-reverse', // RTL: پروفایل‌ها راست
+                        }}
+                    >
+                        {/* ستون چپ: لیست ماشین‌ها با تب (مثل دیالوگ اصلی) */}
+                        <Box sx={{ width: { xs: '100%', md: '55%' }, p: 2, overflow: 'auto' }}>
+                            <Typography variant="h6" gutterBottom>ماشین‌ها</Typography>
+
+                            {(() => {
+                                const allVehicles = vehiclesRef.current || [];
+
+                                // مجموعه‌ی تایپ‌ها + تب‌های ثابت
+                                const typeSet = new Set<string>();
+                                allVehicles.forEach(v => typeSet.add(String(v?.vehicle_type_code || '').toLowerCase()));
+                                const types = ['all', 'remaining', ...Array.from(typeSet).filter(Boolean)];
+
+                                // فیلتر بر اساس تب
+                                const filtered =
+                                    vehTab === 'all'
+                                        ? allVehicles
+                                        : vehTab === 'remaining'
+                                            ? allVehicles.filter(v => remainingVehicleIds.has(v.id))
+                                            : allVehicles.filter(v => String(v?.vehicle_type_code || '').toLowerCase() === vehTab);
+
+                                return (
+                                    <>
+                                        <Tabs
+                                            value={vehTab}
+                                            onChange={(_, val) => setVehTab(val)}
+                                            variant="scrollable"
+                                            allowScrollButtonsMobile
+                                            sx={{ mb: 1 }}
+                                        >
+                                            {types.map((t) => (
+                                                <Tab
+                                                    key={t || 'unknown'}
+                                                    value={t}
+                                                    label={
+                                                        t === 'all'
+                                                            ? 'همه'
+                                                            : t === 'remaining'
+                                                                ? (remLoading ? 'ماشین‌های باقی‌مانده (در حال بررسی...)' : `ماشین‌های باقی‌مانده (${remainingVehicleIds.size})`)
+                                                                : vehicleTypeLabel(t)
+                                                    }
+                                                    wrapped
+                                                />
+                                            ))}
+                                        </Tabs>
+
+                                        <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+                                            <Typography variant="body2" color="text.secondary">
+                                                {vehTab === 'all'
+                                                    ? `تعداد: ${filtered.length}`
+                                                    : vehTab === 'remaining'
+                                                        ? (remLoading
+                                                            ? 'در حال محاسبهٔ ماشین‌های فاقد مسیر/ژئوفنس/ایستگاه…'
+                                                            : `ماشین‌های باقی‌مانده — تعداد: ${filtered.length}`)
+                                                        : `${vehicleTypeLabel(vehTab)} — تعداد: ${filtered.length}`}
+                                            </Typography>
+
+                                            <Stack direction="row" spacing={1} alignItems="center">
+                                                {vehTab === 'remaining' && (
+                                                    <Button
+                                                        size="small"
+                                                        onClick={computeRemainingVehicles}
+                                                        disabled={remLoading}
+                                                    >
+                                                        {remLoading ? 'در حال محاسبه…' : 'بازمحاسبه'}
+                                                    </Button>
+                                                )}
+                                                <FormControlLabel
+                                                    control={
+                                                        <Checkbox
+                                                            size="small"
+                                                            checked={filtered.length > 0 && filtered.every(v => selectedVehicleIds.has(v.id))}
+                                                            onChange={() => toggleSelectAll(filtered)}
+                                                            disabled={!selectedProfile || (vehTab === 'remaining' && remLoading)}
+                                                        />
+                                                    }
+                                                    label="انتخاب همه در این تب"
+                                                />
+                                            </Stack>
+                                        </Stack>
+
+                                        {vehTab === 'remaining' && remLoading ? (
+                                            <Stack alignItems="center" justifyContent="center" sx={{ py: 4 }}>
+                                                <CircularProgress size={22} />
+                                                <Typography variant="body2" sx={{ mt: 1 }} color="text.secondary">
+                                                    در حال بررسی مسیر/ژئوفنس/ایستگاه برای ماشین‌ها…
+                                                </Typography>
+                                            </Stack>
+                                        ) : filtered.length ? (
+                                            <List dense disablePadding>
+                                                {filtered.map((v: any) => {
+                                                    const st = vehicleStatusMap[v.id];
+                                                    return (
+                                                        <React.Fragment key={v.id}>
+                                                            <ListItem sx={{ px: 1.25 }}>
+                                                                <ListItemAvatar>
+                                                                    <Avatar>{(vehicleTypeLabel(v?.vehicle_type_code) || 'و')[0]}</Avatar>
+                                                                </ListItemAvatar>
+                                                                <ListItemText
+                                                                    primary={v?.name || `Vehicle #${v.id}`}
+                                                                    secondary={
+                                                                        <span style={{ opacity: 0.75 }}>
+                                                                            نوع: {vehicleTypeLabel(v?.vehicle_type_code)} — مالک: {v?.owner_user_id ?? 'نامشخص'}
+                                                                            {vehTab === 'remaining' && st && <> — مسیر: ندارد — ژئوفنس: ندارد — ایستگاه: 0</>}
+                                                                        </span>
+                                                                    }
+                                                                    primaryTypographyProps={{ sx: { fontWeight: 600 } }}
+                                                                />
+                                                                <Checkbox
+                                                                    edge="end"
+                                                                    disabled={!selectedProfile || (vehTab === 'remaining' && remLoading)}
+                                                                    checked={selectedVehicleIds.has(v.id)}
+                                                                    onChange={() => toggleVehicle(v.id)}
+                                                                />
+                                                            </ListItem>
+                                                            <Divider component="li" />
+                                                        </React.Fragment>
+                                                    );
+                                                })}
+                                            </List>
+                                        ) : (
+                                            <Typography color="text.secondary" sx={{ mt: 2, textAlign: 'center' }}>
+                                                {vehTab === 'remaining'
+                                                    ? (remLoading ? '...' : 'ماشینی که فاقد مسیر/ژئوفنس/ایستگاه باشد یافت نشد.')
+                                                    : 'موردی یافت نشد.'}
+                                            </Typography>
+                                        )}
+                                    </>
+                                );
+                            })()}
+                        </Box>
+
+                        {/* ستون راست: لیست خط‌ها */}
+                        <Box
+                            sx={{
+                                width: { xs: '100%', md: '45%' },
+                                borderLeft: (theme) => `1px solid ${theme.palette.divider}`,
+                                p: 2,
+                                overflow: 'auto',
+                            }}
+                        >
+                            <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1}>
+                                <Typography variant="h6">خط‌های ایجادشده</Typography>
+                                <Chip size="small" label={`${profiles.length}`} />
+                            </Stack>
+
+                            {profilesLoading ? (
+                                <Stack alignItems="center" justifyContent="center" sx={{ py: 6 }}>
+                                    <CircularProgress size={24} />
+                                </Stack>
+                            ) : profiles.length ? (
+                                <List dense disablePadding>
+                                    {profiles.map((p) => (
+                                        <React.Fragment key={p.id}>
+                                            <ListItem
+                                                sx={{
+                                                    px: 1.25,
+                                                    cursor: 'pointer',
+                                                    bgcolor: p.id === selectedProfileId ? 'action.selected' : undefined,
+                                                    borderRadius: 1,
+                                                }}
+                                                onClick={() => {
+                                                    setSelectedProfileId(p.id);
+                                                    setSelectedVehicleIds(new Set()); // تغییر پروفایل = پاک‌کردن انتخاب قبلی
+                                                }}
+                                            >
+                                                <ListItemAvatar>
+                                                    <Avatar>{(p.name || 'خ')[0]}</Avatar>
+                                                </ListItemAvatar>
+                                                <ListItemText
+                                                    primary={p.name}
+                                                    secondary={
+                                                        <span style={{ opacity: 0.75 }}>
+                                                            ایستگاه‌ها: {p.settings?.stations?.length || 0} — {p.settings?.geofence ? 'ژئوفنس: دارد' : 'ژئوفنس: ندارد'}
+                                                            {p.settings?.route?.points?.length ? ' — مسیر: دارد' : ''}
+                                                        </span>
+                                                    }
+                                                    primaryTypographyProps={{ sx: { fontWeight: 600 } }}
+                                                />
+                                            </ListItem>
+                                            <Divider component="li" />
+                                        </React.Fragment>
+                                    ))}
+                                </List>
+                            ) : (
+                                <Typography color="text.secondary" sx={{ mt: 2, textAlign: 'center' }}>
+                                    هنوز خطی ثبت نشده است.
+                                </Typography>
+                            )}
+                        </Box>
+                    </Box>
+                </DialogContent>
+
+                {/* نوار پایینی: کنترل زمان‌بندی + ثبت */}
+                <DialogActions sx={{ flexWrap: 'wrap', rowGap: 1 }}>
+                    <FormControlLabel
+                        control={
+                            <Checkbox
+                                checked={auxStartNow}
+                                onChange={(e) => setAuxStartNow(e.target.checked)}
+                            />
+                        }
+                        label="شروع از همین حالا"
+                    />
+
+                    {!auxStartNow && (
+                        <DateTimePicker
+                            label="زمان شروع"
+                            value={auxStartAt}
+                            onChange={(v) => setAuxStartAt(v)}
+                            slotProps={{ textField: { size: 'small', sx: { minWidth: 220 } } }}
+                        />
+                    )}
+
+                    <TextField
+                        size="small"
+                        type="number"
+                        label="مدت (ساعت)"
+                        value={auxDurationH}
+                        onChange={(e) => setAuxDurationH(Number(e.target.value || 0))}
+                        sx={{ width: 140 }}
+                        inputProps={{ min: 1 }}
+                    />
+
+                    <Box sx={{ flex: 1 }} />
+
+                    <Button onClick={() => setAuxLineOpen(false)}>بستن</Button>
+                    <Button
+                        variant="contained"
+                        onClick={applyAuxProfileTemporarily}
+                        disabled={!selectedProfile || applyBusy || selectedVehicleIds.size === 0}
+                    >
+                        {applyBusy ? 'در حال ثبت…' : 'ثبت خط کمکی'}
+                    </Button>
+
+                </DialogActions>
+            </Dialog>
+
+
             <DialogContent sx={{ p: 0 }}>
                 <Box
                     sx={{
@@ -1514,14 +2457,19 @@ export default function DefineLinePage() {
 
                                     {(() => {
                                         const allVehicles = vehiclesRef.current || [];
+
+                                        // مجموعه‌ی تایپ‌ها + تب‌های ثابت: همه / باقی‌مانده
                                         const typeSet = new Set<string>();
                                         allVehicles.forEach(v => typeSet.add(String(v?.vehicle_type_code || '').toLowerCase()));
-                                        const types = ['all', ...Array.from(typeSet).filter(Boolean)];
+                                        const types = ['all', 'remaining', ...Array.from(typeSet).filter(Boolean)];
 
+                                        // فیلتر بر اساس تب
                                         const filtered =
                                             vehTab === 'all'
                                                 ? allVehicles
-                                                : allVehicles.filter(v => String(v?.vehicle_type_code || '').toLowerCase() === vehTab);
+                                                : vehTab === 'remaining'
+                                                    ? allVehicles.filter(v => remainingVehicleIds.has(v.id))
+                                                    : allVehicles.filter(v => String(v?.vehicle_type_code || '').toLowerCase() === vehTab);
 
                                         const allFilteredSelected =
                                             filtered.length > 0 && filtered.every(v => selectedVehicleIds.has(v.id));
@@ -1539,7 +2487,13 @@ export default function DefineLinePage() {
                                                         <Tab
                                                             key={t || 'unknown'}
                                                             value={t}
-                                                            label={t === 'all' ? 'همه' : vehicleTypeLabel(t)}
+                                                            label={
+                                                                t === 'all'
+                                                                    ? 'همه'
+                                                                    : t === 'remaining'
+                                                                        ? (remLoading ? 'ماشین‌های باقی‌مانده (در حال بررسی...)' : `ماشین‌های باقی‌مانده (${remainingVehicleIds.size})`)
+                                                                        : vehicleTypeLabel(t)
+                                                            }
                                                             wrapped
                                                         />
                                                     ))}
@@ -1549,58 +2503,92 @@ export default function DefineLinePage() {
                                                     <Typography variant="body2" color="text.secondary">
                                                         {vehTab === 'all'
                                                             ? `تعداد: ${filtered.length}`
-                                                            : `${vehicleTypeLabel(vehTab)} — تعداد: ${filtered.length}`}
+                                                            : vehTab === 'remaining'
+                                                                ? (remLoading
+                                                                    ? 'در حال محاسبهٔ ماشین‌های فاقد مسیر/ژئوفنس/ایستگاه…'
+                                                                    : `ماشین‌های باقی‌مانده — تعداد: ${filtered.length}`)
+                                                                : `${vehicleTypeLabel(vehTab)} — تعداد: ${filtered.length}`}
                                                     </Typography>
-                                                    <FormControlLabel
-                                                        control={
-                                                            <Checkbox
-                                                                size="small"
-                                                                checked={allFilteredSelected}
-                                                                onChange={() => toggleSelectAll(filtered)}
-                                                                disabled={!selectedProfile}
-                                                            />
-                                                        }
-                                                        label="انتخاب همه در این تب"
-                                                    />
-                                                </Stack>
 
-                                                {filtered.length ? (
+                                                    <Stack direction="row" spacing={1} alignItems="center">
+                                                        {vehTab === 'remaining' && (
+                                                            <Button
+                                                                size="small"
+                                                                onClick={computeRemainingVehicles}
+                                                                disabled={remLoading}
+                                                            >
+                                                                {remLoading ? 'در حال محاسبه…' : 'بازمحاسبه'}
+                                                            </Button>
+                                                        )}
+                                                        <FormControlLabel
+                                                            control={
+                                                                <Checkbox
+                                                                    size="small"
+                                                                    checked={filtered.length > 0 && filtered.every(v => selectedVehicleIds.has(v.id))}
+                                                                    onChange={() => toggleSelectAll(filtered)}
+                                                                    disabled={!selectedProfile || (vehTab === 'remaining' && remLoading)}
+                                                                />
+                                                            }
+                                                            label="انتخاب همه در این تب"
+                                                        />
+                                                    </Stack>
+                                                </Stack>
+                                                {vehTab === 'remaining' && remLoading ? (
+                                                    <Stack alignItems="center" justifyContent="center" sx={{ py: 4 }}>
+                                                        <CircularProgress size={22} />
+                                                        <Typography variant="body2" sx={{ mt: 1 }} color="text.secondary">
+                                                            در حال بررسی مسیر/ژئوفنس/ایستگاه برای ماشین‌ها…
+                                                        </Typography>
+                                                    </Stack>
+                                                ) : filtered.length ? (
                                                     <List dense disablePadding>
-                                                        {filtered.map((v: any) => (
-                                                            <React.Fragment key={v.id}>
-                                                                <ListItem sx={{ px: 1.25 }}>
-                                                                    <ListItemAvatar>
-                                                                        <Avatar>{(vehicleTypeLabel(v?.vehicle_type_code) || 'و')[0]}</Avatar>
-                                                                    </ListItemAvatar>
-                                                                    <ListItemText
-                                                                        primary={v?.name || `Vehicle #${v.id}`}
-                                                                        secondary={
-                                                                            <span style={{ opacity: 0.75 }}>
-                                                                                نوع: {vehicleTypeLabel(v?.vehicle_type_code)} — مالک: {v?.owner_user_id ?? 'نامشخص'}
-                                                                            </span>
-                                                                        }
-                                                                        primaryTypographyProps={{ sx: { fontWeight: 600 } }}
-                                                                    />
-                                                                    <Checkbox
-                                                                        edge="end"
-                                                                        disabled={!selectedProfile}
-                                                                        checked={selectedVehicleIds.has(v.id)}
-                                                                        onChange={() => toggleVehicle(v.id)}
-                                                                    />
-                                                                </ListItem>
-                                                                <Divider component="li" />
-                                                            </React.Fragment>
-                                                        ))}
+                                                        {filtered.map((v: any) => {
+                                                            const st = vehicleStatusMap[v.id];
+                                                            return (
+                                                                <React.Fragment key={v.id}>
+                                                                    <ListItem sx={{ px: 1.25 }}>
+                                                                        <ListItemAvatar>
+                                                                            <Avatar>{(vehicleTypeLabel(v?.vehicle_type_code) || 'و')[0]}</Avatar>
+                                                                        </ListItemAvatar>
+                                                                        <ListItemText
+                                                                            primary={v?.name || `Vehicle #${v.id}`}
+                                                                            secondary={
+                                                                                <span style={{ opacity: 0.75 }}>
+                                                                                    نوع: {vehicleTypeLabel(v?.vehicle_type_code)} — مالک: {v?.owner_user_id ?? 'نامشخص'}
+                                                                                    {vehTab === 'remaining' && st && (
+                                                                                        <> — مسیر: ندارد — ژئوفنس: ندارد — ایستگاه: 0</>
+                                                                                    )}
+                                                                                </span>
+                                                                            }
+                                                                            primaryTypographyProps={{ sx: { fontWeight: 600 } }}
+                                                                        />
+                                                                        <Checkbox
+                                                                            edge="end"
+                                                                            disabled={!selectedProfile || (vehTab === 'remaining' && remLoading)}
+                                                                            checked={selectedVehicleIds.has(v.id)}
+                                                                            onChange={() => toggleVehicle(v.id)}
+                                                                        />
+                                                                    </ListItem>
+                                                                    <Divider component="li" />
+                                                                </React.Fragment>
+                                                            );
+                                                        })}
                                                     </List>
                                                 ) : (
                                                     <Typography color="text.secondary" sx={{ mt: 2, textAlign: 'center' }}>
-                                                        موردی یافت نشد.
+                                                        {vehTab === 'remaining'
+                                                            ? (remLoading ? '...' : 'ماشینی که فاقد مسیر/ژئوفنس/ایستگاه باشد یافت نشد.')
+                                                            : 'موردی یافت نشد.'}
                                                     </Typography>
                                                 )}
+
+
+
                                             </>
                                         );
                                     })()}
                                 </Box>
+
 
                                 {/* ستون راست: لیست خط‌ها (profiles) */}
                                 <Box
@@ -1759,6 +2747,21 @@ export default function DefineLinePage() {
                                         onPick={(lat, lng) => setRoutePoints(prev => [...prev, { lat, lng }])}
                                     />
                                 )}
+                                {/* جمع کردن نقاط چندگانه برای مسیر چندنقطه‌ای */}
+                                {multiPicking && (
+                                    <PickPointsDF
+                                        enabled
+                                        onPick={(lat, lng) => setMultiStops(prev => [...prev, { lat, lng }])}
+                                    />
+                                )}
+                                {multiStops.map((p, i) => (
+                                    <Marker key={`mw-${i}`} position={[p.lat, p.lng]}>
+                                        <Popup>
+                                            نقطه {i + 1}<br />
+                                            {p.lat.toFixed(5)}, {p.lng.toFixed(5)}
+                                        </Popup>
+                                    </Marker>
+                                ))}
 
                                 {/* کلیک‌گیر ایستگاه */}
                                 {addingStation && (
@@ -1771,7 +2774,18 @@ export default function DefineLinePage() {
                                         }}
                                     />
                                 )}
+                                <RoadRoutePicker
+                                    enabled={roadRoutePicking}
+                                    onDone={(a, b) => {
+                                        setRoadStart(a);
+                                        setRoadEnd(b);
+                                        fetchOsrmRoute(a, b);
+                                    }}
+                                />
 
+                                {/* ✅ مارکرهای مبدأ/مقصد روی نقشهٔ دیالوگ */}
+                                {roadStart && <Marker position={[roadStart.lat, roadStart.lng]} />}
+                                {roadEnd && <Marker position={[roadEnd.lat, roadEnd.lng]} />}
                                 {/* TileLayer (یکی کافیه) */}
                                 <TileLayer
                                     url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -1858,7 +2872,7 @@ export default function DefineLinePage() {
                                 }}
                             >
                                 {/* مسیر */}
-                                {canRoute && (
+                                {false && (
                                     <>
 
                                         <Button
@@ -1895,6 +2909,52 @@ export default function DefineLinePage() {
                                         />
                                     </>
                                 )}
+                                <Divider flexItem orientation="vertical" sx={{ mx: 0.5 }} />
+                                {canRoute && (
+                                    <>
+                                        {/* حالت چندنقطه‌ای */}
+                                        <Button
+                                            size="small"
+                                            variant={multiPicking ? 'contained' : 'outlined'}
+                                            disabled={multiBusy}
+                                            onClick={() => {
+                                                setMultiPicking(v => !v);
+                                                setDrawingRoute(false);      // جلوگیری از تداخل با ترسیم دستی
+                                                setAddingStation(false);
+                                            }}
+                                        >
+                                            {multiBusy ? '...' : (multiPicking ? 'در حال انتخاب نقاط…' : 'مسیر چندنقطه‌ای')}
+                                        </Button>
+
+                                        <Button
+                                            size="small"
+                                            variant="outlined"
+                                            disabled={multiBusy || multiStops.length < 2}
+                                            onClick={() => fetchOsrmRouteMulti(multiStops)}
+                                        >
+                                            محاسبه (به همین ترتیب)
+                                        </Button>
+
+
+
+                                        <Button
+                                            size="small"
+                                            variant="text"
+                                            disabled={multiBusy && multiStops.length === 0}
+                                            onClick={() => setMultiStops([])}
+                                        >
+                                            پاک‌کردن نقاط
+                                        </Button>
+
+                                        <Typography variant="caption" sx={{ ml: .5, opacity: .75 }}>
+                                            نقاط انتخاب‌شده: {multiStops.length}
+                                        </Typography>
+                                        <Button size="small" onClick={() => setMultiStops(s => s.slice(0, -1))} disabled={!multiStops.length}>
+                                            برگشت نقطه
+                                        </Button>
+                                    </>
+                                )}
+
                                 {/* ژئوفنس */}
                                 {canGeofence && (
                                     <>
@@ -1998,6 +3058,6 @@ export default function DefineLinePage() {
                     ) : null}
                 </DialogActions>
             </Dialog>
-        </LocalizationProvider>
+        </LocalizationProvider >
     );
 }

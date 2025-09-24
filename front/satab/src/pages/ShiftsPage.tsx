@@ -1557,13 +1557,9 @@ export default function ShiftsPage() {
                                             })()}
                                         </List>
                                     </Paper>
-
-
                                 </>
                             )}
                         </Box>
-
-
                     </Box>
                 </DialogContent>
                 <DialogActions>
