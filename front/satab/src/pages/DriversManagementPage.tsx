@@ -425,7 +425,7 @@ function PickPointsForStations({
   enabled: boolean;
   onPick: (lat: number, lng: number) => void;
 }) {
-  useMapEvent('click', (e) => {
+  useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => {
     if (enabled) onPick(e.latlng.lat, e.latlng.lng);
   });
   return null;
@@ -675,7 +675,7 @@ function ManagerRoleSection({ user }: { user: User }) {
   }, []);
   const [clickFences, setClickFences] = useState<{ lat: number; lng: number }[]>([]);
   function ClickToAddCircleAndEllipse() {
-    useMapEvent('click', (e) => {
+    useMapEvent('click', (e: { latlng: { lat: any; lng: any; }; }) => {
       const { lat, lng } = e.latlng;
       setClickFences((prev) => [...prev, { lat, lng }]);
     });
@@ -1277,7 +1277,7 @@ function ManagerRoleSection({ user }: { user: User }) {
 
   const mapDefaultsRef = React.useRef<RLMap | null>(null);
   function PickPointsDF({ enabled, onPick }: { enabled: boolean; onPick: (lat: number, lng: number) => void }) {
-    useMapEvent('click', (e) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
+    useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
     return null;
   }
 
@@ -1608,7 +1608,7 @@ function ManagerRoleSection({ user }: { user: User }) {
 
   // ====== Utility‌های نقشه ======
   function PickPoints({ enabled, onPick }: { enabled: boolean; onPick: (lat: number, lng: number) => void }) {
-    useMapEvent('click', (e) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
+    useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
     return null;
   }
 
@@ -4577,6 +4577,28 @@ function ManagerRoleSection({ user }: { user: User }) {
 
 
 
+// یک نقطه GPS در مسیر
+type GpsPoint = {
+  lat: number;
+  lng: number;
+  timestamp?: string;
+};
+
+// یک ماموریت (سفر) راننده که شامل آرایه‌ای از نقاط است
+type DriverMission = {
+  id: number;
+  // ... سایر فیلدهای ماموریت
+  gps_points: GpsPoint[];
+};
+
+// پاسخی که از API مسیر خودرو دریافت می‌شود
+type VehicleTrackResponse = {
+  vehicle_id: number;
+  from: string;
+  to: string;
+  points_count: number;
+  points: GpsPoint[];
+};
 function SuperAdminRoleSection({ user }: { user: User }) {
   // -------- انواع کمکی داخل همین فایل --------
   type VehicleTypeCode =
@@ -4916,7 +4938,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
   const [vehicleOptions, setVehicleOptions] = useState<string[]>([]);
 
   function PickPointsDF({ enabled, onPick }: { enabled: boolean; onPick: (lat: number, lng: number) => void }) {
-    useMapEvent('click', (e) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
+    useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
     return null;
   }
 
@@ -5686,11 +5708,11 @@ function SuperAdminRoleSection({ user }: { user: User }) {
 
   // کامپوننت کمکی برای گرفتن کلیک‌ها
   function PickPointsForStations({ enabled, onPick }: { enabled: boolean; onPick: (lat: number, lng: number) => void }) {
-    useMapEvent('click', (e) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
+    useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
     return null;
   }
   function PickPointsForRoute({ enabled, onPick }: { enabled: boolean; onPick: (lat: number, lng: number) => void }) {
-    useMapEvent('click', (e) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
+    useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
     return null;
   }
 
@@ -6094,47 +6116,70 @@ function SuperAdminRoleSection({ user }: { user: User }) {
   // مسیر از دیتابیس
   const [polyline, setPolyline] = useState<[number, number][]>([]);
   const loadDriverTrack = async (driverId: number) => {
+    setPolyline([]); // ۱. پاک کردن مسیر قبلی از روی نقشه
+
     try {
-      const { data } = await api.get('/tracks', {
-        params: { driver_id: driverId, from: fromISO, to: toISO },
-      });
-      const pts: TrackPoint[] = Array.isArray(data) ? data : data?.items || [];
-      if (pts.length) {
-        setPolyline(pts.map((p) => [p.lat, p.lng]));
-      } else {
-        const arr = (driverLive[driverId] || []).filter(
-          (p) => p[2] >= +new Date(fromISO) && p[2] <= +new Date(toISO)
-        );
-        setPolyline(arr.map((p) => [p[0], p[1]]));
-      }
-    } catch {
-      const arr = (driverLive[driverId] || []).filter(
-        (p) => p[2] >= +new Date(fromISO) && p[2] <= +new Date(toISO)
+      // ۲. درخواست به API برای دریافت تمام ماموریت‌های راننده در بازه زمانی
+      const { data } = await api.get<{ items: DriverMission[] }>(
+        `/driver-routes/by-driver/${driverId}`,
+        {
+          params: { from: fromISO, to: toISO, limit: 1000 }, // limit بالا برای گرفتن همه چیز
+        }
       );
-      setPolyline(arr.map((p) => [p[0], p[1]]));
+
+      // ۳. استخراج تمام نقاط GPS از تمام ماموریت‌ها و تجمیع در یک آرایه واحد
+      const allPoints = (data.items || []).flatMap(mission => mission.gps_points || []);
+
+      // ۴. آپدیت state نقشه با مسیر جدید
+      if (allPoints.length > 0) {
+        setPolyline(allPoints.map(p => [p.lat, p.lng]));
+
+        // ۵. (اختیاری) فوکوس نقشه روی اولین نقطه مسیر
+        setFocusLatLng([allPoints[0].lat, allPoints[0].lng]);
+      }
+
+    } catch (e) {
+      console.error("خطا در دریافت مسیر راننده از API:", e);
+      // در صورت خطا، می‌توان از داده‌های زنده (live) که از سوکت می‌آید به عنوان جایگزین استفاده کرد
+      const liveTrack = driverLive[driverId] || [];
+      const filteredLive = liveTrack.filter(p => p[2] >= +new Date(fromISO) && p[2] <= +new Date(toISO));
+      setPolyline(filteredLive.map(p => [p[0], p[1]]));
     }
   };
+
+  // مسیر کامل خودرو از دیتابیس
   const loadVehicleTrack = async (vehicleId: number) => {
+    setPolyline([]); // ۱. پاک کردن مسیر قبلی از روی نقشه
+
     try {
-      const { data } = await api.get('/tracks', {
-        params: { vehicle_id: vehicleId, from: fromISO, to: toISO },
-      });
-      const pts: TrackPoint[] = Array.isArray(data) ? data : data?.items || [];
-      if (pts.length) {
-        setPolyline(pts.map((p) => [p.lat, p.lng]));
-      } else {
-        const arr = (vehicleLive[vehicleId] || []).filter(
-          (p) => p[2] >= +new Date(fromISO) && p[2] <= +new Date(toISO)
-        );
-        setPolyline(arr.map((p) => [p[0], p[1]]));
-      }
-    } catch {
-      const arr = (vehicleLive[vehicleId] || []).filter(
-        (p) => p[2] >= +new Date(fromISO) && p[2] <= +new Date(toISO)
+      // ۲. درخواست به API برای دریافت مسیر پیموده شده ماشین در بازه زمانی
+      const { data } = await api.get<VehicleTrackResponse>(
+        `/vehicles/${vehicleId}/track`,
+        {
+          params: { from: fromISO, to: toISO },
+        }
       );
-      setPolyline(arr.map((p) => [p[0], p[1]]));
+
+      // ۳. استخراج نقاط از پاسخ API
+      const allPoints = data.points || [];
+
+      // ۴. آپدیت state نقشه با مسیر جدید
+      if (allPoints.length > 0) {
+        setPolyline(allPoints.map(p => [p.lat, p.lng]));
+
+        // ۵. (اختیاری) فوکوس نقشه روی اولین نقطه مسیر
+        setFocusLatLng([allPoints[0].lat, allPoints[0].lng]);
+      }
+
+    } catch (e) {
+      console.error("خطا در دریافت مسیر ماشین از API:", e);
+      // در صورت خطا، از داده‌های زنده به عنوان جایگزین استفاده می‌کنیم
+      const liveTrack = vehicleLive[vehicleId] || [];
+      const filteredLive = liveTrack.filter(p => p[2] >= +new Date(fromISO) && p[2] <= +new Date(toISO));
+      setPolyline(filteredLive.map(p => [p[0], p[1]]));
     }
   };
+
 
   // KPI (برای راننده)
   const [statsLoading, setStatsLoading] = useState(false);
@@ -6164,23 +6209,39 @@ function SuperAdminRoleSection({ user }: { user: User }) {
   const fetchDriverStats = async (driverId: number) => {
     setStatsLoading(true);
     try {
-      const res = await api
-        .get(`/driver-routes/stats/${driverId}`, {
-          params: { from: fromISO, to: toISO },
-        })
-        .catch(() => null);
+      const res = await api.get(`/driver-routes/stats/${driverId}`, {
+        params: { from: fromISO, to: toISO },
+      }).catch(() => null);
+
       if (res?.data) {
-        setStats(res.data);
+        const trips: any[] = Array.isArray(res.data.trips) ? res.data.trips : [];
+        const finishedCount = trips.filter(t => t?.finished === true).length;
+
+        setStats({
+          totalDistanceKm: Number(res.data.total_distance_km ?? 0).toFixed(2) as any,
+          totalDurationMin: Math.floor(Number(res.data.total_work_seconds ?? 0) / 60),
+          jobsCount: finishedCount,
+          startTime: fromISO,
+          endTime: toISO,
+        });
       } else {
+        // فالبک: اگر API در دسترس نبود، از پلی‌لاین فعلی مسافت رو جمع بزن
         const arr = polyline;
         let d = 0;
         for (let i = 1; i < arr.length; i++) d += hav(arr[i - 1], arr[i]);
-        setStats({ totalDistanceKm: +d.toFixed(2) });
+        setStats({
+          totalDistanceKm: +d.toFixed(2),
+          totalDurationMin: undefined,
+          jobsCount: undefined,
+          startTime: fromISO,
+          endTime: toISO,
+        });
       }
     } finally {
       setStatsLoading(false);
     }
   };
+
 
   // انتخاب‌های لیست
   // انتخاب راننده + لود تریس، KPI و تخلفات
@@ -8497,7 +8558,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
                       <PickPointsDF enabled={dfDrawing && dfGfMode === 'polygon'} onPick={(lat, lng) => setDfGfPoly(prev => [...prev, { lat, lng }])} />
                       <PickPointsDF enabled={dfAddingStation && !dfDrawing} onPick={(lat, lng) => setDfTempSt({ name: `ایستگاه ${dfAuto}`, lat, lng, radius_m: 60 })} />
                       {dfGfMode === 'circle' && dfGfCircle.center && <Circle center={[dfGfCircle.center.lat, dfGfCircle.center.lng]} radius={dfGfCircle.radius_m} />}
-                      {dfGfMode === 'polygon' && dfGfPoly.length >= 2 && <Polygon positions={dfGfPoly.map(p => [p.lat, p.lng] as [number, number])} pathOptions={{ dashArray: '6 6' }} />}
+                      {dfGfMode === 'polygon' && dfGfPoly.length >= 2 && <Polygon positions={dfGfPoly.map((p: { lat: number; lng: number; }) => [p.lat, p.lng] as [number, number])} pathOptions={{ dashArray: '6 6' }} />}
                       {dfStations.map((st, i) => (
                         <React.Fragment key={`dfst-${i}`}>
                           <Circle center={[st.lat, st.lng]} radius={st.radius_m} />
@@ -8663,7 +8724,7 @@ function BranchManagerRoleSection({ user }: { user: User }) {
   const [toISO, setToISO] = React.useState<string>(() => new Date().toISOString());
   // کلیک‌گیر روی نقشه
   function PickPointsForRoute({ enabled, onPick }: { enabled: boolean; onPick: (lat: number, lng: number) => void }) {
-    useMapEvent('click', (e) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
+    useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
     return null;
   }
   // پرچم برای جلوگیری از تریپل‌کلیک/اسپم
@@ -9028,22 +9089,32 @@ function BranchManagerRoleSection({ user }: { user: User }) {
     }
     return null;
   };
+  // مسیر مأموریت‌های راننده از دیتابیس
   const loadDriverTrack = async (driverId: number) => {
-    if (!canTrackDrivers) return;
+    setPolyline([]); // پاک کردن مسیر قبلی
     try {
-      // 👇 بک‌اند می‌خواهد vehicle_id
-      const vid = await getDriverCurrentVehicleId(driverId);
-      const params: any = { from: fromISO, to: toISO };
-      if (vid) params.vehicle_id = vid; else params.driver_id = driverId; // فالبک
+      // ۱. درخواست به API جدید و صحیح برای دریافت مأموریت‌ها
+      const { data } = await api.get<{ items: DriverMission[] }>(`/driver-routes/by-driver/${driverId}`, {
+        params: { from: fromISO, to: toISO, limit: 1000 }, // limit بالا برای گرفتن تمام ماموریت‌ها
+      });
 
-      const { data } = await api.get('/tracks', { params });
-      const pts: { lat: number; lng: number }[] = Array.isArray(data) ? data : data?.items || [];
-      setPolyline(pts.map(p => [p.lat, p.lng] as [number, number]));
-      liveTrackOnRef.current = true;
-      selectedDriverRef.current = drivers.find(x => x.id === driverId) ?? null;
-    } catch {
-      setPolyline([]); liveTrackOnRef.current = true;
-      selectedDriverRef.current = drivers.find(x => x.id === driverId) ?? null;
+      // ۲. پردازش پاسخ جدید: تمام آرایه‌های gps_points را به هم می‌چسبانیم
+      const allMissions: DriverMission[] = data.items || [];
+      const allPoints = allMissions.flatMap((mission) => mission.gps_points || []);
+
+      // ۳. آپدیت state نقشه با تمام نقاط
+      if (allPoints.length > 0) {
+        setPolyline(allPoints.map((p: GpsPoint) => [p.lat, p.lng]));
+      }
+
+    } catch (e) {
+      console.error("Failed to load driver track from API, falling back to live data:", e);
+      // فالبک روی داده‌های زنده
+      const liveTrackForDriver = driverLive[driverId] || [];
+      const filteredLivePoints = liveTrackForDriver.filter(
+        (point: [number, number, number]) => point[2] >= +new Date(fromISO) && point[2] <= +new Date(toISO)
+      );
+      setPolyline(filteredLivePoints.map((point: [number, number, number]) => [point[0], point[1]]));
     }
   };
   // فقط شیت را باز کن، هیچ فچی اینجا نزن
@@ -10083,7 +10154,7 @@ function BranchManagerRoleSection({ user }: { user: User }) {
     enabled: boolean;
     onPick: (lat: number, lng: number) => void;
   }) {
-    useMapEvent('click', (e) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
+    useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
     return null;
   }
   async function loadVehicleGeofenceBM(vid: number) {
@@ -10704,7 +10775,7 @@ function BranchManagerRoleSection({ user }: { user: User }) {
     enabled: boolean;
     onPick: (lat: number, lng: number) => void;
   }) {
-    useMapEvent('click', (e) => {
+    useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => {
       if (enabled) onPick(e.latlng.lat, e.latlng.lng);
     });
     return null;
@@ -12198,7 +12269,7 @@ function OwnerRoleSection({ user }: { user: User }) {
   const [toISO, setToISO] = React.useState<string>(() => new Date().toISOString());
   // کلیک‌گیر روی نقشه
   function PickPointsForRoute({ enabled, onPick }: { enabled: boolean; onPick: (lat: number, lng: number) => void }) {
-    useMapEvent('click', (e) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
+    useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
     return null;
   }
   // پرچم برای جلوگیری از تریپل‌کلیک/اسپم
@@ -13618,7 +13689,7 @@ function OwnerRoleSection({ user }: { user: User }) {
     enabled: boolean;
     onPick: (lat: number, lng: number) => void;
   }) {
-    useMapEvent('click', (e) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
+    useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
     return null;
   }
   async function loadVehicleGeofenceBM(vid: number) {
@@ -14239,7 +14310,7 @@ function OwnerRoleSection({ user }: { user: User }) {
     enabled: boolean;
     onPick: (lat: number, lng: number) => void;
   }) {
-    useMapEvent('click', (e) => {
+    useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => {
       if (enabled) onPick(e.latlng.lat, e.latlng.lng);
     });
     return null;
@@ -15732,7 +15803,7 @@ function TechnicianRoleSection({ user }: { user: User }) {
   const [toISO, setToISO] = React.useState<string>(() => new Date().toISOString());
   // کلیک‌گیر روی نقشه
   function PickPointsForRoute({ enabled, onPick }: { enabled: boolean; onPick: (lat: number, lng: number) => void }) {
-    useMapEvent('click', (e) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
+    useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
     return null;
   }
   // پرچم برای جلوگیری از تریپل‌کلیک/اسپم
@@ -17152,7 +17223,7 @@ function TechnicianRoleSection({ user }: { user: User }) {
     enabled: boolean;
     onPick: (lat: number, lng: number) => void;
   }) {
-    useMapEvent('click', (e) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
+    useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
     return null;
   }
   async function loadVehicleGeofenceBM(vid: number) {
@@ -17773,7 +17844,7 @@ function TechnicianRoleSection({ user }: { user: User }) {
     enabled: boolean;
     onPick: (lat: number, lng: number) => void;
   }) {
-    useMapEvent('click', (e) => {
+    useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => {
       if (enabled) onPick(e.latlng.lat, e.latlng.lng);
     });
     return null;
@@ -19265,7 +19336,7 @@ function DriverRoleSection({ user }: { user: User }) {
 
   // کلیک‌گیر روی نقشه
   function PickPointsForRoute({ enabled, onPick }: { enabled: boolean; onPick: (lat: number, lng: number) => void }) {
-    useMapEvent('click', (e) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
+    useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
     return null;
   }
   // پرچم برای جلوگیری از تریپل‌کلیک/اسپم
@@ -20267,7 +20338,7 @@ function DriverRoleSection({ user }: { user: User }) {
     enabled: boolean;
     onPick: (lat: number, lng: number) => void;
   }) {
-    useMapEvent('click', (e) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
+    useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
     return null;
   }
   async function loadVehicleGeofenceBM(vid: number) {
@@ -20865,7 +20936,7 @@ function DriverRoleSection({ user }: { user: User }) {
     enabled: boolean;
     onPick: (lat: number, lng: number) => void;
   }) {
-    useMapEvent('click', (e) => {
+    useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => {
       if (enabled) onPick(e.latlng.lat, e.latlng.lng);
     });
     return null;

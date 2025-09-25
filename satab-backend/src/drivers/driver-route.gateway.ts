@@ -7,10 +7,13 @@ import {
   OnGatewayConnection,
   OnGatewayDisconnect,
   WsException,
+
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { DriverRouteService } from './driver-route.service';
 import { Users } from '../users/users.entity';
+import { DriverRoute } from './driver-route.entity';
+import { forwardRef, Inject } from '@nestjs/common';
 
 type RoleLevel = 1 | 2 | 3 | 4 | 5 | 6; // اگر enum داری جایگزینش کن
 
@@ -26,8 +29,8 @@ interface AuthedSocket extends Socket {
   cors: { origin: '*', credentials: false },
 })
 export class DriverRouteGateway
-  implements OnGatewayConnection, OnGatewayDisconnect
-{
+  implements OnGatewayConnection, OnGatewayDisconnect {
+
   @WebSocketServer()
   server: Server;
 
@@ -38,7 +41,8 @@ export class DriverRouteGateway
   // Throttle: routeId → lastEmitAt
   private lastEmitAt = new Map<number, number>();
 
-  constructor(private readonly service: DriverRouteService) {}
+  constructor(@Inject(forwardRef(() => DriverRouteService))
+    private readonly service: DriverRouteService) { }
 
   /* ----------------------------- Auth & Rooms ----------------------------- */
 
@@ -65,7 +69,39 @@ export class DriverRouteGateway
       sock.join('managers'); // همه مدیرکل‌ها در یک اتاق
     }
   }
+  async broadcastLocationUpdate(route: DriverRoute) {
+    const routeId = route.id;
 
+    // 1. احترام به Throttling
+    if (!this.canEmitRoute(routeId)) {
+      return;
+    }
+
+    const driverId = route.driver_id;
+    const payload = {
+      routeId,
+      driverId,
+      lat: route.last_lat,
+      lng: route.last_lng,
+      ts: route.last_point_ts?.toISOString() ?? new Date().toISOString(),
+    };
+
+    // 2. ارسال پیام به اتاق‌های مربوطه
+    this.server.to(`route:${routeId}`).emit('driver_location_update', payload);
+
+    const sa = await this.findSuperAdminForDriver(driverId);
+    if (sa) {
+      this.server.to(`user:${sa.id}`).emit('driver_location_update', payload);
+    }
+
+    this.server.to('managers').emit('driver_location_update', payload);
+    this.server.to(`user:${driverId}`).emit('driver_location_update_self', payload);
+
+    // 3. اگر مسیر به خودرویی متصل است، رویداد مربوط به آن خودرو را نیز ارسال کن
+    if (route.vehicle_id && payload.lat && payload.lng) {
+      this.emitVehiclePos(route.vehicle_id, payload.lat, payload.lng, payload.ts);
+    }
+  }
   async handleConnection(@ConnectedSocket() client: AuthedSocket) {
     try {
       this.parseAuthFromHandshake(client);
@@ -255,47 +291,48 @@ export class DriverRouteGateway
   }
 
   /** موقعیت زنده راننده */
+  /**
+     * موقعیت زنده ارسال شده از طرف اپلیکیشن راننده را دریافت می‌کند.
+     */
   @SubscribeMessage('driver_location')
   async handleLocation(
     @ConnectedSocket() client: AuthedSocket,
     @MessageBody() data: { routeId: number; lat: number; lng: number; timestamp?: string },
   ) {
+    // مرحله ۱: اعتبارسنجی ورودی (Payload Validation)
     const { routeId, lat, lng, timestamp } = data || {};
     if (!routeId || typeof lat !== 'number' || typeof lng !== 'number') {
       throw new WsException('payload نامعتبر');
     }
 
-    // اطمینان از دسترسی روی همین route
+    // مرحله ۲: بررسی دسترسی کلاینت (Authorization)
+    // اطمینان از اینکه کلاینت اجازه ارسال نقطه برای این مسیر را دارد
     const routeMeta = await this.service.getOne(routeId, { includePoints: false } as any);
+    if (!routeMeta) {
+      throw new WsException('Route not found');
+    }
     const driverId = (routeMeta as any).driver_id;
 
     const allowed = await this.canActOnDriver(client, driverId);
-    if (!allowed) throw new WsException('FORBIDDEN');
+    if (!allowed) {
+      throw new WsException('FORBIDDEN');
+    }
 
-    // راننده فقط اگر GPS براش فعال شده باشد
+    // اگر فرستنده خود راننده است، چک می‌کنیم که آیا قابلیت GPS برایش فعال است یا خیر
     if (client.data.roleLevel === 6) {
       const gpsOk = await this.service.driverHasOption(driverId, 'gps');
-      if (!gpsOk) throw new WsException('GPS_DISABLED_FOR_DRIVER');
+      if (!gpsOk) {
+        throw new WsException('GPS_DISABLED_FOR_DRIVER');
+      }
     }
 
-    const saved = await this.service.addPoint(routeId, { lat, lng, ts: timestamp });
 
-    if (!this.canEmitRoute(routeId)) return;
+    await this.service.addPoint(routeId, { lat, lng, ts: timestamp });
 
-    const payload = { routeId, driverId, lat, lng, ts: new Date().toISOString() };
-
-    this.server.to(`route:${routeId}`).emit('driver_location_update', payload);
-    const sa = await this.findSuperAdminForDriver(driverId);
-    if (sa) this.server.to(`user:${sa.id}`).emit('driver_location_update', payload);
-    this.server.to('managers').emit('driver_location_update', payload);
-    this.server.to(`user:${driverId}`).emit('driver_location_update_self', payload);
-
-    // اگر route به vehicle وصل است، تاپیک vehicle هم آپدیت
-    if (saved.vehicle_id) {
-      this.emitVehiclePos(saved.vehicle_id, lat, lng, payload.ts);
-    }
+    // نیازی به ارسال پاسخ به کلاینت نیست، چون خود کلاینت هم از طریق broadcast پاسخش را می‌گیرد.
+    // مگر اینکه بخواهید یک تاییدیه سریع بفرستید:
+    // client.emit('location_received', { ok: true });
   }
-
   /** اجازه بده کلاینت به Room دلخواه (topic) جوین/لیو کند */
   @SubscribeMessage('subscribe')
   onSubscribe(@ConnectedSocket() client: Socket, @MessageBody() body: { topic?: string }) {

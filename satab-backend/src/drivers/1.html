@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Satab Creative Template</title>
+
+  <!-- Font: Vazirmatn -->
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;700;900&display=swap" rel="stylesheet" />
+
+  <!-- GSAP + ScrollTrigger -->
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+
+  <style>
+    :root{
+      --bg-1:#0b0f14;
+      --bg-2:#0e1320;
+      --fg:#e6f0ff;
+      --muted:#9bb0cc;
+      --primary:#7c5cff;
+      --accent:#15e2b5;
+      --glass:rgba(255,255,255,0.06);
+      --border:rgba(255,255,255,0.12);
+      --shadow:0 10px 30px rgba(0,0,0,0.35);
+      --radius:18px;
+      --blur:12px;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      font-family:"Vazirmatn",system-ui,-apple-system,Segoe UI,Roboto,Arial;
+      color:var(--fg);
+      background: radial-gradient(1200px 800px at 70% -10%,#121a2f 0%, transparent 60%),
+                  radial-gradient(900px 700px at -10% 30%, #0f1b2d 0%, transparent 60%),
+                  linear-gradient(120deg,var(--bg-1),var(--bg-2));
+      overflow-x:hidden;
+      -webkit-font-smoothing:antialiased;
+      text-rendering:optimizeLegibility;
+    }
+
+    /* Floating gradient orbs */
+    .orbs{
+      position:fixed; inset:0; z-index:-1; pointer-events:none; filter:saturate(120%) blur(40px);
+    }
+    .orb{
+      position:absolute; width:420px; height:420px; border-radius:50%;
+      background: radial-gradient(circle at 30% 30%, #8d71ff, transparent 55%),
+                  radial-gradient(circle at 70% 60%, #17f3c8, transparent 60%),
+                  radial-gradient(circle at 40% 80%, #ff6aa9, transparent 55%);
+      opacity:.22; mix-blend-mode:screen;
+    }
+    .orb.o1{top:-120px; right:10%}
+    .orb.o2{bottom:-160px; left:5%}
+    .orb.o3{top:40%; right:-120px}
+
+    /* Noise overlay */
+    .noise{
+      position:fixed; inset:0; z-index:1; pointer-events:none; opacity:.05;
+      background-image:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="4" stitchTiles="stitch"/></filter><rect width="100%" height="100%" filter="url(%23n)"/></svg>');
+      mix-blend-mode:overlay;
+    }
+
+    /* Navbar */
+    .nav{
+      position:sticky; top:0; z-index:20;
+      margin:12px; padding:12px 18px; border-radius:14px;
+      background:linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.02));
+      backdrop-filter: blur(10px); border:1px solid var(--border);
+      display:flex; align-items:center; justify-content:space-between;
+      box-shadow:var(--shadow);
+    }
+    .brand{
+      display:flex; gap:10px; align-items:center; font-weight:900; letter-spacing:.2px;
+    }
+    .brand .logo{
+      width:34px; height:34px; border-radius:10px; display:grid; place-items:center;
+      background: conic-gradient(from 210deg, var(--accent), var(--primary), #ff77b3, var(--accent));
+      box-shadow:0 8px 20px rgba(124,92,255,.4), inset 0 0 20px rgba(255,255,255,.2);
+    }
+    .nav a{
+      color:var(--muted); text-decoration:none; margin:0 10px; font-weight:600;
+      padding:8px 12px; border-radius:10px; transition:all .25s ease;
+    }
+    .nav a:hover{ color:var(--fg); background:var(--glass); }
+
+    /* Hero */
+    .hero{
+      position:relative; padding:120px 16px 80px; max-width:1200px; margin:0 auto; text-align:center;
+    }
+    .kicker{
+      display:inline-flex; gap:8px; align-items:center;
+      background:var(--glass); border:1px solid var(--border);
+      padding:8px 14px; border-radius:999px; backdrop-filter: blur(var(--blur));
+      color:var(--muted); font-weight:700; letter-spacing:.3px;
+    }
+    .kicker .dot{
+      width:10px; height:10px; border-radius:50%;
+      background: radial-gradient(circle at 30% 30%, var(--accent), var(--primary));
+      box-shadow:0 0 18px var(--accent);
+    }
+    h1{
+      margin:22px 0 8px; font-size: clamp(36px, 6vw, 72px); line-height:1.08; font-weight:900;
+      letter-spacing:-.5px; background: linear-gradient(180deg,#fff, #cde2ff 50%, #8fb5ff);
+      color:transparent; -webkit-background-clip:text; background-clip:text;
+      text-shadow: 0 12px 40px rgba(23, 243, 200, 0.08);
+    }
+    .subtitle{
+      margin:0 auto 28px; max-width:720px; color:var(--muted); font-size: clamp(15px, 2.2vw, 18px);
+    }
+
+    /* CTA buttons */
+    .cta{
+      display:flex; gap:14px; justify-content:center; flex-wrap:wrap;
+      margin-top:20px;
+    }
+    .btn{
+      position:relative; overflow:hidden; border:none; cursor:pointer;
+      padding:14px 20px; border-radius:14px; font-weight:800; letter-spacing:.2px;
+      background:var(--glass); border:1px solid var(--border); color:#eaf3ff;
+      backdrop-filter: blur(calc(var(--blur) - 2px));
+      transform: translateZ(0);
+    }
+    .btn.primary{
+      background: linear-gradient(120deg, rgba(124,92,255,.22), rgba(21,226,181,.18));
+      border-color: rgba(124,92,255,.35);
+      box-shadow: 0 10px 30px rgba(124,92,255,.25);
+    }
+    .btn .spark{
+      position:absolute; inset:-40%; background:
+        radial-gradient(200px 120px at var(--mx,50%) var(--my,50%), rgba(255,255,255,.35), transparent 60%);
+      mix-blend-mode:overlay; transition: transform .15s ease;
+    }
+
+    /* Tilt card */
+    .tilt-card{
+      margin:60px auto 0; max-width:900px; height:260px; border-radius:var(--radius);
+      background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
+      border:1px solid var(--border); box-shadow: var(--shadow);
+      position:relative; overflow:hidden; perspective:1000px; transform-style:preserve-3d;
+    }
+    .tilt-inner{
+      position:absolute; inset:0; display:grid; place-items:center;
+      transform: rotateX(var(--rx,0deg)) rotateY(var(--ry,0deg)) translateZ(30px);
+      transition: transform .06s linear;
+    }
+    .tilt-glow{
+      position:absolute; inset:-30%; background:
+        radial-gradient(340px 220px at var(--gx,50%) var(--gy,50%), rgba(124,92,255,.25), transparent 60%),
+        radial-gradient(280px 180px at 30% 70%, rgba(21,226,181,.2), transparent 60%);
+      mix-blend-mode:soft-light; filter: blur(30px);
+    }
+    .tilt-title{
+      font-size: clamp(20px, 3vw, 28px); color:#eaf3ff; font-weight:900;
+      text-shadow:0 10px 30px rgba(0,0,0,.35);
+    }
+
+    /* Sections */
+    .section{
+      max-width:1200px; margin:80px auto; padding:0 16px;
+    }
+    .grid{
+      display:grid; grid-template-columns:repeat(12,1fr); gap:16px;
+    }
+    .card{
+      grid-column: span 4;
+      background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
+      border:1px solid var(--border); border-radius:16px; padding:18px;
+      min-height:160px; position:relative; overflow:hidden;
+      transform: translateY(30px) scale(.98); opacity:0;
+    }
+    .card h3{ margin:0 0 8px; font-size:20px }
+    .card p{ margin:0; color:var(--muted) }
+    .card::after{
+      content:""; position:absolute; inset:-30%; background:
+        radial-gradient(200px 120px at var(--mx,70%) var(--my,30%), rgba(255,255,255,.08), transparent 60%);
+      mix-blend-mode:overlay; pointer-events:none;
+    }
+    @media (max-width:900px){
+      .card{ grid-column: span 6 }
+    }
+    @media (max-width:600px){
+      .card{ grid-column: span 12 }
+    }
+
+    /* Marquee */
+    .marquee{
+      margin-top:50px; border:1px solid var(--border); border-radius:16px; overflow:hidden;
+      background:linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.01));
+    }
+    .marquee-track{
+      display:flex; gap:24px; padding:16px; white-space:nowrap; will-change:transform;
+    }
+    .chip{
+      display:inline-flex; align-items:center; gap:10px; padding:10px 14px; border-radius:999px;
+      background:var(--glass); border:1px solid var(--border); color:#d9e6ff; font-weight:700;
+    }
+    .chip .dot{ width:8px; height:8px; border-radius:50%; background:linear-gradient(180deg,var(--accent),var(--primary)) }
+
+    /* Footer */
+    .footer{ padding:40px 16px 80px; color:var(--muted); text-align:center }
+
+    /* Magnetic hover helpers */
+    .magnet{ transform: translate3d(var(--mx,0px), var(--my,0px), 0); transition: transform .12s ease }
+  </style>
+</head>
+<body>
+
+  <!-- Background orbs -->
+  <div class="orbs">
+    <div class="orb o1"></div>
+    <div class="orb o2"></div>
+    <div class="orb o3"></div>
+  </div>
+  <div class="noise"></div>
+
+  <!-- Nav -->
+  <nav class="nav">
+    <div class="brand">
+      <div class="logo" aria-hidden="true"></div>
+      ساتب — خلاقانه و زنده
+    </div>
+    <div>
+      <a href="#features">ویژگی‌ها</a>
+      <a href="#showcase">نمونه‌ها</a>
+      <a href="#contact">ارتباط</a>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <header class="hero">
+    <div class="kicker"><span class="dot"></span> نسخه آزمایشی تمپلیت</div>
+    <h1>ایده‌ات را با یک تجربه زنده و انیمیشنی بساز</h1>
+    <p class="subtitle">این تمپلیت برای شروع سریع یک لندینگ خلاقانه طراحی شده: مینیمال، نئوفوتوریستیک، با اسکرول‌انیمیشن‌های روان، افکت‌های شیشه‌ای و عناصر تعاملی.</p>
+    <div class="cta">
+      <button class="btn primary magnet" data-strength="20">شروع سریع</button>
+      <button class="btn magnet" data-strength="14">مشاهده دمو</button>
+    </div>
+
+    <div class="tilt-card" aria-hidden="true">
+      <div class="tilt-glow"></div>
+      <div class="tilt-inner">
+        <div class="tilt-title">کارت نمایشی با حرکت 3D و نور پویا</div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Features -->
+  <section id="features" class="section">
+    <div class="grid">
+      <div class="card"><h3>اسکرول انیمیشن</h3><p>ورود نرم کارت‌ها با GSAP و واکنش به موس.</p></div>
+      <div class="card"><h3>شیشه‌ای و نورانی</h3><p>گلس‌مورفیزم با نور پویا و بافت نویز.</p></div>
+      <div class="card"><h3>تعاملی</h3><p>دکمه‌های مگنتی، کارت‌های tilt و افکت‌های واکنشی.</p></div>
+      <div class="card"><h3>RTL آماده</h3><p>تایپوگرافی فارسی و راست‌به‌چپ به‌صورت پیش‌فرض.</p></div>
+      <div class="card"><h3>سبک و سریع</h3><p>بدون بیلد؛ تنها با CDNها و یک فایل HTML.</p></div>
+      <div class="card"><h3>قابل توسعه</h3><p>به‌سادگی سکشن‌ها و کامپوننت‌های خودت را اضافه کن.</p></div>
+    </div>
+
+    <div class="marquee" aria-hidden="true">
+      <div class="marquee-track" id="marquee">
+        <span class="chip"><span class="dot"></span> سرعت بالا</span>
+        <span class="chip"><span class="dot"></span> تجربه روان</span>
+        <span class="chip"><span class="dot"></span> طراحی آینده‌گرا</span>
+        <span class="chip"><span class="dot"></span> انیمیشن طبیعی</span>
+        <span class="chip"><span class="dot"></span> توسعه آسان</span>
+        <span class="chip"><span class="dot"></span> سازگار با موبایل</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Showcase -->
+  <section id="showcase" class="section">
+    <div class="grid">
+      <div class="card"><h3>هرو سینماتیک</h3><p>گرادیان‌های زنده و بابل‌های نورانی متغیر.</p></div>
+      <div class="card"><h3>تجربه اسکرول</h3><p>حرکت پارالاکس ملایم و افکت‌های عمق.</p></div>
+      <div class="card"><h3>تعامل ظریف</h3><p>فیدبک بصری روی هاور و درگ موس.</p></div>
+    </div>
+  </section>
+
+  <!-- Contact -->
+  <section id="contact" class="section">
+    <div class="tilt-card" style="height:220px">
+      <div class="tilt-glow"></div>
+      <div class="tilt-inner">
+        <div class="tilt-title">آماده‌ای سفارشی‌سازی کنی؟ کامپوننت‌ها را تکثیر و رنگ‌ها را تغییر بده.</div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">ساخته شده با عشق و GSAP — قابل استفاده در هر پروژه‌ای</footer>
+
+  <script>
+    // Register plugins
+    gsap.registerPlugin(ScrollTrigger);
+
+    // Floating orbs animation
+    gsap.to(".o1",{ x:40, y:20, duration:8, yoyo:true, repeat:-1, ease:"sine.inOut" });
+    gsap.to(".o2",{ x:-30, y:-10, duration:10, yoyo:true, repeat:-1, ease:"sine.inOut" });
+    gsap.to(".o3",{ x:20, y:-30, duration:12, yoyo:true, repeat:-1, ease:"sine.inOut" });
+
+    // Hero entrance
+    gsap.from(".kicker",{ y:20, opacity:0, duration:.7, ease:"power3.out" });
+    gsap.from("h1",{ y:30, opacity:0, duration:.9, delay:.1, ease:"power3.out" });
+    gsap.from(".subtitle",{ y:20, opacity:0, duration:.8, delay:.2, ease:"power3.out" });
+    gsap.from(".cta .btn",{ y:18, opacity:0, duration:.6, delay:.25, stagger:.08, ease:"power3.out" });
+
+    // Magnetic buttons
+    document.querySelectorAll(".magnet").forEach(btn=>{
+      const strength = Number(btn.dataset.strength || 15);
+      btn.addEventListener("pointermove",(e)=>{
+        const r = btn.getBoundingClientRect();
+        const x = e.clientX - r.left - r.width/2;
+        const y = e.clientY - r.top - r.height/2;
+        btn.style.setProperty("--mx", x/strength + "px");
+        btn.style.setProperty("--my", y/strength + "px");
+        const spark = btn.querySelector(".spark") || (()=>{ const s=document.createElement("span"); s.className="spark"; btn.appendChild(s); return s })();
+        const mx = ((e.clientX - r.left)/r.width)*100 + "%";
+        const my = ((e.clientY - r.top)/r.height)*100 + "%";
+        spark.style.setProperty("--mx", mx);
+        spark.style.setProperty("--my", my);
+      });
+      btn.addEventListener("pointerleave",()=>{ btn.style.setProperty("--mx","0px"); btn.style.setProperty("--my","0px"); });
+    });
+
+    // Tilt card interaction
+    const tiltCards = document.querySelectorAll(".tilt-card");
+    tiltCards.forEach(card=>{
+      const inner = card.querySelector(".tilt-inner");
+      const glow = card.querySelector(".tilt-glow");
+      const max = 8;
+      let anim;
+      card.addEventListener("pointermove",(e)=>{
+        const r = card.getBoundingClientRect();
+        const px = (e.clientX - r.left)/r.width - .5;
+        const py = (e.clientY - r.top)/r.height - .5;
+        const rx = (-py * max).toFixed(2);
+        const ry = (px * max).toFixed(2);
+        inner.style.setProperty("--rx", rx + "deg");
+        inner.style.setProperty("--ry", ry + "deg");
+        glow.style.setProperty("--gx", (px*100+50)+"%");
+        glow.style.setProperty("--gy", (py*100+50)+"%");
+        anim && anim.kill();
+        anim = gsap.to(inner, { duration:.08, ease:"none" }); // keep GPU active
+      });
+      card.addEventListener("pointerleave",()=>{
+        inner.style.setProperty("--rx","0deg");
+        inner.style.setProperty("--ry","0deg");
+      });
+    });
+
+    // Cards reveal on scroll
+    gsap.utils.toArray(".card").forEach((el, i)=>{
+      const tl = gsap.timeline({
+        scrollTrigger:{
+          trigger: el,
+          start: "top 85%",
+          toggleActions: "play none none reverse"
+        }
+      });
+      tl.to(el, { opacity:1, y:0, scale:1, duration:.6, ease:"power3.out", delay: i%3 * 0.05 });
+      el.addEventListener("pointermove",(e)=>{
+        const r = el.getBoundingClientRect();
+        el.style.setProperty("--mx", ((e.clientX - r.left)/r.width)*100 + "%");
+        el.style.setProperty("--my", ((e.clientY - r.top)/r.height)*100 + "%");
+      });
+    });
+
+    // Marquee
+    const track = document.getElementById("marquee");
+    let marqueeX = 0;
+    function loop(){
+      marqueeX -= .6;
+      track.style.transform = `translateX(${marqueeX}px)`;
+      if (Math.abs(marqueeX) > track.scrollWidth/2) marqueeX = 0;
+      requestAnimationFrame(loop);
+    }
+    // Duplicate content for seamless loop
+    track.innerHTML += track.innerHTML;
+    loop();
+
+    // Subtle parallax on scroll (hero + orbs)
+    gsap.to(".hero",{ yPercent:-4, ease:"none",
+      scrollTrigger:{ trigger:".hero", start:"top top", end:"bottom top", scrub:1 }
+    });
+    gsap.to(".orbs",{ yPercent:6, ease:"none",
+      scrollTrigger:{ trigger:".section", start:"top bottom", end:"bottom top", scrub:1 }
+    });
+  </script>
+</body>
+</html>

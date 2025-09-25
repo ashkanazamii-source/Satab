@@ -35,11 +35,12 @@ import { ShiftProfilesModule } from './shifts/shift-profiles.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TemporaryAssignmentsModule } from './temporary-assignments/temporary-assignments.module';
 
+
 @Module({
   imports: [
     EventEmitterModule.forRoot(),   // ⬅️ اینجا باید باشه
     ScheduleModule.forRoot(),   // ← فقط یک بار
-
+    
     // ENV
     ConfigModule.forRoot({ isGlobal: true }),
 

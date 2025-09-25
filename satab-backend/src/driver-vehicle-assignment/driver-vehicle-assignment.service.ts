@@ -1,12 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, IsNull } from 'typeorm';
+import { Repository, IsNull, LessThanOrEqual } from 'typeorm';
 import { DriverVehicleAssignment } from './driver-vehicle-assignment.entity';
 import { DataSource } from 'typeorm';
 import { InjectDataSource } from '@nestjs/typeorm';
 
 type StartOptions = { at?: Date }; // برای RFID: timestamp اختیاری
-type EndOptions   = { at?: Date };
+type EndOptions = { at?: Date };
 
 @Injectable()
 export class DriverVehicleAssignmentService {
@@ -14,7 +14,22 @@ export class DriverVehicleAssignmentService {
     @InjectRepository(DriverVehicleAssignment)
     private readonly repo: Repository<DriverVehicleAssignment>,
     @InjectDataSource() private readonly dataSource: DataSource,
-  ) {}
+  ) { }
+  // driver-vehicle-assignment.service.ts
+  // ✅ رانندهٔ منصوبِ یک خودرو در یک لحظهٔ مشخص (شامل بازه‌های بسته/باز)
+  async getDriverByVehicleAt(vehicleId: number, at: Date): Promise<number | null> {
+    const row = await this.repo.createQueryBuilder('a')
+      .select(['a.driver_id'])
+      .where('a.vehicle_id = :vid', { vid: vehicleId })
+      .andWhere('a.started_at <= :at', { at })
+      .andWhere('(a.ended_at IS NULL OR a.ended_at > :at)', { at })
+      .orderBy('a.started_at', 'DESC')
+      .getRawOne<{ a_driver_id: number }>();
+
+    return row?.a_driver_id ?? null;
+  }
+
+
 
   /** شروع انتساب (اتمی + idempotent) */
   async startAssignment(driverId: number, vehicleId: number, opts: StartOptions = {}) {
@@ -30,18 +45,22 @@ export class DriverVehicleAssignmentService {
       if (existingSame) return existingSame;
 
       // 1) بستن هر انتسابِ بازِ راننده
+      // 1) بستن هر انتساب باز راننده
       await r.createQueryBuilder()
         .update(DriverVehicleAssignment)
-        .set({ ended_at: at })
+        .set({ ended_at: () => `GREATEST(started_at + interval '1 second', :at)` })
         .where('driver_id = :driverId AND ended_at IS NULL', { driverId })
+        .setParameters({ at })
         .execute();
 
-      // 2) بستن هر انتسابِ باز روی همین خودرو
+      // 2) بستن هر انتساب باز روی همین خودرو
       await r.createQueryBuilder()
         .update(DriverVehicleAssignment)
-        .set({ ended_at: at })
+        .set({ ended_at: () => `GREATEST(started_at + interval '1 second', :at)` })
         .where('vehicle_id = :vehicleId AND ended_at IS NULL', { vehicleId })
+        .setParameters({ at })
         .execute();
+
 
       // 3) ایجاد رکورد جدید
       const assign = r.create({
@@ -74,7 +93,7 @@ export class DriverVehicleAssignmentService {
   /** گزارش امروزِ زیرمجموعه‌های SA (Postgres) */
   async listTodayForSuperAdmin(superAdminId: number, day = new Date()) {
     const start = new Date(day); start.setHours(0, 0, 0, 0);
-    const end = new Date(day);   end.setHours(23, 59, 59, 999);
+    const end = new Date(day); end.setHours(23, 59, 59, 999);
 
     const rows = await this.dataSource.query(
       `

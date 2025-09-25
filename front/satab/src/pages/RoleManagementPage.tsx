@@ -840,9 +840,10 @@ export default function RoleManagementPage() {
     <>
       {/* فقط یک‌بار اینجا؛ برای همهٔ نقش‌ها فعال است و بالای کارت نمایش می‌آید */}
       <AnalyticsHoverPortal />
+
+ 
       {body}
-    </>
-  );
+    </>);
 }
 
 interface UserNode {
@@ -1814,15 +1815,15 @@ function ManagerRoleSection({
 
       <h2>مدیریت نقش‌ها (مدیرکل)</h2>
 
-      <Button variant="contained" onClick={() => setAddOpen(true)} sx={{ mb: 2 }}>
+      <Button variant="contained" onClick={() => setAddOpen(true)} sx={{ mb: 2 }} >
         افزودن سوپرادمین جدید
       </Button>
 
       {/* نوار انتخاب سوپرادمین‌ها در بالا */}
       {treeLoading ? (
-        <div>در حال بروزرسانی...</div>
+        <div className="fade-in-up">در حال بروزرسانی...</div>
       ) : saList.length === 0 ? (
-        <div style={{ color: '#888' }}>سوپرادمینی یافت نشد.</div>
+        <div style={{ color: '#4b5563' }} data-badge className="fade-in-up">سوپرادمینی یافت نشد.</div>
       ) : (
         <>
           <SuperAdminStrip

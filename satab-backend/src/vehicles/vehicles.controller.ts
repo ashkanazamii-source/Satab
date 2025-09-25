@@ -1,4 +1,3 @@
-// src/vehicles/vehicles.controller.ts
 import {
   Body,
   Controller,
@@ -25,6 +24,7 @@ import { AclGuard } from '../acl/acl.guard';
 import { ACL } from '../acl/acl.decorator';
 import { InternalServerErrorException, Logger } from '@nestjs/common';
 import { CreateRouteDto } from '../dto/create-route.dto';
+import { GetTrackQueryDto } from '../dto/get-track-query.dto'; // مسیر را متناسب با پروژه خود تنظیم کنید
 
 @UseGuards(JwtAuthGuard, AclGuard)
 @Controller('vehicles')
@@ -38,6 +38,39 @@ export class VehiclesController {
   @Get('by-plate/search')
   findByPlate(@Query('country') country: string, @Query('plate') plate: string) {
     return this.service.findByPlate(country, plate);
+  }
+  @ACL({ roles: [1, 2, 3, 4, 5] }) // سطح دسترسی مناسب را تعیین کنید
+  @Get(':id/track')
+  async getVehicleTrack(
+    @Param('id', ParseIntPipe) id: number,
+    @Query() query: GetTrackQueryDto,
+  ) {
+    // اگر تاریخ پایان داده نشود، زمان حال در نظر گرفته می‌شود
+    const toDate = query.to ? new Date(query.to) : new Date();
+
+    // اگر تاریخ شروع داده نشود، ۲۴ ساعت قبل از تاریخ پایان در نظر گرفته می‌شود
+    const fromDate = query.from
+      ? new Date(query.from)
+      : new Date(toDate.getTime() - 24 * 60 * 60 * 1000); // 24 hours ago
+
+    if (fromDate > toDate) {
+      throw new BadRequestException('تاریخ شروع نمی‌تواند بعد از تاریخ پایان باشد.');
+    }
+
+    // فراخوانی متد موجود در سرویس
+    const dailyTracks = await this.service.getVehicleTrack(id, fromDate, toDate);
+
+    // تجمیع تمام نقاط از روزهای مختلف در یک آرایه واحد برای راحتی فرانت‌اند
+    const allPoints = dailyTracks.flatMap(day => day.track_points || []);
+
+    // ارسال پاسخ در یک فرمت استاندارد
+    return {
+      vehicle_id: id,
+      from: fromDate.toISOString(),
+      to: toDate.toISOString(),
+      points_count: allPoints.length,
+      points: allPoints,
+    };
   }
 
   @Get('accessible')
@@ -72,6 +105,32 @@ export class VehiclesController {
   @Get('responsible/my')
   async listMine(@Req() req: any, @Query('limit', new DefaultValuePipe(1000), ParseIntPipe) limit: number) {
     return this.service.listMineByRole(+req.user.id, limit);
+  }
+  @ACL({ roles: [1, 2, 3, 4, 5] })
+  @Get(':id/stations/terminals')
+  async getStationTerminals(@Param('id', ParseIntPipe) id: number) {
+    const res = await this.service.getStationTerminals(id);
+    return {
+      count: res.count,
+      first_id: res.first?.id ?? null,
+      last_id: res.last?.id ?? null,
+      first: res.first,  // شامل name/lat/lng/radius_m
+      last: res.last,
+    };
+  }
+
+  /** بررسی اینکه یک نقطهٔ فعلی داخل «first» است یا «last» (یا هیچ‌کدام) */
+  @ACL({ roles: [1, 2, 3, 4, 5] })
+  @Post(':id/stations/terminals/which')
+  async whichTerminal(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { lat: number; lng: number }
+  ) {
+    if (typeof body?.lat !== 'number' || typeof body?.lng !== 'number') {
+      throw new BadRequestException('lat/lng الزامی و عددی هستند');
+    }
+    const where = await this.service.whichTerminalAtPoint(id, { lat: +body.lat, lng: +body.lng });
+    return { where }; // 'first' | 'last' | null
   }
 
   // ژئوفنس مسیر جاری: رویدادها

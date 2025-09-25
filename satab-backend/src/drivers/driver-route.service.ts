@@ -2,6 +2,8 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
@@ -9,10 +11,12 @@ import {
   Between,
   FindOptionsWhere,
   FindManyOptions,
+  In,
 } from 'typeorm';
 import { Users } from '../users/users.entity';
 import { getDistance } from 'geolib';
 import { DriverRoute, DriverRouteStatus } from './driver-route.entity';
+import { DriverRouteGateway } from './driver-route.gateway'; // ✅ ایمپورت کردن Gateway
 
 type PointInput = {
   lat: number;
@@ -31,6 +35,8 @@ type MonitorKey =
   | 'stations'
   | 'routes'
   | 'consumables';
+
+
 
 const VALID_MONITOR_KEYS: ReadonlySet<MonitorKey> = new Set<MonitorKey>([
   'gps',
@@ -60,11 +66,15 @@ function sanitizeKeys(input: unknown): MonitorKey[] {
 
 @Injectable()
 export class DriverRouteService {
+  dailyTrackRepo: any;
+  dataSource: any;
   constructor(
     @InjectRepository(DriverRoute)
     private readonly routeRepo: Repository<DriverRoute>,
     @InjectRepository(Users)
     private readonly userRepo: Repository<Users>,
+    @Inject(forwardRef(() => DriverRouteGateway))
+    private readonly gateway: DriverRouteGateway,
   ) { }
 
   /** محاسبه مسافت بر حسب کیلومتر */
@@ -79,6 +89,57 @@ export class DriverRouteService {
     }
     return total / 1000;
   }
+  // DriverRouteService
+  async addRouteMeta(
+    routeId: number,
+    meta: {
+      ts: string;
+      ignition?: boolean | null;
+      idle_time?: number | null;
+      odometer?: number | null;
+      engine_temp?: number | null;
+    },
+  ) {
+    // وجود و active بودن مسیر
+    const route = await this.routeRepo.findOne({ where: { id: routeId } });
+    if (!route) throw new NotFoundException('مسیر پیدا نشد');
+    if (route.status !== DriverRouteStatus.active) return route;
+
+    // آبجکت رویداد
+    const ev: Record<string, any> = { ts: meta.ts };
+    if (meta.ignition !== undefined) ev.ignition = meta.ignition;
+    if (meta.idle_time !== undefined) ev.idle_time = meta.idle_time;
+    if (meta.odometer !== undefined) ev.odometer = meta.odometer;
+    if (meta.engine_temp !== undefined) ev.engine_temp = meta.engine_temp;
+
+    // تلاش برای آپدیت اتمی (PostgreSQL)
+    try {
+      const updated = await this.routeRepo.query(
+        `
+      UPDATE driver_routes
+      SET telemetry_events = COALESCE(telemetry_events, '[]'::jsonb) || $1::jsonb
+      WHERE id = $2 AND status = 'active'
+      RETURNING *;
+      `,
+        [JSON.stringify([ev]), routeId],
+      );
+      if (updated?.[0]) {
+        // برگشتن رکورد آپدیت شده (TypeORM plain → object)
+        return this.routeRepo.create(updated[0]);
+      }
+    } catch {
+      // اگر DB غیر Postgres بود یا کوئری خطا داد، fallback:
+    }
+
+    // fallback: read-modify-save
+    const arr = Array.isArray((route as any).telemetry_events)
+      ? (route as any).telemetry_events
+      : [];
+    (route as any).telemetry_events = [...arr, ev];
+    return this.routeRepo.save(route);
+  }
+
+
 
   /** مسیر فعالِ فعلی راننده (اگر باشد) */
   async getActiveRoute(driverId: number) {
@@ -89,63 +150,209 @@ export class DriverRouteService {
   }
 
   /** شروع مسیر جدید */
+  // DriverRouteService.startRoute (نسخهٔ درست)
   async startRoute(driverId: number, vehicleId?: number) {
     const driver = await this.userRepo.findOne({ where: { id: driverId } });
     if (!driver) throw new NotFoundException('راننده پیدا نشد');
 
-    // بستن مسیر فعال قبلی
+    // بستن route فعال قبلی (اگر هست)
     const active = await this.getActiveRoute(driverId);
     if (active) {
       active.status = DriverRouteStatus.finished;
       active.finished_at = new Date();
-      active.total_distance_km = this.calculateDistance(active.gps_points || []);
+      // چون در addPoint افزایشی می‌زنیم، همین مقدار کفایت می‌کند:
+      // active.total_distance_km = this.calculateDistance(active.gps_points || []);
       await this.routeRepo.save(active);
     }
+
+    // پیدا کردن vehicle/assignment از انتساب باز (اگر vehicleId پاس نشده)
+    let vId = vehicleId ?? null;
+    let assignmentId: number | null = null;
+    if (vId == null) {
+      const row = await this.userRepo.query(
+        `
+      SELECT id, vehicle_id
+      FROM driver_vehicle_assignments
+      WHERE driver_id = $1 AND ended_at IS NULL
+      ORDER BY started_at DESC
+      LIMIT 1
+      `,
+        [driverId],
+      );
+      if (row?.length) {
+        assignmentId = Number(row[0].id);
+        vId = row[0].vehicle_id != null ? Number(row[0].vehicle_id) : null;
+      }
+    }
+
+    const now = new Date();
+    const dayBucket = now.toISOString().slice(0, 10); // YYYY-MM-DD
 
     const route = this.routeRepo.create({
       driver,
       driver_id: driver.id,
-      gps_points: [],
       status: DriverRouteStatus.active,
-      vehicle_id: vehicleId ?? null,
+      vehicle_id: vId ?? null,
+      assignment_id: assignmentId,
+      started_at: now,
+      day_bucket: dayBucket,
+      // کش‌ها و داده‌های اولیه
+      gps_points: [],
+      points_count: 0,
+      total_distance_km: 0,
+      last_lat: null,
+      last_lng: null,
+      last_point_ts: null,
+      telemetry_events: [], // اگر ستون را اضافه کرده‌ای
     });
 
     return this.routeRepo.save(route);
   }
 
-  /** افزودن نقطه */
+
+
   async addPoint(routeId: number, point: PointInput) {
+    // مرحله ۱: مسیر فعال را پیدا کن
     const route = await this.routeRepo.findOne({ where: { id: routeId } });
-    if (!route) throw new NotFoundException('مسیر پیدا نشد');
+    if (!route) {
+      throw new NotFoundException('مسیر پیدا نشد');
+    }
     if (route.status !== DriverRouteStatus.active) {
       throw new BadRequestException('این مسیر بسته شده است');
     }
 
+    // مرحله ۲: مختصات ورودی را اعتبارسنجی کن
+    const lat = Number(point.lat);
+    const lng = Number(point.lng);
     if (
-      typeof point.lat !== 'number' ||
-      typeof point.lng !== 'number' ||
-      point.lat < -90 || point.lat > 90 ||
-      point.lng < -180 || point.lng > 180
+      !Number.isFinite(lat) || !Number.isFinite(lng) ||
+      lat < -90 || lat > 90 || lng < -180 || lng > 180
     ) {
       throw new BadRequestException('مختصات نامعتبر است');
     }
 
     const ts = point.ts ?? point.timestamp ?? new Date().toISOString();
-    const p = { lat: point.lat, lng: point.lng, timestamp: ts };
+    const existingPoints = Array.isArray(route.gps_points) ? route.gps_points : [];
+    const newPointObject = { lat, lng, timestamp: ts };
 
-    // مسافت افزایشی
-    const pts = route.gps_points || [];
-    if (pts.length > 0) {
-      const last = pts[pts.length - 1];
-      const incMeters = getDistance(
-        { latitude: last.lat, longitude: last.lng },
-        { latitude: p.lat, longitude: p.lng },
+    // مرحله ۳: تمام تغییرات را روی آبجکت در حافظه اعمال کن
+
+    // ۱. مسافت را به صورت افزایشی آپدیت کن
+    if (existingPoints.length > 0) {
+      const lastPoint = existingPoints[existingPoints.length - 1];
+      const distanceIncrementMeters = getDistance(
+        { latitude: lastPoint.lat, longitude: lastPoint.lng },
+        { latitude: newPointObject.lat, longitude: newPointObject.lng },
       );
-      route.total_distance_km = (route.total_distance_km || 0) + incMeters / 1000;
+      route.total_distance_km = (route.total_distance_km || 0) + distanceIncrementMeters / 1000;
     }
 
-    route.gps_points = [...pts, p];
-    return this.routeRepo.save(route);
+    // ۲. نقطه جدید را به آرایه اضافه کن
+    route.gps_points = [...existingPoints, newPointObject];
+
+    // ۳. داده‌های کش‌شده دیگر را آپدیت کن
+    route.points_count = (route.points_count || 0) + 1;
+    route.last_lat = newPointObject.lat;
+    route.last_lng = newPointObject.lng;
+    route.last_point_ts = new Date(ts);
+
+    // مرحله ۴: آبجکت کامل و آپدیت‌شده را فقط یک بار در دیتابیس ذخیره کن
+    const savedRoute = await this.routeRepo.save(route);
+
+    // مرحله ۵: آبجکت ذخیره‌شده و نهایی را برای همه broadcast کن
+    // (اطمینان حاصل می‌کند که همه دقیقاً همان چیزی را می‌بینند که در دیتابیس است)
+    this.gateway.broadcastLocationUpdate(savedRoute);
+
+    // مرحله ۶: آبجکت نهایی را برگردان
+    return savedRoute;
+  }
+  async processUnprocessedAssignments(): Promise<{ created_routes: number; processed_assignments: number; }> {
+    console.log(`[PROCESS_PAST_DATA] Starting job to find and process unprocessed assignments...`);
+
+    const unprocessedAssignments = await this.dataSource.query(`
+        SELECT * FROM "driver_vehicle_assignments" AS dva
+        WHERE dva.ended_at IS NOT NULL 
+        AND NOT EXISTS (
+            SELECT 1 
+            FROM "driver_routes" AS dr 
+            WHERE dr.assignment_id = dva.id
+        )
+    `);
+
+    if (unprocessedAssignments.length === 0) {
+      console.log(`[PROCESS_PAST_DATA] No unprocessed assignments found. All data is up to date.`);
+      return { created_routes: 0, processed_assignments: 0 };
+    }
+
+    console.log(`[PROCESS_PAST_DATA] Found ${unprocessedAssignments.length} unprocessed assignment(s). Starting processing...`);
+
+    const createdRoutes: DriverRoute[] = [];
+
+    for (const assignment of unprocessedAssignments) {
+      const started_at = new Date(assignment.started_at);
+      const ended_at = new Date(assignment.ended_at);
+
+      // ✅ ۱. پیدا کردن تمام تاریخ‌هایی که اساینمنت پوشش می‌دهد
+      const datesToFetch = getDatesBetween(started_at, ended_at);
+      if (datesToFetch.length === 0) continue;
+
+      // ✅ ۲. دریافت ترک‌های روزانه برای تمام این تاریخ‌ها
+      const vehicleTracks = await this.dailyTrackRepo.find({
+        where: {
+          vehicle_id: assignment.vehicle_id,
+          track_date: In(datesToFetch),
+        }
+      });
+
+      if (vehicleTracks.length === 0) {
+        console.warn(`[PROCESS_PAST_DATA] Skipping assignment ID ${assignment.id}: No daily tracks found for vehicle ${assignment.vehicle_id} in date range ${datesToFetch.join(', ')}.`);
+        continue;
+      }
+
+      // ✅ ۳. تجمیع تمام نقاط از تمام روزها
+      const allVehiclePoints = vehicleTracks.flatMap(track => track.track_points || []);
+      console.log(`[PROCESS_PAST_DATA]  - Processing assignment ID: ${assignment.id} for driver ID: ${assignment.driver_id}. Found ${allVehiclePoints.length} vehicle points across ${vehicleTracks.length} day(s).`);
+
+      const startTime = started_at.getTime();
+      const endTime = ended_at.getTime();
+
+      const missionPoints = allVehiclePoints.filter(point => {
+        const pointTime = new Date(point.timestamp).getTime();
+        return pointTime >= startTime && pointTime <= endTime;
+      });
+
+      if (missionPoints.length === 0) {
+        console.log(`[PROCESS_PAST_DATA]  - Skipping assignment ID ${assignment.id}: No points found in the exact time range.`);
+        continue;
+      }
+
+      console.log(`[PROCESS_PAST_DATA]    - Filtered to ${missionPoints.length} points. Creating DriverRoute...`);
+
+      const newDriverRoute = this.routeRepo.create({
+        driver_id: assignment.driver_id,
+        vehicle_id: assignment.vehicle_id,
+        assignment_id: assignment.id,
+        started_at,
+        finished_at: ended_at,
+        day_bucket: started_at.toISOString().slice(0, 10),
+        status: DriverRouteStatus.finished,
+        gps_points: missionPoints,
+        points_count: missionPoints.length,
+        total_distance_km: this.calculateDistance(missionPoints),
+        last_lat: missionPoints[missionPoints.length - 1].lat,
+        last_lng: missionPoints[missionPoints.length - 1].lng,
+        last_point_ts: new Date(missionPoints[missionPoints.length - 1].timestamp),
+      });
+
+      const savedRoute = await this.routeRepo.save(newDriverRoute);
+      createdRoutes.push(savedRoute);
+    }
+
+    console.log(`[PROCESS_PAST_DATA] Job finished. Processed ${unprocessedAssignments.length} assignments and created ${createdRoutes.length} new routes.`);
+    return {
+      created_routes: createdRoutes.length,
+      processed_assignments: unprocessedAssignments.length,
+    };
   }
 
   /** پایان مسیر */
@@ -156,9 +363,32 @@ export class DriverRouteService {
 
     route.status = DriverRouteStatus.finished;
     route.finished_at = new Date();
-    route.total_distance_km = this.calculateDistance(route.gps_points || []);
+    // اگر دوست داری دوباره exact محاسبه کنی، این خط رو آنکامنت کن:
+    // route.total_distance_km = this.calculateDistance(route.gps_points || []);
     return this.routeRepo.save(route);
   }
+  // داخل کلاس DriverRouteService
+
+  /** تعداد مأموریت‌ها (Routeهای به پایان رسیده) برای یک راننده در بازه‌ی زمانی اختیاری */
+  async getMissionCount(
+    driverId: number,
+    opts?: { from?: string | Date; to?: string | Date }
+  ): Promise<{ driver_id: number; missions: number }> {
+    const where: FindOptionsWhere<DriverRoute> = {
+      driver_id: driverId,
+      status: DriverRouteStatus.finished, // فقط پایان‌یافته‌ها = مأموریت
+    };
+
+    if (opts?.from || opts?.to) {
+      const from = opts.from ? new Date(opts.from) : new Date('1970-01-01T00:00:00Z');
+      const to = opts.to ? new Date(opts.to) : new Date();
+      (where as any).started_at = Between(from, to);
+    }
+
+    const missions = await this.routeRepo.count({ where });
+    return { driver_id: driverId, missions };
+  }
+
 
   /** لیست مسیرهای راننده با فیلتر تاریخ/وضعیت + صفحه‌بندی */
   async getRoutesByDriver(
@@ -383,4 +613,15 @@ export class DriverRouteService {
     return opts.includes(key);
   }
 
+}
+function getDatesBetween(startDate: Date, endDate: Date): string[] {
+  const dates: string[] = [];
+  let currentDate = new Date(startDate.toISOString().slice(0, 10) + 'T00:00:00Z');
+  const finalDate = new Date(endDate.toISOString().slice(0, 10) + 'T00:00:00Z');
+
+  while (currentDate <= finalDate) {
+    dates.push(currentDate.toISOString().slice(0, 10));
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+  return dates;
 }

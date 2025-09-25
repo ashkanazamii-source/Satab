@@ -14,6 +14,10 @@ import { Type } from 'class-transformer';
 import { DriverRouteService } from './driver-route.service';
 import { DriverRouteStatus } from './driver-route.entity';
 
+class MissionCountQueryDto {
+  @IsOptional() @IsISO8601() from?: string;
+  @IsOptional() @IsISO8601() to?: string;
+}
 class StartRouteDto {
   @IsOptional()
   @Type(() => Number)
@@ -99,7 +103,16 @@ export class DriverRouteController {
   finishRoute(@Param('routeId', ParseIntPipe) routeId: number) {
     return this.service.finishRoute(routeId);
   }
-
+  @Get('missions/count/:driverId')
+  getMissionCount(
+    @Param('driverId', ParseIntPipe) driverId: number,
+    @Query() q: MissionCountQueryDto,
+  ) {
+    return this.service.getMissionCount(driverId, {
+      from: q.from ? new Date(q.from) : undefined,
+      to: q.to ? new Date(q.to) : undefined,
+    });
+  }
   /** لیست مسیرهای یک راننده + فیلتر زمانی/وضعیت + صفحه‌بندی */
   @Get('by-driver/:driverId')
   getRoutes(
@@ -125,6 +138,11 @@ export class DriverRouteController {
       to: q.to ? new Date(q.to) : undefined,
     });
   }
+  @Post('process-unprocessed-assignments')
+  processUnprocessed() {
+    return this.service.processUnprocessedAssignments();
+  }
+  
   @Get('options/:driverId')
   getDriverOptions(
     @Param('driverId', ParseIntPipe) driverId: number,
@@ -148,4 +166,5 @@ export class DriverRouteController {
   getActiveRoute(@Param('driverId', ParseIntPipe) driverId: number) {
     return this.service.getActiveRoute(driverId);
   }
+
 }

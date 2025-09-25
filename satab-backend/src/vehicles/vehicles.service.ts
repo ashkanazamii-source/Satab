@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, ForbiddenException, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository, Not } from 'typeorm';
 import { Vehicle } from '../vehicles/vehicle.entity';
@@ -6,7 +6,7 @@ import { CreateVehicleDto } from '../dto/create-vehicle.dto';
 import { UpdateVehicleDto } from '../dto/create-vehicle.dto';
 import { normalizePlate } from '../dto/create-vehicle.dto';
 import { VehiclePolicy } from '../vehicle-policies/vehicle-policy.entity';
-import { VehicleTrack } from './vehicle-track.entity';
+import { VehicleDailyTrack, Coordinates } from './vehicle_daily_tracks.entity'; // ✅ هم Entity و هم Coordinates ایمپورت شده‌اند
 import { VehiclesGateway } from './vehicles.gateway';
 import { Between, In } from 'typeorm';
 import { VehicleStation } from './vehicle-station.entity';
@@ -20,25 +20,40 @@ import { CreateRouteDto } from 'src/dto/create-route.dto';
 import { DeepPartial } from 'typeorm';
 import { ViolationsService } from '../telemetry/violations.service'; // ⬅️ اضافه
 import { DriverVehicleAssignmentService } from '../driver-vehicle-assignment/driver-vehicle-assignment.service';
+import { DriverRouteService } from 'src/drivers/driver-route.service';
 
 @Injectable()
 export class VehiclesService {
   constructor(
-    @InjectRepository(VehicleStation) private readonly stationRepo: Repository<VehicleStation>,
-    @InjectRepository(VehicleTrack) private readonly trackRepo: Repository<VehicleTrack>,
-    @InjectRepository(Vehicle) private readonly repo: Repository<Vehicle>,
-    @InjectRepository(VehiclePolicy) private readonly policyRepo: Repository<VehiclePolicy>,
-    @InjectRepository(Route) private readonly routeRepo: Repository<Route>,
-    @InjectRepository(RouteStation) private readonly routeStationRepo: Repository<RouteStation>,
-    @InjectRepository(RouteGeofenceState) private readonly fenceStateRepo: Repository<RouteGeofenceState>,   // ⬅️
-    @InjectRepository(RouteGeofenceEvent) private readonly fenceEventRepo: Repository<RouteGeofenceEvent>,   // ⬅️
+
+    @InjectRepository(Vehicle)
+    private readonly repo: Repository<Vehicle>,
+    @InjectRepository(VehicleDailyTrack)
+    private readonly dailyTrackRepo: Repository<VehicleDailyTrack>,
+    @InjectRepository(VehicleStation)
+    private readonly stationRepo: Repository<VehicleStation>,
+    @InjectRepository(Route)
+    private readonly routeRepo: Repository<Route>,
+    @InjectRepository(RouteStation)
+    private readonly routeStationRepo: Repository<RouteStation>,
+    @InjectRepository(VehiclePolicy)
+    private readonly policyRepo: Repository<VehiclePolicy>,
+    @InjectRepository(RouteGeofenceState)
+    private readonly fenceStateRepo: Repository<RouteGeofenceState>,
+    @InjectRepository(RouteGeofenceEvent)
+    private readonly fenceEventRepo: Repository<RouteGeofenceEvent>,
     private readonly ds: DataSource,
     private readonly gw: VehiclesGateway,
     private readonly vehiclePolicies: VehiclePoliciesService,
     private readonly users: UserService,
-    private readonly violations: ViolationsService, // ⬅️ تزریق
+    private readonly violations: ViolationsService,
     private readonly assignments: DriverVehicleAssignmentService,
+
+    // ⚠️ forwardRef فقط روی خود پارامترِ سرویس
+    @Inject(forwardRef(() => DriverRouteService))
+    private readonly driverRoutes: DriverRouteService,
   ) { }
+
 
   private routeCache = new Map<number, { points: { lat: number; lng: number }[], threshold_m: number }>();
   private toMeters(latRef: number, lat: number, lng: number) {
@@ -46,7 +61,53 @@ export class VehiclesService {
     const mPerDegLng = 111_320 * Math.cos(latRef * Math.PI / 180);
     return { x: lng * mPerDegLng, y: lat * mPerDegLat };
   }
+  async getStationTerminals(vehicleId: number): Promise<{
+    first: VehicleStation | null;
+    last: VehicleStation | null;
+    count: number;
+  }> {
+    const stations = await this.stationRepo.find({
+      where: { vehicle_id: vehicleId },
+      order: { id: 'ASC' },
+      select: ['id', 'vehicle_id', 'owner_user_id', 'name', 'lat', 'lng', 'radius_m', 'created_at', 'updated_at'],
+    });
 
+    const count = stations.length;
+    if (count === 0) return { first: null, last: null, count };
+    if (count === 1) return { first: stations[0], last: stations[0], count };
+    return { first: stations[0], last: stations[count - 1], count };
+  }
+
+  /** فاصله دوبعدی ساده (m)؛ برای near-check داخل شعاع ایستگاه */
+  private haversineMeters(a: { lat: number, lng: number }, b: { lat: number, lng: number }) {
+    const R = 6371000; // m
+    const toRad = (x: number) => x * Math.PI / 180;
+    const dLat = toRad(b.lat - a.lat);
+    const dLng = toRad(b.lng - a.lng);
+    const la1 = toRad(a.lat), la2 = toRad(b.lat);
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+
+  /** تشخیص اینکه نقطهٔ فعلی داخل کدام ترمینال است (اگر هیچ‌کدام، null) */
+  async whichTerminalAtPoint(
+    vehicleId: number,
+    point: { lat: number; lng: number }
+  ): Promise<('first' | 'last' | null)> {
+    const { first, last } = await this.getStationTerminals(vehicleId);
+    if (!first || !last) return null;
+
+    const dFirst = this.haversineMeters(point, { lat: first.lat, lng: first.lng });
+    const dLast = this.haversineMeters(point, { lat: last.lat, lng: last.lng });
+
+    const insideFirst = dFirst <= (first.radius_m || 0);
+    const insideLast = dLast <= (last.radius_m || 0);
+
+    if (insideFirst && !insideLast) return 'first';
+    if (insideLast && !insideFirst) return 'last';
+    if (insideFirst && insideLast) return dFirst <= dLast ? 'first' : 'last';
+    return null;
+  }
   private distPointToSegmentMeters(p: { lat: number; lng: number }, a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
     // پروژه محلی روی صفحه (equirectangular around segment)
     const latRef = (a.lat + b.lat) / 2;
@@ -205,12 +266,14 @@ export class VehiclesService {
     this.gw.emitStationsChanged(st.vehicle_id, ownerUserId, { type: 'deleted', station_id: stationId });
     return { ok: true };
   }
+
   async ingestVehicleTelemetry(
     vehicleId: number,
     data: { ignition?: boolean; idle_time?: number; odometer?: number; engine_temp?: number; ts?: string }
   ) {
     const ts = data.ts ? new Date(data.ts) : new Date();
 
+    // 1) آپدیت خودِ Vehicle
     if (data.ignition !== undefined) {
       await this.applyIgnitionAccum(vehicleId, data.ignition, ts);
       this.gw.emitIgnition(vehicleId, data.ignition, ts.toISOString());
@@ -225,12 +288,58 @@ export class VehiclesService {
       patch.odometer_km = data.odometer;
       this.gw.emitOdometer(vehicleId, data.odometer, ts.toISOString());
     }
-
-
+    if (data.engine_temp !== undefined) {
+      // اگر ستون engine_temp در Vehicle داری، ذخیره‌اش کن
+      patch.engine_temp = data.engine_temp;
+    }
     if (Object.keys(patch).length) {
       await this.repo.update({ id: vehicleId }, patch);
     }
+
+    // 2) نسبت دادن به راننده در همان لحظه
+    const driverId = await this.assignments.getDriverByVehicleAt(vehicleId, ts);
+    if (!driverId) return; // در آن لحظه راننده‌ای روی این خودرو نبوده
+
+    const activeRoute = await this.driverRoutes.getActiveRoute(driverId);
+
+    // فقط اگر route فعال هست و به همین vehicle وصله، متای تله‌متری را روی route ذخیره کن
+    if (activeRoute && activeRoute.vehicle_id === vehicleId) {
+      await this.driverRoutes.addRouteMeta(activeRoute.id, {
+        ts: ts.toISOString(),
+        ignition: data.ignition ?? null,
+        idle_time: data.idle_time ?? null,
+        odometer: data.odometer ?? null,
+        engine_temp: data.engine_temp ?? null,
+      });
+
+      // نوتیفای سمت راننده (اختیاری)
+      (this.gw as any)?.server?.to(`user:${driverId}`)?.emit('driver:telemetry', {
+        route_id: activeRoute.id,
+        vehicle_id: vehicleId,
+        ts: ts.toISOString(),
+        ignition: data.ignition ?? null,
+        idle_time: data.idle_time ?? null,
+        odometer: data.odometer ?? null,
+        engine_temp: data.engine_temp ?? null,
+      });
+
+    } else {
+      // این‌جا یا route فعالی نیست، یا route فعال برای vehicle دیگری است.
+      // بسته به بیزنس:
+      // - می‌توانی هیچ کاری نکنی، یا
+      // - خودکار یک route جدید با همین vehicle بسازی (اگر نمی‌خواهی، این بخش را کامنت بگذار).
+      // const newRoute = await this.driverRoutes.startRoute(driverId, vehicleId);
+      // await this.driverRoutes.addRouteMeta(newRoute.id, {
+      //   ts: ts.toISOString(),
+      //   ignition: data.ignition ?? null,
+      //   idle_time: data.idle_time ?? null,
+      //   odometer: data.odometer ?? null,
+      //   engine_temp: data.engine_temp ?? null,
+      // });
+    }
   }
+
+
 
   async readVehicleTelemetry(vehicleId: number, keys: string[] = []) {
     const out: any = {};
@@ -323,27 +432,79 @@ export class VehiclesService {
 
 
 
-  async ingestVehiclePos(vehicleId: number, lat: number, lng: number, ts?: string) {
-    const when = ts ? new Date(ts) : new Date();
-    await this.trackRepo.insert({ vehicle_id: vehicleId, lat, lng, ts: when });
-    await this.checkRouteGeofence(vehicleId, lat, lng, when); // ⬅️ اضافه شد
-
-    // اگر در جدول vehicles ستون‌های last_location داری:
-    await this.repo.update({ id: vehicleId }, {
-      // @ts-ignore - بسته به اسکیمای خودت
-      last_location_lat: lat,
-      last_location_lng: lng,
-      last_location_ts: when as any,
-    });
-
-    // برادکست برای کلاینت‌ها (نام ایونت مطابق فرانت فعلی)
-    this.gw.emitVehiclePos(vehicleId, lat, lng, when.toISOString());
+  // متد کمکی برای تبدیل تاریخ
+  private toDateString(date: Date): string {
+    return date.toISOString().slice(0, 10);
   }
 
-  async getVehicleTrack(vehicleId: number, from: Date, to: Date) {
-    return this.trackRepo.find({
-      where: { vehicle_id: vehicleId, ts: Between(from, to) },
-      order: { ts: 'ASC' },
+
+
+  async ingestVehiclePos(vehicleId: number, lat: number, lng: number, ts?: string) {
+    const when = ts ? new Date(ts) : new Date();
+
+    // لاگ ورودی
+    console.log(`\n--- [START] Received point for Vehicle ID: ${vehicleId} at ${when.toISOString()}`);
+
+    // بخش ذخیره در آرشیو خودرو (این بخش را تغییر ندهید)
+    const trackDate = this.toDateString(when);
+    let dailyTrack = await this.dailyTrackRepo.findOneBy({ vehicle_id: vehicleId, track_date: trackDate });
+    const newPoint: Coordinates = { lat, lng };
+    if (dailyTrack) {
+      dailyTrack.track_points.push(newPoint);
+    } else {
+      dailyTrack = this.dailyTrackRepo.create({ vehicle_id: vehicleId, track_date: trackDate, track_points: [newPoint] });
+    }
+    await this.dailyTrackRepo.save(dailyTrack);
+    await this.repo.update({ id: vehicleId }, { last_location_lat: lat, last_location_lng: lng, last_location_ts: when });
+    this.gw.emitVehiclePos(vehicleId, lat, lng, when.toISOString());
+
+
+    // --- بخش عیب‌یابی ---
+    console.log(`LOG 1: Checking for assigned driver at timestamp: ${when.toISOString()}`);
+    const driverId = await this.assignments.getDriverByVehicleAt(vehicleId, when);
+
+    if (!driverId) {
+      console.error(`LOG 2: FAILED - No driver was found for this vehicle at this time.`);
+      console.log("--- [END] Finished processing point (no driver assignment found). ---");
+      return;
+    }
+
+    console.log(`LOG 3: SUCCESS - Found Driver ID: ${driverId}. Checking for their active route...`);
+    let activeRoute = await this.driverRoutes.getActiveRoute(driverId);
+
+    if (activeRoute && activeRoute.vehicle_id !== vehicleId) {
+      console.log(`LOG 3.5: Found active route ${activeRoute.id}, but it belongs to another vehicle. Finishing it.`);
+      await this.driverRoutes.finishRoute(activeRoute.id);
+      activeRoute = null;
+    }
+
+    if (activeRoute) {
+      console.log(`LOG 4: Active route found (ID: ${activeRoute.id}). Adding point to existing route.`);
+      await this.driverRoutes.addPoint(activeRoute.id, { lat, lng, ts: when.toISOString() });
+    } else {
+      console.log(`LOG 5: No active route found. Creating a new one for driver ${driverId}...`);
+      const newRoute = await this.driverRoutes.startRoute(driverId, vehicleId);
+      console.log(`LOG 6: New route created (ID: ${newRoute.id}). Adding the first point.`);
+      await this.driverRoutes.addPoint(newRoute.id, { lat, lng, ts: when.toISOString() });
+    }
+
+    console.log("--- [END] Finished processing driver logic successfully. ---");
+  }
+
+
+
+  async getVehicleTrack(vehicleId: number, from: Date, to: Date): Promise<VehicleDailyTrack[]> {
+    const fromDate = this.toDateString(from);
+    const toDate = this.toDateString(to);
+
+    return this.dailyTrackRepo.find({
+      where: {
+        vehicle_id: vehicleId,
+        track_date: Between(fromDate, toDate),
+      },
+      order: {
+        track_date: 'ASC',
+      },
     });
   }
 

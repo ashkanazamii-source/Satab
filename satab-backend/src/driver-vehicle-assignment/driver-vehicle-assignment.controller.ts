@@ -1,7 +1,8 @@
 // src/driver-vehicle-assignment/driver-vehicle-assignment.controller.ts
 import {
   Body, Controller, Get, Param, ParseIntPipe, Post,
-  UsePipes, ValidationPipe, UseGuards, UnauthorizedException, ForbiddenException
+  UsePipes, ValidationPipe, UseGuards, UnauthorizedException, ForbiddenException,
+  Query
 } from '@nestjs/common';
 import { DriverVehicleAssignmentService } from './driver-vehicle-assignment.service';
 import { StartAssignmentDto, EndAssignmentDto } from '../dto/assign.dto';
@@ -15,13 +16,21 @@ import { ACL } from '../acl/acl.decorator';                    // (اختیار�
 @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 @UseGuards(JwtAuthGuard) // ⬅️ کل روتر لاگین می‌خواهد
 export class DriverVehicleAssignmentController {
-  constructor(private readonly service: DriverVehicleAssignmentService) {}
+  constructor(private readonly service: DriverVehicleAssignmentService) { }
 
   @Post('start')
   start(@Body() dto: StartAssignmentDto) {
     return this.service.startAssignment(dto.driverId, dto.vehicleId);
   }
-
+  @Get('by-vehicle-at')
+  async driverByVehicleAt(
+    @Query('vehicle_id', ParseIntPipe) vehicleId: number,
+    @Query('at') at?: string,
+  ) {
+    const when = at ? new Date(at) : new Date();
+    const driverId = await this.service.getDriverByVehicleAt(vehicleId, when);
+    return { vehicle_id: vehicleId, at: when.toISOString(), driver_id: driverId };
+  }
   @Post('end')
   end(@Body() dto: EndAssignmentDto) {
     return this.service.endAssignment(dto.driverId);
