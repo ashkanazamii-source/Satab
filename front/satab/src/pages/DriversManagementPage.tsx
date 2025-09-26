@@ -1,6 +1,6 @@
 'use client';
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Collapse } from '@mui/material';
+import { ButtonGroup, Collapse } from '@mui/material';
 import {
   Box, Typography, CircularProgress, Paper, IconButton, Chip, ListItemAvatar, Accordion, AccordionSummary, AccordionDetails, Divider,
   List, ListItem, ListItemText, Avatar, Stack, TextField, InputAdornment, Tabs, Tab, Tooltip, Dialog, DialogTitle, DialogContent, DialogActions
@@ -75,8 +75,22 @@ import * as turf from '@turf/turf';
 import { CircleMarker } from 'react-leaflet';
 import type { Feature, MultiPolygon } from 'geojson';
 import type { AllGeoJSON } from '@turf/helpers';
+import ReplayIcon from '@mui/icons-material/Replay';
+import StopIcon from '@mui/icons-material/Stop';
 
 // ✅ تایپ نقشه از خود useMap
+const MAP_COLORS = {
+  track: '#1f7a1f', // سبز مسیر طی‌شده
+  trackGlow: '#8fd98f',
+  liveTail: '#0b4410',
+  route: '#0e5ec9', // آبی خود مسیر تعریف‌شده
+  corridor: '#8ab4f8', // کریدور مسیر (淡)
+  geofence: '#1565c0',   // خط مرز آبی
+  geofenceFill: '#bbdefb',   // آبی کم‌رنگ داخل
+  station: '#ff8c00', // ایستگاه‌ها
+  stationFill: '#ffe4c2',
+  violation: '#7b1fa2', // بنفش نقاط تخلف
+};
 
 type RLMap = ReturnType<typeof useMap>;
 const ACC = '#00c6be'; // فیروزه‌ای اکسنت، نه رو کل UI
@@ -2594,14 +2608,16 @@ function ManagerRoleSection({ user }: { user: User }) {
 
                 return (
                   <>
+                    {/* خط مسیر */}
                     <Polyline
                       positions={pts.map(p => [p.lat, p.lng] as [number, number])}
-                      pathOptions={{ weight: 3, color: '#0055dd', opacity: 0.9 }}
+                      pathOptions={{ color: MAP_COLORS.route, weight: 4 }}
                     />
+
+                    {/* کریدور مسیر */}
                     <Polygon
-                      positions={buildRouteBufferPolygon(pts, Math.max(1, threshold))
-                        .map(p => [p.lat, p.lng] as [number, number])}
-                      pathOptions={{ weight: 1, color: '#0055dd', fillOpacity: 0.2 }}
+                      positions={buildRouteBufferPolygon(pts, Math.max(1, threshold))}
+                      pathOptions={{ color: MAP_COLORS.corridor, weight: 1, fillOpacity: 0.15 }}
                     />
                   </>
                 );
@@ -3362,11 +3378,20 @@ function ManagerRoleSection({ user }: { user: User }) {
 
                       {/* پیش‌نمایش ژئوفنس */}
                       {dfGfMode === 'circle' && dfGfCircle.center && (
-                        <Circle center={[dfGfCircle.center.lat, dfGfCircle.center.lng]} radius={dfGfCircle.radius_m} />
+                        <Circle
+                          center={[dfGfCircle.center.lat, dfGfCircle.center.lng]}
+                          radius={dfGfCircle.radius_m}
+                          pathOptions={{ color: MAP_COLORS.geofence, weight: 2, fillColor: MAP_COLORS.geofenceFill, fillOpacity: 0.15 }}
+                        />
                       )}
+
                       {dfGfMode === 'polygon' && dfGfPoly.length >= 2 && (
-                        <Polygon positions={dfGfPoly.map(p => [p.lat, p.lng] as [number, number])} />
+                        <Polygon
+                          positions={dfGfPoly.map(p => [p.lat, p.lng] as [number, number])}
+                          pathOptions={{ color: MAP_COLORS.geofence, weight: 2, dashArray: '6 6', fillColor: MAP_COLORS.geofenceFill, fillOpacity: 0.12 }}
+                        />
                       )}
+
 
                       {/* ایستگاه‌های انتخاب‌شده */}
                       {dfStations.map((st, i) => (
@@ -4635,6 +4660,16 @@ function SuperAdminRoleSection({ user }: { user: User }) {
     created_at: string;           // ISO
   };
   const [toISO, setToISO] = useState<string>(() => new Date().toISOString());
+  const handlePlayFromStart = () => {
+    if (tab === 'drivers') { setShowDriverAnim(true); resetDriverAnim(); startDriverAnim(); }
+    else { setShowVehAnim(true); resetVehAnim(); startVehAnim(); }
+  };
+
+  const handleStop = () => {
+    if (tab === 'drivers') pauseDriverAnim();
+    else pauseVehAnim();
+  };
+
 
   const [violations, setViolations] = useState<Violation[]>([]);
   const [violationsLoading, setViolationsLoading] = useState(false);
@@ -4693,7 +4728,65 @@ function SuperAdminRoleSection({ user }: { user: User }) {
     const { data } = await api.get(`/vehicles/${vehicleId}/violations`, { params: { limit } });
     return data;
   }
+  const [driverSpeed, setDriverSpeed] = useState<1 | 2 | 3>(1);
+  const [vehSpeed, setVehSpeed] = useState<1 | 2 | 3>(1);
 
+  function useAnimatedPath(
+    points: [number, number][],
+    opts: { stepMs?: number; stepInc?: number; autoStart?: boolean; key?: string } = {}
+  ) {
+    const { stepMs = 50, stepInc = 1, autoStart = true, key = '' } = opts;
+    const [visible, setVisible] = React.useState<[number, number][]>([]);
+    const timerRef = React.useRef<number | null>(null);
+    const idxRef = React.useRef(0);
+
+    // ⬅️ سرعت را در ref نگه داریم تا تغییرش ریست نکند
+    const stepIncRef = React.useRef(Math.max(1, Math.trunc(stepInc || 1)));
+    React.useEffect(() => {
+      stepIncRef.current = Math.max(1, Math.trunc(stepInc || 1));
+    }, [stepInc]);
+
+    const pause = React.useCallback(() => {
+      if (timerRef.current != null) {
+        window.clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    }, []);
+
+    const reset = React.useCallback(() => {
+      pause();
+      idxRef.current = 0;
+      setVisible([]);
+    }, [pause]);
+
+    const start = React.useCallback(() => {
+      if (!points?.length || timerRef.current != null) return;
+
+      timerRef.current = window.setInterval(() => {
+        // ⬅️ هر تیک از ref بخوان، نه از مقدار capture شده
+        idxRef.current += stepIncRef.current;
+        const i = idxRef.current;
+        setVisible(points.slice(0, i));
+        if (i >= points.length) {
+          window.clearInterval(timerRef.current!);
+          timerRef.current = null;
+        }
+      }, stepMs);
+      // ⚠️ stepInc را عمداً در deps نیاوردیم تا تغییر سرعت باعث ساخت تایمر جدید نشود
+    }, [points, stepMs]);
+
+    React.useEffect(() => {
+      // فقط وقتی مسیر/کلید/فاصله زمانی تغییر کند، ریست کن
+      reset();
+      if (autoStart && points?.length) start();
+      return () => pause();
+    }, [key, points, stepMs, autoStart, reset, start, pause]);
+
+    return { visible, start, pause, reset, isPlaying: timerRef.current != null };
+  }
+
+  const [driverTrackPts, setDriverTrackPts] = useState<[number, number][]>([]);
+  const [vehicleTrackPts, setVehicleTrackPts] = useState<[number, number][]>([]);
 
 
   function saveConsumablesToStorage(vid: number, items: any[]) {
@@ -5825,11 +5918,22 @@ function SuperAdminRoleSection({ user }: { user: User }) {
     'today' | 'yesterday' | '7d' | 'custom'
   >('today');
 
+  // ۱) وقتی بازه یا انتخاب راننده عوض شد، مسیر و KPI دوباره لود شوند
   useEffect(() => {
     if (tab === 'drivers' && selectedDriver?.id) {
-      loadDriverViolations(selectedDriver.id);
+      loadDriverTrack(selectedDriver.id);
+      fetchDriverStats(selectedDriver.id);
     }
-  }, [tab, selectedDriver?.id, fromISO, toISO, loadDriverViolations]);
+  }, [tab, selectedDriver?.id, fromISO, toISO]);
+
+  // ۲) وقتی بازه یا انتخاب ماشین عوض شد، مسیر و تخلفات ماشین دوباره لود شوند
+  useEffect(() => {
+    if (tab === 'vehicles' && selectedVehicle?.id) {
+      loadVehicleTrack(selectedVehicle.id);
+      loadViolations(selectedVehicle.id, fromISO, toISO);
+    }
+  }, [tab, selectedVehicle?.id, fromISO, toISO, loadViolations]);
+
 
   useEffect(() => {
     const now = new Date();
@@ -6001,11 +6105,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
       // --- 4) اگر راننده روی این ماشین ست است، لوکیشن راننده را هم sync کن
       setToast({ open: true, msg: 'خروج از مسیر شناسایی شد' });
 
-      useEffect(() => {
-        if (tab === 'vehicles' && selectedVehicle?.id) {
-          loadViolations(selectedVehicle.id);
-        }
-      }, [tab, selectedVehicle?.id, fromISO, toISO, loadViolations]);
+
 
       // --- 5) تشخیص خروج از مسیر (Route Corridor) با کول‌داون
       const poly = routePolylineRef.current;                 // [[lat,lng], ...]
@@ -6116,69 +6216,81 @@ function SuperAdminRoleSection({ user }: { user: User }) {
   // مسیر از دیتابیس
   const [polyline, setPolyline] = useState<[number, number][]>([]);
   const loadDriverTrack = async (driverId: number) => {
-    setPolyline([]); // ۱. پاک کردن مسیر قبلی از روی نقشه
-
+    setDriverTrackPts([]); // پاک قبلی
     try {
-      // ۲. درخواست به API برای دریافت تمام ماموریت‌های راننده در بازه زمانی
       const { data } = await api.get<{ items: DriverMission[] }>(
         `/driver-routes/by-driver/${driverId}`,
-        {
-          params: { from: fromISO, to: toISO, limit: 1000 }, // limit بالا برای گرفتن همه چیز
-        }
+        { params: { from: fromISO, to: toISO, limit: 1000 } }
       );
-
-      // ۳. استخراج تمام نقاط GPS از تمام ماموریت‌ها و تجمیع در یک آرایه واحد
-      const allPoints = (data.items || []).flatMap(mission => mission.gps_points || []);
-
-      // ۴. آپدیت state نقشه با مسیر جدید
+      const allPoints = (data.items || []).flatMap(m => m.gps_points || []);
       if (allPoints.length > 0) {
-        setPolyline(allPoints.map(p => [p.lat, p.lng]));
-
-        // ۵. (اختیاری) فوکوس نقشه روی اولین نقطه مسیر
-        setFocusLatLng([allPoints[0].lat, allPoints[0].lng]);
+        const pts = allPoints
+          // اگر ts/time داری، مرتب‌سازی بهتره:
+          // .sort((a,b)=> (+new Date(a.ts||a.time||a.at||0))-(+new Date(b.ts||b.time||b.at||0)))
+          .map(p => [p.lat, p.lng] as [number, number]);
+        setDriverTrackPts(pts);
+        setFocusLatLng([pts[0][0], pts[0][1]]);
       }
-
     } catch (e) {
-      console.error("خطا در دریافت مسیر راننده از API:", e);
-      // در صورت خطا، می‌توان از داده‌های زنده (live) که از سوکت می‌آید به عنوان جایگزین استفاده کرد
-      const liveTrack = driverLive[driverId] || [];
-      const filteredLive = liveTrack.filter(p => p[2] >= +new Date(fromISO) && p[2] <= +new Date(toISO));
-      setPolyline(filteredLive.map(p => [p[0], p[1]]));
+      const liveTrack = (driverLive[driverId] || [])
+        .filter(p => p[2] >= +new Date(fromISO) && p[2] <= +new Date(toISO))
+        .map(p => [p[0], p[1]] as [number, number]);
+      setDriverTrackPts(liveTrack);
     }
   };
+
 
   // مسیر کامل خودرو از دیتابیس
   const loadVehicleTrack = async (vehicleId: number) => {
-    setPolyline([]); // ۱. پاک کردن مسیر قبلی از روی نقشه
-
+    setVehicleTrackPts([]); // پاک قبلی
     try {
-      // ۲. درخواست به API برای دریافت مسیر پیموده شده ماشین در بازه زمانی
       const { data } = await api.get<VehicleTrackResponse>(
         `/vehicles/${vehicleId}/track`,
-        {
-          params: { from: fromISO, to: toISO },
-        }
+        { params: { from: fromISO, to: toISO } }
       );
-
-      // ۳. استخراج نقاط از پاسخ API
       const allPoints = data.points || [];
-
-      // ۴. آپدیت state نقشه با مسیر جدید
       if (allPoints.length > 0) {
-        setPolyline(allPoints.map(p => [p.lat, p.lng]));
-
-        // ۵. (اختیاری) فوکوس نقشه روی اولین نقطه مسیر
-        setFocusLatLng([allPoints[0].lat, allPoints[0].lng]);
+        const pts = allPoints.map(p => [p.lat, p.lng] as [number, number]);
+        setVehicleTrackPts(pts);
+        setFocusLatLng([pts[0][0], pts[0][1]]);
       }
-
     } catch (e) {
-      console.error("خطا در دریافت مسیر ماشین از API:", e);
-      // در صورت خطا، از داده‌های زنده به عنوان جایگزین استفاده می‌کنیم
-      const liveTrack = vehicleLive[vehicleId] || [];
-      const filteredLive = liveTrack.filter(p => p[2] >= +new Date(fromISO) && p[2] <= +new Date(toISO));
-      setPolyline(filteredLive.map(p => [p[0], p[1]]));
+      const liveTrack = (vehicleLive[vehicleId] || [])
+        .filter(p => p[2] >= +new Date(fromISO) && p[2] <= +new Date(toISO))
+        .map(p => [p[0], p[1]] as [number, number]);
+      setVehicleTrackPts(liveTrack);
     }
   };
+  const [showDriverAnim, setShowDriverAnim] = useState(false);
+  const [showVehAnim, setShowVehAnim] = useState(false);
+  const { visible: animatedDriver, start: startDriverAnim, pause: pauseDriverAnim, reset: resetDriverAnim } =
+    useAnimatedPath(driverTrackPts, {
+      stepMs: 50,
+      stepInc: driverSpeed,
+      autoStart: false,
+      key: `${selectedDriver?.id || ''}-${fromISO}-${toISO}`,
+    });
+
+  const { visible: animatedVehicle, start: startVehAnim, pause: pauseVehAnim, reset: resetVehAnim } =
+    useAnimatedPath(vehicleTrackPts, {
+      stepMs: 50,
+      stepInc: vehSpeed,
+      autoStart: false,
+      key: `${selectedVehicle?.id || ''}-${fromISO}-${toISO}`,
+    });
+  useEffect(() => {
+    // راننده
+    setShowDriverAnim(false);
+    resetDriverAnim();
+    setDriverSpeed(1);
+  }, [tab, selectedDriver?.id, fromISO, toISO]);
+
+  useEffect(() => {
+    // ماشین
+    setShowVehAnim(false);
+    resetVehAnim();
+    setVehSpeed(1);
+  }, [tab, selectedVehicle?.id, fromISO, toISO]);
 
 
   // KPI (برای راننده)
@@ -7201,9 +7313,8 @@ function SuperAdminRoleSection({ user }: { user: User }) {
               {/* پیش‌نمایش کریدورِ مسیر هنگام ترسیم */}
               {drawingRoute && routePoints.length > 1 && (
                 <Polygon
-                  positions={buildRouteBufferPolygon(routePoints, Math.max(1, routeThreshold || 100))
-                    .map(p => [p.lat, p.lng] as [number, number])}
-                  pathOptions={{ weight: 1, fillOpacity: 0.15 }}
+                  positions={buildRouteBufferPolygon(routePoints, Math.max(1, routeThreshold || 100))}
+                  pathOptions={{ color: MAP_COLORS.corridor, weight: 1, fillOpacity: 0.15 }}
                 />
               )}
 
@@ -7226,10 +7337,12 @@ function SuperAdminRoleSection({ user }: { user: User }) {
 
               {/* پیش‌نمایش ژئوفنس در حال ترسیم */}
               {gfDrawing && gfMode === 'circle' && gfCenter && (
-                <Circle center={[gfCenter.lat, gfCenter.lng]} radius={gfRadius} />
+                <Circle center={[gfCenter.lat, gfCenter.lng]} radius={gfRadius}
+                  pathOptions={{ color: MAP_COLORS.geofence, weight: 2, fillColor: MAP_COLORS.geofenceFill, fillOpacity: 0.2 }} />
               )}
               {gfDrawing && gfMode === 'polygon' && gfPoly.length >= 2 && (
-                <Polygon positions={gfPoly.map(p => [p.lat, p.lng] as [number, number])} pathOptions={{ dashArray: '6 6' }} />
+                <Polygon positions={gfPoly.map(p => [p.lat, p.lng] as [number, number])}
+                  pathOptions={{ color: MAP_COLORS.geofence, weight: 2, dashArray: '6 6', fillColor: MAP_COLORS.geofenceFill, fillOpacity: 0.15 }} />
               )}
               {/* مسیر جاری (از سرور) */}
               {(() => {
@@ -7310,12 +7423,10 @@ function SuperAdminRoleSection({ user }: { user: User }) {
                 <>
                   <Circle
                     center={[selectedViolation.meta.point.lat, selectedViolation.meta.point.lng]}
-                    radius={
-                      // اولویت با threshold / radius / tolerance
-                      Number(selectedViolation.meta.threshold_m ?? selectedViolation.meta.radius_m ?? selectedViolation.meta.tolerance_m ?? 30)
-                    }
-                    pathOptions={{ weight: 1, fillOpacity: 0.1 }}
+                    radius={Number(selectedViolation.meta.threshold_m ?? selectedViolation.meta.radius_m ?? selectedViolation.meta.tolerance_m ?? 30)}
+                    pathOptions={{ color: MAP_COLORS.violation, weight: 1, fillOpacity: 0.1 }}
                   />
+
                   <Marker position={[selectedViolation.meta.point.lat, selectedViolation.meta.point.lng]}>
                     <Popup>
                       <div style={{ minWidth: 200 }}>
@@ -7331,10 +7442,53 @@ function SuperAdminRoleSection({ user }: { user: User }) {
                   </Marker>
                 </>
               )}
+              {/* مسیر کامل راننده – همیشه */}
+              {tab === 'drivers' && driverTrackPts.length > 1 && (
+                <Polyline
+                  positions={driverTrackPts}
+                  pathOptions={{ weight: 3, opacity: 0.75 }}
+                />
+              )}
 
-              {/* مسیر (پلی‌لاین) */}
-              {polyline.length > 1 && <Polyline positions={polyline} />}
-              {/* ایستگاه موقت برای تایید */}
+              {/* مسیر تب راننده با انیمیشن */}
+              {tab === 'drivers' && animatedDriver.length > 1 && (
+                <>
+                  <Polyline
+                    positions={animatedDriver}
+                    pathOptions={{
+                      color: MAP_COLORS.track,
+                      weight: 4,
+                      dashArray: '8 6',
+                      lineCap: 'round', lineJoin: 'round',
+                    }}
+                  />
+                  {/* سرِ مسیر (هد) */}
+                </>
+              )}
+              {/* مسیر کامل ماشین – همیشه */}
+              {tab === 'vehicles' && vehicleTrackPts.length > 1 && (
+                <Polyline
+                  positions={vehicleTrackPts}
+                  pathOptions={{ weight: 3, opacity: 0.75 }}
+                />
+              )}
+
+              {/* مسیر تب ماشین با انیمیشن */}
+              {tab === 'vehicles' && animatedVehicle.length > 1 && (
+                <>
+                  <Polyline
+                    positions={animatedVehicle}
+                    pathOptions={{
+                      color: MAP_COLORS.track,
+                      weight: 4,
+                      dashArray: '8 6',
+                      lineCap: 'round', lineJoin: 'round',
+                    }}
+                  />
+                </>
+              )}
+
+
               {/* --- ویرایش ایستگاه: نمایش مارکر قابل‌جابجایی --- */}
               {editing && movingStationId === editing.id && (
                 <>
@@ -7411,15 +7565,74 @@ function SuperAdminRoleSection({ user }: { user: User }) {
                 ))}
               {/* ژئوفنس ذخیره‌شده‌ی سرور */}
               {!gfDrawing && geofence?.type === 'circle' && (
-                <Circle center={[geofence.center.lat, geofence.center.lng]} radius={geofence.radius_m} />
+                <Circle center={[geofence.center.lat, geofence.center.lng]} radius={geofence.radius_m}
+                  pathOptions={{ color: MAP_COLORS.geofence, weight: 2, fillColor: MAP_COLORS.geofenceFill, fillOpacity: 0.12 }} />
               )}
               {!gfDrawing && geofence?.type === 'polygon' && (
-                <Polygon positions={geofence.points.map(p => [p.lat, p.lng] as [number, number])} />
+                <Polygon
+                  positions={geofence.points.map(p => [p.lat, p.lng] as [number, number])}
+                  pathOptions={{
+                    color: MAP_COLORS.geofence,  // رنگ خط مرز
+                    weight: 2,
+                    fill: true,                  // ✨ اجباری کن که پر شود
+                    fillColor: MAP_COLORS.geofenceFill,
+                    fillOpacity: 0.35,           // کمی پررنگ‌تر از قبل
+                  }}
+                />
               )}
+
 
 
             </MapContainer>
 
+            {/* 🎯 کنترل‌های شناور کنار پایین نقشه */}
+            {(tab === 'drivers' ? driverTrackPts.length > 1 : vehicleTrackPts.length > 1) && (
+              <Box
+                sx={{
+                  position: 'absolute',
+                  bottom: 12,
+                  left: 12,         // اگر می‌خوای راست باشه بذار right: 12
+                  display: 'flex',
+                  gap: 1,
+                  zIndex: 1000,
+                  bgcolor: 'background.paper',
+                  p: 0.5,
+                  borderRadius: 3,
+                  boxShadow: 3,
+                  border: theme => `1px solid ${theme.palette.divider}`
+                }}
+              >
+                <Tooltip title="پخش از ابتدا">
+                  <IconButton size="small" onClick={handlePlayFromStart}>
+                    <ReplayIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+
+                <Tooltip title="توقف">
+                  <IconButton size="small" onClick={handleStop}>
+                    <StopIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+                {/* Speed */}
+                <Divider flexItem orientation="vertical" />
+               <ButtonGroup size="small" variant="outlined">
+  {([1, 2, 3] as const).map(sp => (
+    <Button
+      key={sp}
+      variant={(tab === 'drivers' ? driverSpeed : vehSpeed) === sp ? 'contained' : 'outlined'}
+      onClick={() => {
+        if (tab === 'drivers') setDriverSpeed(sp);
+        else setVehSpeed(sp);
+      }}
+    >
+      {sp}×
+    </Button>
+  ))}
+</ButtonGroup>
+
+
+              </Box>
+            )}
           </Paper>
         </Grid2>
       )}
@@ -7439,30 +7652,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
               </Typography>
 
             </Stack>
-            {/* دکمه تنظیمات پیش‌فرض */}
-            <Button
-              size="small"
-              variant="outlined"
-              onClick={() => {
-                preloadDefaultsFromCurrent();
-                // پیش‌فرض: همین ماشین انتخاب‌شده
-                setDfTarget('currentVehicle');
-                setDfSelectedVehicleIds(selectedVehicle ? [selectedVehicle.id] : []);
-                setDfVehiclesQuery('');
-                setDefaultsOpen(true);
-              }}
-              sx={{ mb: 1 }}
-            >
-              تنظیمات پیش‌فرض
-            </Button>
-            {/* اگر GPS فعال باشد، وضعیت لایو را نشان بده */}
-            {tab === 'vehicles' && selectedVehicle && vehicleOptions.includes('gps') && (
-              <Chip
-                label={vehicleLiveAllowed ? 'GPS لایو' : 'GPS'}
-                size="small"
-                variant={vehicleLiveAllowed ? 'filled' : 'outlined'}
-              />
-            )}
+
             <Tabs
               value={tab}
               onChange={(_, v) => {
@@ -7477,6 +7667,8 @@ function SuperAdminRoleSection({ user }: { user: User }) {
                 setTempStation(null);
                 setEditing(null);
                 setMovingStationId(null);         // ✅
+                setShowDriverAnim(false); resetDriverAnim();
+                setShowVehAnim(false); resetVehAnim();
               }}
               sx={{ mb: 1 }}
             >
@@ -7619,9 +7811,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
               <Box sx={{ mt: 1.5 }}>
                 <FeatureCards enabled={vehicleOptions} telemetry={vehicleTlm} />
 
-                <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                  امکانات فعال این ماشین
-                </Typography>
+
 
 
                 {vehicleOptionsLoading ? (
@@ -7630,19 +7820,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
                   </Box>
                 ) : vehicleOptions.length > 0 ? (
                   <>
-                    {/* لیست امکانات فعال */}
-                    <List dense sx={{ py: 0 }}>
-                      {vehicleOptions.map((k) => (
-                        <ListItem key={k} disableGutters sx={{ py: 0.25 }}>
-                          <ListItemIcon sx={{ minWidth: 28 }}>
-                            <CheckCircleIcon color="success" fontSize="small" />
-                          </ListItemIcon>
-                          <ListItemText
-                            primary={MONITOR_PARAMS.find(m => m.key === (k as any))?.label || k}
-                          />
-                        </ListItem>
-                      ))}
-                    </List>
+
 
                     {addingStations && showStationActions && (
                       <Typography variant="caption" color="primary" sx={{ display: 'block', mb: 1 }}>
@@ -7795,7 +7973,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
                     {vehicleOptions.includes('routes') && (
                       <Box sx={{ mt: 2 }}>
                         <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                          مسیز
+                          مسیر
                         </Typography>
 
                         {/* کنترل‌های ساخت مسیر جدید */}
@@ -8333,6 +8511,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
               </Stack>
             </LocalizationProvider>
 
+
             {tab === 'drivers' && selectedDriver && (
               statsLoading ? (
                 <Box display="flex" alignItems="center" justifyContent="center" py={3}>
@@ -8583,6 +8762,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
                         </>
                       )}
                     </MapContainer>
+
                   </Grid2>
                   <Grid2 xs={12} md={5} sx={{ p: 2, overflowY: 'auto' }}>
                     <Stack spacing={2}>
@@ -11058,7 +11238,8 @@ function BranchManagerRoleSection({ user }: { user: User }) {
             {/* ایستگاه‌های در حالت افزودن/ویرایش */}
             {!!addingStationsForVid && canStations && (vehicleStationsMap[addingStationsForVid] || []).map(st => (
               <React.Fragment key={`add-${st.id}`}>
-                <Circle center={[st.lat, st.lng]} radius={st.radius_m ?? stationRadius} />
+                <Circle center={[st.lat, st.lng]} radius={st.radius_m ?? stationRadius}
+                  pathOptions={{ color: MAP_COLORS.station, weight: 2, fillColor: MAP_COLORS.stationFill, fillOpacity: 0.2 }} />
                 <Marker position={[st.lat, st.lng]} />
               </React.Fragment>
             ))}
@@ -22602,3 +22783,15 @@ type SettingsProfile = {
     geofence: TmpGeofence | null;
   };
 };
+
+
+
+
+
+
+
+
+
+
+
+

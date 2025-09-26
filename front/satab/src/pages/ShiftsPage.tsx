@@ -24,6 +24,7 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded';
 import { Tabs, Tab } from '@mui/material';
 import api from '../services/api';
+import Magnetic from '../theme/Magnetic';
 
 /** =========================
  *  Types
@@ -1251,40 +1252,55 @@ export default function ShiftsPage() {
                 </Stack>
 
                 <Stack direction="row" spacing={1}>
-                    <Button
-                        variant="outlined"
-                        startIcon={<AccessTimeRoundedIcon />}  // همین آیکونی که قبلاً ایمپورت داری
-                        onClick={() => setOvertimeOpen(true)}
-                    >
-                        اضافه‌کاری
-                    </Button>
+                    <Magnetic>
 
-                    <Button variant="outlined" startIcon={<RefreshRoundedIcon />} onClick={async () => {
-                        if (!driverId) return;
-                        setLoading(true);
-                        try {
-                            const [list, hist, cur] = await Promise.all([
-                                fetchShifts(driverId as ID, monthFrom, monthTo),
-                                fetchAssignmentHistory(driverId as ID),
-                                fetchCurrentAssignment(driverId as ID),
-                            ]);
-                            const assigns = [...hist, ...(cur ? [cur] : [])];
-                            setShifts(list.map(s => ({ ...s, ...deriveFromAssignments(s, assigns) })));
-                        } finally {
-                            setLoading(false);
-                        }
-                    }}>
-                        بروزرسانی
-                    </Button>
-                    <Button
-                        variant="outlined"
-                        onClick={() => setProfileOpen(true)}
-                    >
-                        افزودن پروفایل
-                    </Button>
-                    <Button variant="contained" startIcon={<AddRoundedIcon />} onClick={() => openCreate()}>
-                        افزودن شیفت
-                    </Button>
+                        <Button
+                            variant="outlined"
+                            startIcon={<AccessTimeRoundedIcon />}  // همین آیکونی که قبلاً ایمپورت داری
+                            onClick={() => setOvertimeOpen(true)}
+                        >
+                            اضافه‌کاری
+                        </Button>
+                    </Magnetic>
+
+                    <Magnetic>
+
+                        <Button variant="outlined" startIcon={<RefreshRoundedIcon />} onClick={async () => {
+                            if (!driverId) return;
+                            setLoading(true);
+                            try {
+                                const [list, hist, cur] = await Promise.all([
+                                    fetchShifts(driverId as ID, monthFrom, monthTo),
+                                    fetchAssignmentHistory(driverId as ID),
+                                    fetchCurrentAssignment(driverId as ID),
+                                ]);
+                                const assigns = [...hist, ...(cur ? [cur] : [])];
+                                setShifts(list.map(s => ({ ...s, ...deriveFromAssignments(s, assigns) })));
+                            } finally {
+                                setLoading(false);
+                            }
+                        }}>
+                            بروزرسانی
+                        </Button>
+                    </Magnetic>
+                    <Magnetic>
+
+
+                        <Button
+                            variant="outlined"
+                            onClick={() => setProfileOpen(true)}
+                        >
+                            افزودن پروفایل
+                        </Button>
+                    </Magnetic>
+
+                    <Magnetic>
+
+                        <Button variant="contained" startIcon={<AddRoundedIcon />} onClick={() => openCreate()}>
+                            افزودن شیفت
+                        </Button>
+                    </Magnetic>
+
                 </Stack>
             </Stack>
             <Dialog open={profileOpen} onClose={() => setProfileOpen(false)} fullWidth maxWidth="lg">
@@ -1304,31 +1320,34 @@ export default function ShiftsPage() {
                         >
                             <Stack direction="row" alignItems="center" justifyContent="space-between">
                                 <Typography variant="subtitle1" fontWeight={800}>لیست پروفایل‌ها</Typography>
-                                <Button
-                                    size="small"
-                                    variant="contained"
-                                    onClick={() => {
-                                        setEditingProfile(null);                 // 👈 بسیار مهم
-                                        setProfileName('');
-                                        setProfileDraft({
-                                            start_time: '08:00',
-                                            end_time: '16:00',
-                                            type: 'morning',
-                                            vehicle_id: null,
-                                            route_id: null,
-                                            station_start_id: null,
-                                            station_end_id: null,
-                                            note: '',
-                                            status: 'DRAFT',
-                                            apply_dates: [],
-                                        });
-                                        setProfileDates([]);                     // 👈 تاریخ‌های UI
-                                        setProfileCreateOpen(true);
-                                    }}
+                                <Magnetic>
 
-                                >
-                                    افزودن پروفایل شیفت
-                                </Button>
+                                    <Button
+                                        size="small"
+                                        variant="contained"
+                                        onClick={() => {
+                                            setEditingProfile(null);                 // 👈 بسیار مهم
+                                            setProfileName('');
+                                            setProfileDraft({
+                                                start_time: '08:00',
+                                                end_time: '16:00',
+                                                type: 'morning',
+                                                vehicle_id: null,
+                                                route_id: null,
+                                                station_start_id: null,
+                                                station_end_id: null,
+                                                note: '',
+                                                status: 'DRAFT',
+                                                apply_dates: [],
+                                            });
+                                            setProfileDates([]);                     // 👈 تاریخ‌های UI
+                                            setProfileCreateOpen(true);
+                                        }}
+
+                                    >
+                                        افزودن پروفایل شیفت
+                                    </Button>
+                                </Magnetic>
 
                             </Stack>
 
@@ -1563,7 +1582,10 @@ export default function ShiftsPage() {
                     </Box>
                 </DialogContent>
                 <DialogActions>
-                    <Button onClick={() => setProfileOpen(false)}>بستن</Button>
+                    <Magnetic>
+                        <Button onClick={() => setProfileOpen(false)}>بستن</Button>
+                    </Magnetic>
+
                 </DialogActions>
             </Dialog>
 
@@ -1741,18 +1763,25 @@ export default function ShiftsPage() {
 
                     {/* کنترل‌های سریع */}
                     <Stack direction="row" spacing={1} sx={{ my: 1 }}>
-                        <Button
-                            size="small"
-                            onClick={() => {
-                                const all = (jMonthGrid(jmonth).flat().filter(Boolean) as string[]);
-                                setProfileDates(prev => uniq(sortYmdAsc([...prev, ...all])));
-                            }}
-                        >
-                            انتخاب همهٔ ماه
-                        </Button>
-                        <Button size="small" onClick={() => setProfileDates([])}>
-                            پاک‌کردن انتخاب‌ها
-                        </Button>
+                        <Magnetic>
+                            <Button
+                                size="small"
+                                onClick={() => {
+                                    const all = (jMonthGrid(jmonth).flat().filter(Boolean) as string[]);
+                                    setProfileDates(prev => uniq(sortYmdAsc([...prev, ...all])));
+                                }}
+                            >
+                                انتخاب همهٔ ماه
+                            </Button>
+                        </Magnetic>
+
+                        <Magnetic>
+
+                            <Button size="small" onClick={() => setProfileDates([])}>
+                                پاک‌کردن انتخاب‌ها
+                            </Button>
+                        </Magnetic>
+
                     </Stack>
 
                     {/* گرید روزهای ماه (6×7) با تیک */}
@@ -1814,15 +1843,21 @@ export default function ShiftsPage() {
                 </DialogContent>
 
                 <DialogActions>
-                    <Button onClick={() => setProfileCreateOpen(false)}>بستن</Button>
-                    <Button
-                        variant="contained"
-                        onClick={onSaveProfile}
-                        startIcon={<AddRoundedIcon />}
-                        disabled={profileSaving}
-                    >
-                        {editingProfile ? 'ذخیره تغییرات' : 'ذخیره پروفایل'}
-                    </Button>
+                    <Magnetic>
+                        <Button onClick={() => setProfileCreateOpen(false)}>بستن</Button>
+                    </Magnetic>
+
+                    <Magnetic>
+
+                        <Button
+                            variant="contained"
+                            onClick={onSaveProfile}
+                            startIcon={<AddRoundedIcon />}
+                            disabled={profileSaving}
+                        >
+                            {editingProfile ? 'ذخیره تغییرات' : 'ذخیره پروفایل'}
+                        </Button>
+                    </Magnetic>
 
                 </DialogActions>
             </Dialog>
@@ -1847,13 +1882,17 @@ export default function ShiftsPage() {
                             label={`بازه: ${fmtJalali(firstDate)} تا ${fmtJalali(lastDate)}`}
                             sx={{ ml: 'auto' }}
                         />
-                        <Button
-                            size="small"
-                            startIcon={<RefreshRoundedIcon />}
-                            onClick={() => { setOvQ(q => q + ' '); }} // تریگر رفرش
-                        >
-                            بروزرسانی
-                        </Button>
+                        <Magnetic>
+
+                            <Button
+                                size="small"
+                                startIcon={<RefreshRoundedIcon />}
+                                onClick={() => { setOvQ(q => q + ' '); }} // تریگر رفرش
+                            >
+                                بروزرسانی
+                            </Button>
+                        </Magnetic>
+
                     </Stack>
 
                     {/* لیست اضافه‌کاری‌ها */}
@@ -1956,82 +1995,88 @@ export default function ShiftsPage() {
                                     </Typography>
                                 </Stack>
 
-                                <Button onClick={() => setOvertimeOpen(false)}>بستن</Button>
+                                <Magnetic>
+                                    <Button onClick={() => setOvertimeOpen(false)}>بستن</Button>
+                                </Magnetic>
 
-                                <Button
-                                    variant="contained"
-                                    startIcon={<DoneAllRoundedIcon />}
-                                    disabled={!ovSelected.length}
-                                    onClick={async () => {
-                                        try {
-                                            setOvLoading(true);
+                                <Magnetic>
 
-                                            // فقط PENDINGها را فرآوری کن
-                                            const pendingSelected = overtimes.filter(o => ovSelected.includes(o.id) && o.status === 'PENDING');
-                                            if (!pendingSelected.length) {
-                                                setSnack({ open: true, sev: 'info', msg: 'مورد PENDING برای تأیید انتخاب نشده' });
-                                                return;
-                                            }
+                                    <Button
+                                        variant="contained"
+                                        startIcon={<DoneAllRoundedIcon />}
+                                        disabled={!ovSelected.length}
+                                        onClick={async () => {
+                                            try {
+                                                setOvLoading(true);
 
-                                            // گروه‌بندی بر اساس راننده
-                                            const byDriver = new Map<ID, ID[]>();
-                                            pendingSelected.forEach(o => {
-                                                if (!byDriver.has(o.driver_id)) byDriver.set(o.driver_id, []);
-                                                byDriver.get(o.driver_id)!.push(o.id);
-                                            });
-
-                                            const okIds: ID[] = [];
-                                            const failedIds: ID[] = [];
-
-                                            // توابع (ممکنه همون قبلی‌هات باشن)
-                                            const bulkApprove = approveOvertimesBulk;
-                                            const singleApprove = approveOvertime;
-
-                                            for (const [driverIdKey, ids] of byDriver.entries()) {
-                                                try {
-                                                    const res = await bulkApprove(ids);
-                                                    okIds.push(...(res.ok ?? []));
-                                                    failedIds.push(...(res.failed ?? []));
-                                                } catch {
-                                                    // fallback: تک‌تک
-                                                    const results = await Promise.allSettled(ids.map(id => singleApprove(id)));
-                                                    results.forEach(r => {
-                                                        if (r.status === 'fulfilled') okIds.push(r.value.id);
-                                                        else failedIds.push(0 as any);
-                                                    });
+                                                // فقط PENDINGها را فرآوری کن
+                                                const pendingSelected = overtimes.filter(o => ovSelected.includes(o.id) && o.status === 'PENDING');
+                                                if (!pendingSelected.length) {
+                                                    setSnack({ open: true, sev: 'info', msg: 'مورد PENDING برای تأیید انتخاب نشده' });
+                                                    return;
                                                 }
-                                            }
 
-                                            // آپدیت UI
-                                            if (okIds.length) {
-                                                setOvertimes(prev => prev.map(x => okIds.includes(x.id) ? { ...x, status: 'APPROVED' } : x));
-                                                setOvSelected(prev => prev.filter(id => !okIds.includes(id)));
-                                            }
+                                                // گروه‌بندی بر اساس راننده
+                                                const byDriver = new Map<ID, ID[]>();
+                                                pendingSelected.forEach(o => {
+                                                    if (!byDriver.has(o.driver_id)) byDriver.set(o.driver_id, []);
+                                                    byDriver.get(o.driver_id)!.push(o.id);
+                                                });
 
-                                            if (okIds.length && failedIds.length) {
-                                                setSnack({ open: true, sev: 'info', msg: `${okIds.length} مورد تأیید شد، ${failedIds.length} ناموفق` });
-                                            } else if (okIds.length) {
-                                                setSnack({ open: true, sev: 'success', msg: `${okIds.length} اضافه‌کاری تأیید شد` });
-                                            } else {
-                                                setSnack({ open: true, sev: 'error', msg: 'تأیید ناموفق بود' });
-                                            }
+                                                const okIds: ID[] = [];
+                                                const failedIds: ID[] = [];
 
-                                            // (اختیاری) اگر لازم است شیفت‌های رانندهٔ انتخاب‌شده را هم رفرش کنی
-                                            if (driverId) {
-                                                try {
-                                                    const list = await fetchShifts(driverId as ID, monthFrom, monthTo);
-                                                    setShifts(list);
-                                                } catch { }
+                                                // توابع (ممکنه همون قبلی‌هات باشن)
+                                                const bulkApprove = approveOvertimesBulk;
+                                                const singleApprove = approveOvertime;
+
+                                                for (const [driverIdKey, ids] of byDriver.entries()) {
+                                                    try {
+                                                        const res = await bulkApprove(ids);
+                                                        okIds.push(...(res.ok ?? []));
+                                                        failedIds.push(...(res.failed ?? []));
+                                                    } catch {
+                                                        // fallback: تک‌تک
+                                                        const results = await Promise.allSettled(ids.map(id => singleApprove(id)));
+                                                        results.forEach(r => {
+                                                            if (r.status === 'fulfilled') okIds.push(r.value.id);
+                                                            else failedIds.push(0 as any);
+                                                        });
+                                                    }
+                                                }
+
+                                                // آپدیت UI
+                                                if (okIds.length) {
+                                                    setOvertimes(prev => prev.map(x => okIds.includes(x.id) ? { ...x, status: 'APPROVED' } : x));
+                                                    setOvSelected(prev => prev.filter(id => !okIds.includes(id)));
+                                                }
+
+                                                if (okIds.length && failedIds.length) {
+                                                    setSnack({ open: true, sev: 'info', msg: `${okIds.length} مورد تأیید شد، ${failedIds.length} ناموفق` });
+                                                } else if (okIds.length) {
+                                                    setSnack({ open: true, sev: 'success', msg: `${okIds.length} اضافه‌کاری تأیید شد` });
+                                                } else {
+                                                    setSnack({ open: true, sev: 'error', msg: 'تأیید ناموفق بود' });
+                                                }
+
+                                                // (اختیاری) اگر لازم است شیفت‌های رانندهٔ انتخاب‌شده را هم رفرش کنی
+                                                if (driverId) {
+                                                    try {
+                                                        const list = await fetchShifts(driverId as ID, monthFrom, monthTo);
+                                                        setShifts(list);
+                                                    } catch { }
+                                                }
+                                            } catch {
+                                                setSnack({ open: true, sev: 'error', msg: 'خطا در تأیید اضافه‌کاری' });
+                                            } finally {
+                                                setOvLoading(false);
                                             }
-                                        } catch {
-                                            setSnack({ open: true, sev: 'error', msg: 'خطا در تأیید اضافه‌کاری' });
-                                        } finally {
-                                            setOvLoading(false);
-                                        }
-                                    }}
-                                >
-                                    تأیید اضافه‌کاری
-                                </Button>
+                                        }}
+                                    >
+                                        تأیید اضافه‌کاری
+                                    </Button>
+                                </Magnetic>
+
                             </>
                         );
                     })()}
@@ -2309,21 +2354,29 @@ export default function ShiftsPage() {
 
                     {/* کنترل‌های سریع */}
                     <Stack direction="row" spacing={1} sx={{ mb: 1 }}>
-                        <Button
-                            size="small"
-                            onClick={() => {
-                                const all = (rows.flat().filter(Boolean) as string[]);
-                                setBulk(b => ({ ...b, dates: uniq(sortYmdAsc([...b.dates, ...all])) }));
-                            }}
-                        >
-                            انتخاب همهٔ ماه
-                        </Button>
-                        <Button
-                            size="small"
-                            onClick={() => setBulk(b => ({ ...b, dates: [] }))}
-                        >
-                            پاک‌کردن انتخاب‌ها
-                        </Button>
+                        <Magnetic>
+
+                            <Button
+                                size="small"
+                                onClick={() => {
+                                    const all = (rows.flat().filter(Boolean) as string[]);
+                                    setBulk(b => ({ ...b, dates: uniq(sortYmdAsc([...b.dates, ...all])) }));
+                                }}
+                            >
+                                انتخاب همهٔ ماه
+                            </Button>
+                        </Magnetic>
+
+                        <Magnetic>
+
+                            <Button
+                                size="small"
+                                onClick={() => setBulk(b => ({ ...b, dates: [] }))}
+                            >
+                                پاک‌کردن انتخاب‌ها
+                            </Button>
+                        </Magnetic>
+
                     </Stack>
 
                     {/* شبکهٔ روزهای ماه با تیک */}
@@ -2419,10 +2472,16 @@ export default function ShiftsPage() {
 
                 </DialogContent>
                 <DialogActions>
-                    <Button onClick={() => setDialogOpen(false)}>بستن</Button>
-                    <Button variant="contained" onClick={onSave} startIcon={<AddRoundedIcon />}>
-                        {editing ? 'ذخیره تغییرات' : 'افزودن شیفت'}
-                    </Button>
+                    <Magnetic>
+                        <Button onClick={() => setDialogOpen(false)}>بستن</Button>
+                    </Magnetic>
+
+                    <Magnetic>
+                        <Button variant="contained" onClick={onSave} startIcon={<AddRoundedIcon />}>
+                            {editing ? 'ذخیره تغییرات' : 'افزودن شیفت'}
+                        </Button>
+                    </Magnetic>
+
                 </DialogActions>
             </Dialog>
 

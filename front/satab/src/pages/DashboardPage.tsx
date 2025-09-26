@@ -1,4 +1,3 @@
-// src/pages/DashboardPage.tsx
 import { useEffect, useState, useMemo } from 'react';
 import api from '../services/api';
 import {
@@ -30,6 +29,8 @@ import { useNavigate } from 'react-router-dom';
 import { io, Socket } from 'socket.io-client';
 import type { Map as LeafletMap } from 'leaflet';
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
+import FullscreenRoundedIcon from '@mui/icons-material/FullscreenRounded';
+import FullscreenExitRoundedIcon from '@mui/icons-material/FullscreenExitRounded';
 import React from 'react';
 import {
   List,
@@ -56,6 +57,7 @@ import 'leaflet/dist/leaflet.css';
 // برای مارکر پیش‌فرض Leaflet در Vite/CRA:
 import L from 'leaflet';
 import Tilt from '../theme/Tilt';
+import Magnetic from '../theme/Magnetic';
 const defaultIcon = new L.Icon({
   iconUrl:
     'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
@@ -376,6 +378,50 @@ function FleetModeActions() {
   const [wsConnected, setWsConnected] = React.useState(false); // وضعیت اتصال سوکت (اختیاری)
   const lastMsgRef = React.useRef<number>(0);             // زمان آخرین پیام پوزیشن (ms)
   const [vehicleCount, setVehicleCount] = useState<number>(0);
+  // مرجع به باکس بیرونی نقشه (همونی که MapContainer داخلشه)
+  const mapWrapRef = React.useRef<HTMLDivElement | null>(null);
+  const [isFs, setIsFs] = React.useState(false);
+
+  // ورود به فول‌اسکرین
+  const enterFullscreen = React.useCallback(async () => {
+    const el = mapWrapRef.current;
+    if (!el) return;
+    const anyEl = el as any;
+    if (el.requestFullscreen) await el.requestFullscreen();
+    else if (anyEl.webkitRequestFullscreen) anyEl.webkitRequestFullscreen();
+    else if (anyEl.msRequestFullscreen) anyEl.msRequestFullscreen();
+  }, []);
+
+  // خروج از فول‌اسکرین
+  const exitFullscreen = React.useCallback(async () => {
+    const anyDoc = document as any;
+    if (document.exitFullscreen) await document.exitFullscreen();
+    else if (anyDoc.webkitExitFullscreen) anyDoc.webkitExitFullscreen();
+    else if (anyDoc.msExitFullscreen) anyDoc.msExitFullscreen();
+  }, []);
+
+  // سوییچ دکمه
+  const toggleFullscreen = React.useCallback(() => {
+    if (isFs) exitFullscreen(); else enterFullscreen();
+  }, [isFs, enterFullscreen, exitFullscreen]);
+
+  // همگام‌سازی state با رویدادهای سیستم + فیکس اندازهٔ نقشه
+  useEffect(() => {
+    const onFsChange = () => {
+      const current = mapWrapRef.current;
+      const nowFs = !!document.fullscreenElement && document.fullscreenElement === current;
+      setIsFs(nowFs);
+      // کمی تاخیر برای محاسبهٔ ابعاد جدید و بازچینی تایل‌ها
+      setTimeout(() => mapRef.current?.invalidateSize?.(), 250);
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    // vendor (قدیمی‌ها اختیاری)
+    document.addEventListener('webkitfullscreenchange', onFsChange as any);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFsChange);
+      document.removeEventListener('webkitfullscreenchange', onFsChange as any);
+    };
+  }, []);
 
   const [markers, setMarkers] = useState<MiniVehicle[]>([]);
   const mapRef = React.useRef<LeafletMap | null>(null);
@@ -932,7 +978,6 @@ function FleetModeActions() {
           ))}
         </List>
 
-
       </Drawer>
 
       {/* ==== Topbar (both columns) ==== */}
@@ -965,39 +1010,39 @@ function FleetModeActions() {
       >
         {/* === KPI cards row === */}
 
-          <Box
-            component="section"
-            sx={{
-              direction: 'rtl',
-              display: 'grid',
-              gap: 2,
-              gridAutoRows: 'min-content',            // ردیف‌ها به اندازه محتوا
-              alignItems: 'start',
-              alignContent: 'start',
-              gridTemplateColumns: {                  // ستون‌های واکنش‌گرا
-                xs: 'repeat(2, minmax(160px, 1fr))',
-                sm: 'repeat(3, minmax(160px, 1fr))',
-                md: 'repeat(4, minmax(160px, 1fr))',
-                lg: 'repeat(6, minmax(160px, 1fr))',
-              },
-            }}
-          >
-            {[
-              { title: 'تعداد راننده‌ها', value: driverCount },   // ← عدد واقعی
-              { title: 'تعداد ماشین‌ها', value: vehicleCount },  // ← عدد واقعی
-            ].map((k, i) => (
-              <Paper key={i} sx={{ p: 2, display: 'block' }}>
-                <Typography variant="h4" sx={{ fontWeight: 900, lineHeight: 1 }}>
-                  {Number.isFinite(k.value as number)
-                    ? Number(k.value).toLocaleString('fa-IR')
-                    : '—'}
-                </Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                  {k.title}
-                </Typography>
-              </Paper>
-            ))}
-          </Box>
+        <Box
+          component="section"
+          sx={{
+            direction: 'rtl',
+            display: 'grid',
+            gap: 2,
+            gridAutoRows: 'min-content',            // ردیف‌ها به اندازه محتوا
+            alignItems: 'start',
+            alignContent: 'start',
+            gridTemplateColumns: {                  // ستون‌های واکنش‌گرا
+              xs: 'repeat(2, minmax(160px, 1fr))',
+              sm: 'repeat(3, minmax(160px, 1fr))',
+              md: 'repeat(4, minmax(160px, 1fr))',
+              lg: 'repeat(6, minmax(160px, 1fr))',
+            },
+          }}
+        >
+          {[
+            { title: 'تعداد راننده‌ها', value: driverCount },   // ← عدد واقعی
+            { title: 'تعداد ماشین‌ها', value: vehicleCount },  // ← عدد واقعی
+          ].map((k, i) => (
+            <Paper key={i} sx={{ p: 2, display: 'block' }}>
+              <Typography variant="h4" sx={{ fontWeight: 900, lineHeight: 1 }}>
+                {Number.isFinite(k.value as number)
+                  ? Number(k.value).toLocaleString('fa-IR')
+                  : '—'}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                {k.title}
+              </Typography>
+            </Paper>
+          ))}
+        </Box>
 
 
         {/* content grid like the mock */}
@@ -1041,12 +1086,20 @@ function FleetModeActions() {
                     </span>
                   </Tooltip>
                 )}
+                <Tooltip title={isFs ? 'خروج از تمام‌صفحه' : 'تمام‌صفحه'}>
+                  <span>
+                    <IconButton size="small" onClick={toggleFullscreen}>
+                      {isFs ? <FullscreenExitRoundedIcon fontSize="small" /> : <FullscreenRoundedIcon fontSize="small" />}
+                    </IconButton>
+                  </span>
+                </Tooltip>
               </Stack>
 
 
             </Stack>
 
             <Box
+              ref={mapWrapRef}
               sx={{
                 flex: 1,
                 minHeight: 0,
