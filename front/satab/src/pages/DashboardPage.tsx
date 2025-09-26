@@ -55,6 +55,7 @@ import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 // برای مارکر پیش‌فرض Leaflet در Vite/CRA:
 import L from 'leaflet';
+import Tilt from '../theme/Tilt';
 const defaultIcon = new L.Icon({
   iconUrl:
     'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
@@ -963,39 +964,40 @@ function FleetModeActions() {
         }}
       >
         {/* === KPI cards row === */}
-        <Box
-          component="section"
-          sx={{
-            direction: 'rtl',
-            display: 'grid',
-            gap: 2,
-            gridAutoRows: 'min-content',            // ردیف‌ها به اندازه محتوا
-            alignItems: 'start',
-            alignContent: 'start',
-            gridTemplateColumns: {                  // ستون‌های واکنش‌گرا
-              xs: 'repeat(2, minmax(160px, 1fr))',
-              sm: 'repeat(3, minmax(160px, 1fr))',
-              md: 'repeat(4, minmax(160px, 1fr))',
-              lg: 'repeat(6, minmax(160px, 1fr))',
-            },
-          }}
-        >
-          {[
-            { title: 'تعداد راننده‌ها', value: driverCount },   // ← عدد واقعی
-            { title: 'تعداد ماشین‌ها', value: vehicleCount },  // ← عدد واقعی
-          ].map((k, i) => (
-            <Paper key={i} sx={{ p: 2, display: 'block' }}>
-              <Typography variant="h4" sx={{ fontWeight: 900, lineHeight: 1 }}>
-                {Number.isFinite(k.value as number)
-                  ? Number(k.value).toLocaleString('fa-IR')
-                  : '—'}
-              </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                {k.title}
-              </Typography>
-            </Paper>
-          ))}
-        </Box>
+
+          <Box
+            component="section"
+            sx={{
+              direction: 'rtl',
+              display: 'grid',
+              gap: 2,
+              gridAutoRows: 'min-content',            // ردیف‌ها به اندازه محتوا
+              alignItems: 'start',
+              alignContent: 'start',
+              gridTemplateColumns: {                  // ستون‌های واکنش‌گرا
+                xs: 'repeat(2, minmax(160px, 1fr))',
+                sm: 'repeat(3, minmax(160px, 1fr))',
+                md: 'repeat(4, minmax(160px, 1fr))',
+                lg: 'repeat(6, minmax(160px, 1fr))',
+              },
+            }}
+          >
+            {[
+              { title: 'تعداد راننده‌ها', value: driverCount },   // ← عدد واقعی
+              { title: 'تعداد ماشین‌ها', value: vehicleCount },  // ← عدد واقعی
+            ].map((k, i) => (
+              <Paper key={i} sx={{ p: 2, display: 'block' }}>
+                <Typography variant="h4" sx={{ fontWeight: 900, lineHeight: 1 }}>
+                  {Number.isFinite(k.value as number)
+                    ? Number(k.value).toLocaleString('fa-IR')
+                    : '—'}
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  {k.title}
+                </Typography>
+              </Paper>
+            ))}
+          </Box>
 
 
         {/* content grid like the mock */}

@@ -693,7 +693,9 @@ function OrgTreeNode({
 }) {
   const children = node.subordinates || [];
   return (
+
     <Box component="li">
+
       <NodeCard
         u={node}
         isRoot={node.role_level === 2}
@@ -708,6 +710,7 @@ function OrgTreeNode({
       />
 
       {children.length > 0 && (
+
         <Box component="ul">
           {children.map((ch: UserNode) => (
             <OrgTreeNode
@@ -724,8 +727,10 @@ function OrgTreeNode({
             />
           ))}
         </Box>
+
       )}
     </Box>
+
   );
 }
 
@@ -841,7 +846,7 @@ export default function RoleManagementPage() {
       {/* فقط یک‌بار اینجا؛ برای همهٔ نقش‌ها فعال است و بالای کارت نمایش می‌آید */}
       <AnalyticsHoverPortal />
 
- 
+
       {body}
     </>);
 }
@@ -1140,8 +1145,12 @@ function VehicleQuotaDialog({
         )}
       </DialogContent>
       <DialogActions>
-        <Button onClick={() => onClose(false)} disabled={loading}>انصراف</Button>
-        <Button variant="contained" onClick={handleSave} disabled={loading}>ذخیره</Button>
+        <Magnetic>
+          <Button onClick={() => onClose(false)} disabled={loading}>انصراف</Button></Magnetic>
+
+        <Magnetic>
+          <Button variant="contained" onClick={handleSave} disabled={loading}>ذخیره</Button></Magnetic>
+
       </DialogActions>
     </Dialog>
   );
@@ -2120,13 +2129,21 @@ function SuperAdminRoleSection({ user }: { user: User }) {
       <h2>مدیریت نقش‌ها ({roleLabel(user.role_level, saType)})</h2>
       <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
         {canCreate && (
-          <Button variant="contained" onClick={() => setAddOpen(true)}>
-            افزودن کاربر جدید
-          </Button>
+          <Magnetic>
+
+            <Button variant="contained" onClick={() => setAddOpen(true)}>
+              افزودن کاربر جدید
+            </Button>
+          </Magnetic>
+
         )}
-        <Button startIcon={<DirectionsBusIcon />} onClick={() => setVehOpen(true)}>
-          افزودن ماشین
-        </Button>
+        <Magnetic>
+
+          <Button startIcon={<DirectionsBusIcon />} onClick={() => setVehOpen(true)}>
+            افزودن ماشین
+          </Button>
+        </Magnetic>
+
       </Box>
 
       <h3>زیرمجموعه‌ها:</h3>
@@ -2469,12 +2486,15 @@ function GrantMonitorDialog({
                   </Grid>
                   <Grid item xs />
                   <Grid item>
-                    <Button
-                      size="small"
-                      onClick={() => setSelectedVehIds(new Set(vehiclesFiltered.map(v => v.id)))}
-                    >
-                      انتخاب همهٔ نتایج
-                    </Button>
+                    <Magnetic>
+                      <Button
+                        size="small"
+                        onClick={() => setSelectedVehIds(new Set(vehiclesFiltered.map(v => v.id)))}
+                      >
+                        انتخاب همهٔ نتایج
+                      </Button>
+                    </Magnetic>
+
                   </Grid>
                   <Grid item>
                     <Button size="small" onClick={() => setSelectedVehIds(new Set())}>
@@ -2529,10 +2549,15 @@ function GrantMonitorDialog({
       </DialogContent>
 
       <DialogActions>
-        <Button onClick={() => onClose(false)} disabled={loading}>انصراف</Button>
-        <Button variant="contained" onClick={handleSave} disabled={loading || !hasAnyGrantable}>
-          ذخیره
-        </Button>
+        <Magnetic>
+          <Button onClick={() => onClose(false)} disabled={loading}>انصراف</Button></Magnetic>
+
+        <Magnetic>
+          <Button variant="contained" onClick={handleSave} disabled={loading || !hasAnyGrantable}>
+            ذخیره
+          </Button>
+        </Magnetic>
+
       </DialogActions>
     </Dialog>
   );
@@ -3020,14 +3045,19 @@ export function AddVehicleDialog({
       </DialogContent>
 
       <DialogActions>
-        <Button onClick={onClose} disabled={loading}>انصراف</Button>
-        <Button
-          onClick={handleSubmit}
-          variant="contained"
-          disabled={saving || (form.role_level === 6 && !phoneVerified)}
-        >
-          ثبت
-        </Button>
+        <Magnetic>
+          <Button onClick={onClose} disabled={loading}>انصراف</Button></Magnetic>
+
+        <Magnetic>
+
+          <Button
+            onClick={handleSubmit}
+            variant="contained"
+            disabled={saving || (form.role_level === 6 && !phoneVerified)}
+          >
+            ثبت
+          </Button>
+        </Magnetic>
 
       </DialogActions>
     </Dialog>
@@ -3421,10 +3451,17 @@ function AddUserDialog({
       </DialogContent>
 
       <DialogActions>
-        <Button onClick={onClose} disabled={saving}>انصراف</Button>
-        <Button onClick={handleSubmit} variant="contained" disabled={saving}>
-          ثبت
-        </Button>
+        <Magnetic>
+
+          <Button onClick={onClose} disabled={saving}>انصراف</Button></Magnetic>
+
+        <Magnetic>
+
+          <Button onClick={handleSubmit} variant="contained" disabled={saving}>
+            ثبت
+          </Button>
+        </Magnetic>
+
       </DialogActions>
     </Dialog>
   );
@@ -3598,9 +3635,13 @@ function EditUserDialog({
             />
           </Grid>
           <Grid item xs={12}>
-            <Button variant="outlined" onClick={handleSaveUserInfo} disabled={savingInfo}>
-              ذخیره اطلاعات کاربر
-            </Button>
+            <Magnetic>
+
+              <Button variant="outlined" onClick={handleSaveUserInfo} disabled={savingInfo}>
+                ذخیره اطلاعات کاربر
+              </Button>
+            </Magnetic>
+
           </Grid>
           {data?.role_level === 2 && (
             <Grid item xs={12}>
@@ -3644,9 +3685,13 @@ function EditUserDialog({
             </select>
           </Grid>
           <Grid item xs={12}>
-            <Button variant="contained" onClick={handleSaveRole} disabled={savingRole || !canGrant}>
-              ذخیره نقش
-            </Button>
+            <Magnetic>
+
+              <Button variant="contained" onClick={handleSaveRole} disabled={savingRole || !canGrant}>
+                ذخیره نقش
+              </Button>
+            </Magnetic>
+
           </Grid>
 
           {/* مجوزهای اکشنی قابل‌واگذاری */}
@@ -3677,13 +3722,15 @@ function EditUserDialog({
                 </FormGroup>
               )}
               <Box sx={{ mt: 1 }}>
-                <Button
-                  variant="contained"
-                  onClick={handleSavePermissions}
-                  disabled={savingPerms || grantableActions.length === 0}
-                >
-                  ذخیره مجوزها
-                </Button>
+                <Magnetic>
+                  <Button
+                    variant="contained"
+                    onClick={handleSavePermissions}
+                    disabled={savingPerms || grantableActions.length === 0}
+                  >
+                    ذخیره مجوزها
+                  </Button></Magnetic>
+
               </Box>
             </Grid>
           )}
@@ -3691,7 +3738,9 @@ function EditUserDialog({
       </DialogContent>
 
       <DialogActions>
-        <Button onClick={onClose} disabled={savingInfo || savingRole || savingPerms}>بستن</Button>
+        <Magnetic>
+          <Button onClick={onClose} disabled={savingInfo || savingRole || savingPerms}>بستن</Button></Magnetic>
+
       </DialogActions>
     </Dialog>
   );
@@ -3877,7 +3926,9 @@ function SubUserVehicleAccessDialog({
         )}
       </DialogContent>
       <DialogActions>
-        <Button onClick={onClose} disabled={loading}>بستن</Button>
+        <Magnetic>
+          <Button onClick={onClose} disabled={loading}>بستن</Button></Magnetic>
+
         <Button variant="contained" onClick={handleSave} disabled={loading}>ذخیره</Button>
       </DialogActions>
     </Dialog>
@@ -3885,6 +3936,8 @@ function SubUserVehicleAccessDialog({
 }
 
 import { useLayoutEffect, useRef } from 'react';
+import Tilt from '../theme/Tilt';
+import Magnetic from '../theme/Magnetic';
 export function AutoFitTree({
   children,
   minScale = 0.45,               // اگر درخت خیلی پهن شد، بیشتر کوچیک می‌کنه
@@ -4157,9 +4210,13 @@ function ScopedSubtreeSection({ user }: { user: User }) {
 
       <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 2 }}>
         {canCreate && (
-          <Button variant="contained" onClick={() => setAddOpen(true)}>
-            افزودن کاربر جدید
-          </Button>
+          <Magnetic>
+
+            <Button variant="contained" onClick={() => setAddOpen(true)}>
+              افزودن کاربر جدید
+            </Button>
+          </Magnetic>
+
         )}
       </Box>
 
