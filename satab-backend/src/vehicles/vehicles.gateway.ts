@@ -1,4 +1,3 @@
-// vehicles.gateway.ts
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -8,11 +7,26 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 
-type TopicKind = 'pos' | 'ignition' | 'idle_time' | 'odometer' | 'stations';
+type TopicKind = 'pos' | 'ignition' | 'idle_time' | 'odometer' | 'stations' | 'geofence';
+
+type PosPayload = {
+  vehicle_id: number;
+  lat: number;
+  lng: number;
+  ts: string;
+  inside?: boolean;
+  speed?: number;
+  heading?: number;
+  serverTs?: string;
+};
+type IgnPayload = { vehicle_id: number; ignition: boolean; ts: string };
+type IdlePayload = { vehicle_id: number; idle_time: number; ts: string };
+type OdoPayload = { vehicle_id: number; odometer: number; ts: string };
+type GeoPayload = { vehicle_id: number; lat: number; lng: number; ts: string };
 
 @WebSocketGateway({ namespace: '/vehicles', cors: { origin: '*', credentials: false } })
 export class VehiclesGateway {
-  @WebSocketServer() server: Server;
+  @WebSocketServer() server!: Server;
 
   @SubscribeMessage('subscribe')
   onSubscribe(@ConnectedSocket() client: Socket, @MessageBody() body: { topic: string }) {
@@ -37,79 +51,91 @@ export class VehiclesGateway {
   }
 
   // ---------------- Emitters ----------------
-  emitVehiclePos(vehicleId: number, lat: number, lng: number, ts: string) {
-    const payload = { vehicle_id: vehicleId, lat, lng, ts };
+  emitVehiclePos(
+    vehicleId: number,
+    lat: number,
+    lng: number,
+    ts: string,
+    extra?: { speed?: number; heading?: number; serverTs?: string; inside?: boolean },
+  ) {
+    const payload: PosPayload = {
+      vehicle_id: vehicleId,
+      lat,
+      lng,
+      ts,
+      inside: extra?.inside,
+      speed: typeof extra?.speed === 'number' ? extra.speed : undefined,
+      heading: typeof extra?.heading === 'number' ? extra.heading : undefined,
+      serverTs: extra?.serverTs,
+    };
     this.server.to(`vpos:${vehicleId}`).emit('vehicle:pos', payload);
   }
 
   emitIgnition(vehicleId: number, ignition: boolean, ts?: string) {
-    this.server
-      .to(`vign:${vehicleId}`)
-      .emit('vehicle:ignition', {
-        vehicle_id: vehicleId,
-        ignition,
-        ts: ts ?? new Date().toISOString(),
-      });
+    const payload: IgnPayload = {
+      vehicle_id: vehicleId,
+      ignition,
+      ts: ts ?? new Date().toISOString(),
+    };
+    this.server.to(`vign:${vehicleId}`).emit('vehicle:ignition', payload);
   }
 
   emitIdle(vehicleId: number, idle_time: number, ts?: string) {
-    this.server
-      .to(`vidle:${vehicleId}`)
-      .emit('vehicle:idle_time', {
-        vehicle_id: vehicleId,
-        idle_time,
-        ts: ts ?? new Date().toISOString(),
-      });
+    const payload: IdlePayload = {
+      vehicle_id: vehicleId,
+      idle_time,
+      ts: ts ?? new Date().toISOString(),
+    };
+    this.server.to(`vidle:${vehicleId}`).emit('vehicle:idle_time', payload);
   }
 
   emitOdometer(vehicleId: number, odometer: number, ts?: string) {
-    this.server
-      .to(`vodo:${vehicleId}`)
-      .emit('vehicle:odometer', {
-        vehicle_id: vehicleId,
-        odometer,
-        ts: ts ?? new Date().toISOString(),
-      });
+    const payload: OdoPayload = {
+      vehicle_id: vehicleId,
+      odometer,
+      ts: ts ?? new Date().toISOString(),
+    };
+    this.server.to(`vodo:${vehicleId}`).emit('vehicle:odometer', payload);
   }
 
-  /**
-   * ایستگاه‌ها را هم به اتاق عمومی همان وسیله و هم به اتاق خصوصیِ owner می‌فرستد.
-   * - عمومی:  vst:<vid>
-   * - خصوصی: vst:<vid>:<ownerUserId>
-   */
+  // ✅ پیاده‌سازی واقعی
+  emitGeofenceViolation(vehicleId: number, payload: { vehicleId: number; lat: number; lng: number; ts: string }) {
+    const msg: GeoPayload = {
+      vehicle_id: payload.vehicleId,
+      lat: payload.lat,
+      lng: payload.lng,
+      ts: payload.ts,
+    };
+    // روم اختصاصی برای رویدادهای ژئوفنس
+    this.server.to(`vgeo:${vehicleId}`).emit('vehicle:geofence_violation', msg);
+  }
+
   emitStationsChanged(vehicleId: number, ownerUserId: number, payload: any) {
     const msg = { vehicle_id: vehicleId, ...payload };
-    // per-owner
     this.server.to(`vst:${vehicleId}:${ownerUserId}`).emit('vehicle:stations', msg);
-    // public (برای همه مشترکین همان vehicle)
     this.server.to(`vst:${vehicleId}`).emit('vehicle:stations', msg);
   }
 
   // ---------------- Helpers ----------------
-  /**
-   * پشتیبانی از هر دو الگو:
-   *  - با uid:    vehicle/<vid>/<kind>/<uid>  (stations خصوصی، سایر kindها عمومی)
-   *  - عمومی:     vehicle/<vid>/<kind>
-   *  - عمومیِ ایستگاه‌ها: vehicle/<vid>/stations
-   */
   private topicToRoom(topic?: string): string | null {
     if (!topic) return null;
 
-    // الگوی با uid (خصوصاً برای stations خصوصی)
-    let m = topic.match(/^vehicle\/(\d+)\/(pos|ignition|idle_time|odometer|stations)\/(\d+)$/);
+    // با uid (خصوصی—بیشتر برای stations)
+    let m = topic.match(/^vehicle\/(\d+)\/(pos|ignition|idle_time|odometer|stations|geofence)\/(\d+)$/);
     if (m) {
       const [, vid, kind, uid] = m;
       switch (kind as TopicKind) {
-        case 'pos':       return `vpos:${vid}`;           // pos عمومی
-        case 'ignition':  return `vign:${vid}`;           // ignition عمومی
-        case 'idle_time': return `vidle:${vid}`;          // idle_time عمومی
-        case 'odometer':  return `vodo:${vid}`;           // odometer عمومی
-        case 'stations':  return `vst:${vid}:${uid}`;     // stations خصوصی
+        case 'pos':       return `vpos:${vid}`;
+        case 'ignition':  return `vign:${vid}`;
+        case 'idle_time': return `vidle:${vid}`;
+        case 'odometer':  return `vodo:${vid}`;
+        case 'stations':  return `vst:${vid}:${uid}`;
+        case 'geofence':  return `vgeo:${vid}`; // geofence عمومی؛ uid را نادیده می‌گیریم
       }
     }
 
-    // الگوی عمومیِ بدون uid برای سایر kindها
-    m = topic.match(/^vehicle\/(\d+)\/(pos|ignition|idle_time|odometer)$/);
+    // عمومی بدون uid
+    m = topic.match(/^vehicle\/(\d+)\/(pos|ignition|idle_time|odometer|geofence)$/);
     if (m) {
       const [, vid, kind] = m;
       switch (kind as TopicKind) {
@@ -117,10 +143,11 @@ export class VehiclesGateway {
         case 'ignition':  return `vign:${vid}`;
         case 'idle_time': return `vidle:${vid}`;
         case 'odometer':  return `vodo:${vid}`;
+        case 'geofence':  return `vgeo:${vid}`;
       }
     }
 
-    // الگوی عمومیِ ایستگاه‌ها بدون uid
+    // stations عمومی
     m = topic.match(/^vehicle\/(\d+)\/stations$/);
     if (m) {
       const [, vid] = m;

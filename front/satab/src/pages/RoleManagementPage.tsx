@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import React from 'react';
 import api from '../services/api';
-import { MenuItem, Portal, } from '@mui/material';
+import { MenuItem, Portal, useTheme, type SxProps, type Theme, } from '@mui/material';
 import {
   Dialog, DialogTitle, DialogContent, DialogActions,
   TextField, Checkbox, FormGroup, FormControlLabel, Grid,
@@ -63,16 +63,47 @@ type HoverAction =
   | { type: 'show'; userId: number; anchorEl: HTMLElement }
   | { type: 'hide' };
 
+type DriverCollector = (userId: number) => Promise<number[]> | number[];
+
 export const HoverSummaryBus = (() => {
   let handler: ((a: HoverAction) => void) | null = null;
+  let driverCollector: DriverCollector | null = null;          // ★
+
   return {
     setHandler(h: typeof handler) { handler = h; },
     showFor(userId: number, anchorEl: HTMLElement) { handler?.({ type: 'show', userId, anchorEl }); },
     hide() { handler?.({ type: 'hide' }); },
+
+    // ★ رجیستر/لغو کالکتور راننده‌ها
+    setDriverCollector(fn: DriverCollector | null) { driverCollector = fn; },
+    async collectDriversOf(userId: number): Promise<number[]> {
+      try { return (await driverCollector?.(userId)) ?? []; } catch { return []; }
+    },
   };
 })();
 
 
+
+
+// === Telemetry URL builders (از 1970 تا الان) ===
+export const EPOCH_FROM = '1970-01-01T00:00:00.000Z';
+export const nowIso = () => new Date().toISOString();
+
+export const TELEMETRY_URL = {
+  // Ingest (ورود تله‌متری)
+  flexible: (vehicleId: number) => `/driver-routes/telemetry/${vehicleId}`,
+  one: (vehicleId: number) => `/driver-routes/telemetry/${vehicleId}/one`,
+  batch: (vehicleId: number) => `/driver-routes/telemetry/${vehicleId}/batch`,
+
+  // Retrieve (بازیابی تله‌متری و مسیرها)
+  lastPoints: (routeId: number, n = 200) =>
+    `/driver-routes/${routeId}/last-points?n=${Math.max(1, Math.min(5000, n))}`,
+  routeWithPoints: (routeId: number) => `/driver-routes/${routeId}?includePoints=true`,
+  routesByDriver: (driverId: number) => `/driver-routes/by-driver/${driverId}`,
+  driverStats: (driverId: number) => `/driver-routes/stats/${driverId}`,
+  missionCount: (driverId: number) => `/driver-routes/missions/count/${driverId}`,
+  activeRouteByDriver: (driverId: number) => `/driver-routes/active/by-driver/${driverId}`,
+};
 
 
 
@@ -83,10 +114,84 @@ function AnalyticsHoverPortal({ from, to }: { from?: string; to?: string }) {
   const [userId, setUserId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
+
+  const effFrom = from ?? EPOCH_FROM;
+  const effTo = to ?? nowIso();
+
   const [data, setData] = useState<{
     nodeId: number; drivers: number; totalDistanceKm: number; engineHours: number; totalViolations: number;
   } | null>(null);
   const [timer, setTimer] = useState<any>(null);
+  const [distanceKm, setDistanceKm] = useState<number | undefined>(undefined);
+
+  // فاصله از نقاط GPS (fallback)
+  function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
+    const toRad = (d: number) => (d * Math.PI) / 180;
+    const R = 6371;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+  }
+
+  async function calcDistanceFromGpsPointsKm(driverId: number, from?: string, to?: string) {
+    const { data } = await api.get(TELEMETRY_URL.routesByDriver(driverId), {
+      params: { from, to, limit: 1000 },
+    });
+    const items = Array.isArray(data?.items) ? data.items : [];
+    let total = 0;
+
+    for (const it of items) {
+      let pts: any[] = Array.isArray(it?.gps_points) ? it.gps_points : [];
+
+      if (!pts.length) {
+        const routeId = Number(it?.id ?? it?.route_id);
+        if (Number.isFinite(routeId)) {
+          try {
+            const { data: lp } = await api.get(TELEMETRY_URL.lastPoints(routeId, 5000));
+            if (Array.isArray(lp) && lp.length) {
+              pts = lp;
+            } else {
+              const { data: full } = await api.get(TELEMETRY_URL.routeWithPoints(routeId));
+              if (Array.isArray(full?.gps_points)) pts = full.gps_points;
+            }
+          } catch { /* noop */ }
+        }
+      }
+
+      for (let i = 1; i < pts.length; i++) {
+        const p1 = pts[i - 1], p2 = pts[i];
+        if (p1?.lat != null && p1?.lng != null && p2?.lat != null && p2?.lng != null) {
+          total += haversineKm(Number(p1.lat), Number(p1.lng), Number(p2.lat), Number(p2.lng));
+        }
+      }
+    }
+    return total;
+  }
+
+  async function fetchDriverDistanceKm(driverId: number, from?: string, to?: string) {
+    try {
+      const { data } = await api.get(TELEMETRY_URL.driverStats(driverId), { params: { from, to } });
+      const v1 = Number(data?.total_distance_km ?? data?.totalDistanceKm);
+      if (Number.isFinite(v1) && v1 >= 0) return v1;
+    } catch { /* fallback below */ }
+
+    try {
+      const v2 = await calcDistanceFromGpsPointsKm(driverId, from, to);
+      return Number.isFinite(v2) && v2 >= 0 ? v2 : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  async function aggregateNodeDistanceKm(userId: number, from?: string, to?: string) {
+    const driverIds = await HoverSummaryBus.collectDriversOf(userId);
+    if (!driverIds?.length) return 0;
+    const vals = await Promise.all(driverIds.map(id => fetchDriverDistanceKm(id, from, to)));
+    return vals.reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0);
+  }
 
   useEffect(() => {
     HoverSummaryBus.setHandler(async (a) => {
@@ -99,7 +204,6 @@ function AnalyticsHoverPortal({ from, to }: { from?: string; to?: string }) {
         return;
       }
 
-      // show روی المنت
       setOpen(true);
       setErr('');
       setUserId(a.userId);
@@ -107,28 +211,53 @@ function AnalyticsHoverPortal({ from, to }: { from?: string; to?: string }) {
 
       if (timer) clearTimeout(timer);
       const t = setTimeout(async () => {
-        const key = `${a.userId}|${from ?? ''}|${to ?? ''}`;
+        const key = `${a.userId}|${effFrom}|${effTo}`;
+
         if (SUMMARY_CACHE.has(key as any)) {
-          setData(SUMMARY_CACHE.get(key as any));
+          const cached = SUMMARY_CACHE.get(key as any);
+          setData(cached);
+          const cachedDist = Number(cached?.totalDistanceKm);
+          setDistanceKm(!Number.isNaN(cachedDist) && cachedDist >= 0 ? cachedDist : undefined);
           setLoading(false);
           return;
         }
+
         try {
           setLoading(true);
-          const { data } = await api.get('/analytics/node-summary', { params: { userId: a.userId, from, to } });
-          SUMMARY_CACHE.set(key as any, data);
-          setData(data);
+
+          // خلاصه KPI‌ها از بک‌اند آنالیتیکس
+          const { data: summary } = await api.get('/analytics/node-summary', {
+            params: { userId: a.userId, from: effFrom, to: effTo },
+          });
+
+          // مسافت تجمیعی (fallback/تکمیلی)
+          const effectiveDistanceKm = await aggregateNodeDistanceKm(a.userId, effFrom, effTo);
+
+          const distFromSummary = Number(summary?.totalDistanceKm ?? summary?.total_distance_km);
+          const finalKm =
+            Number.isFinite(distFromSummary) && distFromSummary >= 0
+              ? distFromSummary
+              : (Number.isFinite(effectiveDistanceKm) && effectiveDistanceKm >= 0 ? effectiveDistanceKm : 0);
+
+          const merged = { ...summary, totalDistanceKm: finalKm };
+          SUMMARY_CACHE.set(key as any, merged);
+          setData(merged);
+          setDistanceKm(finalKm);
+
         } catch (e: any) {
           setErr(e?.response?.data?.message || 'خطا در دریافت سامری');
           setData(null);
+          setDistanceKm(undefined);
         } finally {
           setLoading(false);
         }
       }, 140);
+
       setTimer(t);
     });
+
     return () => HoverSummaryBus.setHandler(null);
-  }, [from, to]);
+  }, [effFrom, effTo]); // وابسته به بازه
 
   if (!open || !anchorEl) return null;
 
@@ -175,7 +304,10 @@ function AnalyticsHoverPortal({ from, to }: { from?: string; to?: string }) {
                 <Grid item xs={6}><Metric label="راننده" value={data.drivers} /></Grid>
                 <Grid item xs={6}><Metric label="تخلف" value={data.totalViolations} /></Grid>
                 <Grid item xs={12}>
-                  <Metric label="مسافت" value={`${Number(data.totalDistanceKm || 0).toLocaleString('fa-IR')} km`} />
+                  <Metric
+                    label="مسافت"
+                    value={distanceKm != null ? `${Number(distanceKm).toLocaleString('fa-IR')} km` : '—'}
+                  />
                 </Grid>
                 <Grid item xs={12}>
                   <Metric label="ساعت موتور" value={`${Number(data.engineHours || 0).toLocaleString('fa-IR')} h`} />
@@ -190,7 +322,6 @@ function AnalyticsHoverPortal({ from, to }: { from?: string; to?: string }) {
     </Popper>
   );
 }
-
 
 
 
@@ -371,7 +502,11 @@ interface User {
   parent_id?: number | null;
 }
 
-
+export function roleColorFor(level: number, theme: Theme) {
+  if (level === 1) return theme.palette.primary.main;      // مدیرکل
+  if (level === 2) return theme.palette.secondary.main;    // SA
+  return theme.palette.info?.main ?? theme.palette.primary.light; // سایرین
+}
 
 // ——— کارت هر نود (مربعِ گوشه‌گرد)
 function NodeCard({
@@ -389,108 +524,98 @@ function NodeCard({
   currentUserId?: number;
   currentUserRoleLevel?: number;
   canDelete?: boolean;
-  roleSaType?: SAType
+  roleSaType?: SAType;
 }) {
-  const roleColor =
-    u.role_level === 2 ? royal.c2 :
-      u.role_level === 1 ? '#60A5FA' : royal.c1;
-  const effectiveSaType: SAType | undefined = (u as any).sa_type ?? roleSaType; // 👈 مهم
+  const theme = useTheme() as any; // چون theme.motion رو در theme.ts اکستند کردی
+  const roleColor = roleColorFor(u.role_level, theme);
+  const gradA = theme.palette.primary.main;
+  const gradB = theme.palette.secondary.main;
+
+  const surface = theme.palette.background.paper;
+  const blurBg = `linear-gradient(
+    ${alpha(surface, 0.92)},
+    ${alpha(surface, 0.86)}
+  ), linear-gradient(135deg, ${alpha(gradA, 0.08)}, ${alpha(gradB, 0.12)})`;
+
+  const glassBorder = `1px solid ${alpha(theme.palette.common.black, 0.08)}`;
+  const hoverLift = `translateY(-4px)`;
+
+  const ease = theme.motion?.ease?.inOut ?? 'cubic-bezier(0.4, 0, 0.2, 1)';
+  const dur = theme.motion?.dur?.sm ?? 0.22;
+
+  const effectiveSaType: SAType | undefined = (u as any).sa_type ?? roleSaType;
 
   return (
     <Paper
       elevation={0}
       sx={{
-        width: Math.max(NODE_W, 320), // حداقل عرض 320px
+        width: Math.max(NODE_W, 320),
         minHeight: NODE_H,
         maxHeight: NODE_H + 40,
-        borderRadius: 16,
+        borderRadius: theme.shape.borderRadius + 2,
         p: 2,
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'space-between',
-        overflow: 'hidden', // مهم: جلوگیری از خروج محتوا
+        overflow: 'hidden',
         bgcolor: 'transparent',
-        background: `
-        linear-gradient(145deg, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0.85) 100%),
-        linear-gradient(135deg, ${royal.c1}15, ${royal.c2}25)
-      `,
-        backdropFilter: 'blur(15px) saturate(180%)',
-        border: `2px solid rgba(255,255,255,0.3)`,
-        boxShadow: `
-        0 8px 32px rgba(0,0,0,0.1),
-        0 4px 16px ${royal.c2}25,
-        inset 0 1px 0 rgba(255,255,255,0.6)
-      `,
+        background: blurBg,
+        backdropFilter: 'blur(14px) saturate(160%)',
+        WebkitBackdropFilter: 'blur(14px) saturate(160%)',
+        border: glassBorder,
+        boxShadow: theme.shadows[3],
         position: 'relative',
-        transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+        transition: `transform ${dur}s ${ease}, box-shadow ${dur}s ${ease}`,
         cursor: 'pointer',
         '&:hover': {
-          transform: 'translateY(-4px)',
-          boxShadow: `
-          0 16px 48px rgba(0,0,0,0.15),
-          0 8px 32px ${royal.c2}30,
-          inset 0 1px 0 rgba(255,255,255,0.8)
-        `,
+          transform: hoverLift,
+          boxShadow: theme.shadows[4],
         },
-
       }}
       onMouseEnter={(e) => HoverSummaryBus.showFor(u.id, e.currentTarget as HTMLElement)}
       onMouseLeave={() => HoverSummaryBus.hide()}
-      onFocus={(e) => HoverSummaryBus.showFor(u.id, e.currentTarget as HTMLElement)}   // برای دسترسی‌پذیری
+      onFocus={(e) => HoverSummaryBus.showFor(u.id, e.currentTarget as HTMLElement)}
       onBlur={() => HoverSummaryBus.hide()}
-
     >
-      {/* بخش بالا: آواتار و اطلاعات کاربر */}
+      {/* header */}
       <Stack
         direction="row"
         alignItems="center"
         spacing={1.5}
-        sx={{
-          width: '100%',
-          minWidth: 0,
-          flex: 1,
-          overflow: 'hidden', // جلوگیری از overflow
-        }}
+        sx={{ width: '100%', minWidth: 0, flex: 1, overflow: 'hidden' }}
       >
-        {/* آواتار */}
+        {/* avatar */}
         <Box sx={{ flexShrink: 0 }}>
           <Avatar
             sx={{
               width: 44,
               height: 44,
-              background: `linear-gradient(135deg, ${royal.c1}, ${royal.c2})`,
-              color: '#fff',
+              background: `linear-gradient(135deg, ${gradA}, ${gradB})`,
+              color: theme.palette.getContrastText(theme.palette.primary.main),
               fontWeight: 700,
               fontSize: '1.1rem',
-              border: '2px solid rgba(255,255,255,0.8)',
-              boxShadow: `0 4px 16px ${royal.c2}40`,
-              transition: 'all 0.3s ease',
+              border: `2px solid ${alpha(theme.palette.common.white, 0.75)}`,
+              boxShadow: `0 4px 16px ${alpha(gradB, 0.4)}`,
+              transition: `all ${dur}s ${ease}`,
             }}
           >
             {displayName(u).slice(0, 1)}
           </Avatar>
         </Box>
 
-        {/* اطلاعات کاربر - با محدودیت عرض */}
-        <Box
-          sx={{
-            flex: 1,
-            minWidth: 0, // اجازه shrink شدن
-            maxWidth: '65%', // محدودیت عرض
-            overflow: 'hidden',
-          }}
-        >
+        {/* info */}
+        <Box sx={{ flex: 1, minWidth: 0, maxWidth: '65%', overflow: 'hidden' }}>
           <Typography
             variant="subtitle1"
             sx={{
-              fontWeight: 600,
+              fontWeight: 700,
               fontSize: '0.95rem',
               lineHeight: 1.2,
-              color: '#2c3e50',
+              color: theme.palette.text.primary,
               mb: 0.25,
               overflow: 'hidden',
               textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap', // یک خط
+              whiteSpace: 'nowrap',
             }}
           >
             {displayName(u)}
@@ -500,21 +625,21 @@ function NodeCard({
             sx={{
               color: roleColor,
               fontSize: '0.75rem',
-              fontWeight: 500,
+              fontWeight: 600,
               lineHeight: 1.1,
-              opacity: 0.8,
+              opacity: 0.9,
               display: 'block',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap', // یک خط
+              whiteSpace: 'nowrap',
             }}
           >
-            ({roleLabel(u.role_level, effectiveSaType)}) {/* 👈 اینجا */}
+            ({roleLabel(u.role_level, effectiveSaType)})
           </Typography>
         </Box>
       </Stack>
 
-      {/* بخش پایین: دکمه‌های عملیات */}
+      {/* actions */}
       <Stack
         direction="row"
         justifyContent="flex-end"
@@ -523,33 +648,34 @@ function NodeCard({
         sx={{
           width: '100%',
           mt: 1,
-          flexShrink: 0, // عدم کوچک شدن
+          flexShrink: 0,
           '& .MuiIconButton-root': {
             width: 32,
             height: 32,
             borderRadius: 8,
-            bgcolor: 'rgba(255,255,255,0.7)',
-            border: '1px solid rgba(255,255,255,0.5)',
-            transition: 'all 0.2s ease',
+            bgcolor: alpha(surface, 0.7),
+            border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+            transition: `all ${dur}s ${ease}`,
             '&:hover': {
               transform: 'translateY(-1px)',
-              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+              boxShadow: theme.shadows[2],
+              bgcolor: alpha(surface, 0.9),
             },
           },
         }}
       >
-        {/* مدیرکل → سیاست/سهمیه خودرو برای SA */}
+        {/* سیاست/سهمیه خودرو */}
         {onEditVehiclePolicy && currentUserRoleLevel === 1 && u.role_level === 2 && (
           <Tooltip title="سهمیه و مجوز ماشین‌ها" arrow>
             <IconButton
               size="small"
               onClick={(e) => { e.stopPropagation(); onEditVehiclePolicy(u); }}
               sx={{
-                bgcolor: `${royal.c1}20`,
-                '&:hover': { bgcolor: `${royal.c1}30` },
+                bgcolor: alpha(theme.palette.primary.main, 0.12),
+                '&:hover': { bgcolor: alpha(theme.palette.primary.main, 0.18) },
               }}
             >
-              <DirectionsBusIcon fontSize="small" sx={{ color: royal.c1 }} />
+              <DirectionsBusIcon fontSize="small" sx={{ color: theme.palette.primary.main }} />
             </IconButton>
           </Tooltip>
         )}
@@ -563,30 +689,28 @@ function NodeCard({
                 size="small"
                 onClick={(e) => { e.stopPropagation(); onDelete(u); }}
                 sx={{
-                  bgcolor: 'rgba(244, 67, 54, 0.1)',
-                  '&:hover': {
-                    bgcolor: 'rgba(244, 67, 54, 0.2)',
-                  },
+                  bgcolor: alpha(theme.palette.error.main, 0.12),
+                  '&:hover': { bgcolor: alpha(theme.palette.error.main, 0.2) },
                 }}
               >
-                <DeleteIcon fontSize="small" sx={{ color: '#f44336' }} />
+                <DeleteIcon fontSize="small" sx={{ color: theme.palette.error.main }} />
               </IconButton>
             </Tooltip>
           )
         )}
 
-        {/* مانیتورینگ برای زیرمجموعه‌های SA */}
+        {/* مانیتورینگ */}
         {onGrantMonitors && currentUserRoleLevel === 2 && u.role_level > 2 && (
           <Tooltip title="واگذاری پرمیشن‌های مانیتورینگ" arrow>
             <IconButton
               size="small"
               onClick={(e) => { e.stopPropagation(); onGrantMonitors(u); }}
               sx={{
-                bgcolor: `${royal.c2}20`,
-                '&:hover': { bgcolor: `${royal.c2}30` },
+                bgcolor: alpha(theme.palette.secondary.main, 0.12),
+                '&:hover': { bgcolor: alpha(theme.palette.secondary.main, 0.18) },
               }}
             >
-              <DirectionsBusIcon fontSize="small" sx={{ color: royal.c2 }} />
+              <DirectionsBusIcon fontSize="small" sx={{ color: theme.palette.secondary.main }} />
             </IconButton>
           </Tooltip>
         )}
@@ -600,13 +724,11 @@ function NodeCard({
                 size="small"
                 onClick={(e) => { e.stopPropagation(); onEdit(u); }}
                 sx={{
-                  bgcolor: 'rgba(76, 175, 80, 0.1)',
-                  '&:hover': {
-                    bgcolor: 'rgba(76, 175, 80, 0.2)',
-                  },
+                  bgcolor: alpha(theme.palette.success.main, 0.12),
+                  '&:hover': { bgcolor: alpha(theme.palette.success.main, 0.2) },
                 }}
               >
-                <EditIcon fontSize="small" sx={{ color: '#4caf50' }} />
+                <EditIcon fontSize="small" sx={{ color: theme.palette.success.main }} />
               </IconButton>
             </Tooltip>
           )}
@@ -615,13 +737,13 @@ function NodeCard({
   );
 }
 // ——— استایل درخت با خطوط اتصال (بدون کتابخانه)
-const orgTreeSx = {
-  // تنظیمات
-  '--gx': '10px',                      // فاصله افقی بین نودها
-  '--gy': '18px',                      // فاصله عمودی بین سطوح
-  '--lw': '2px',                       // ضخامت خط
-  '--lc': alpha(royal.c2, .4),         // رنگ خط
-  '--cr': '6px',                       // انحنای گوشه‌ی خطوط
+const orgTreeSx: SxProps<Theme> = (theme: { palette: { secondary: { main: string; }; }; }) => ({
+  // --- تنظیمات به‌صورت CSS Vars (وابسته به تم) ---
+  ['--gx' as any]: '10px',                                                        // فاصله افقی بین نودها
+  ['--gy' as any]: '18px',                                                        // فاصله عمودی بین سطوح
+  ['--lw' as any]: '2px',                                                         // ضخامت خط
+  ['--lc' as any]: alpha(theme.palette.secondary.main, 0.4),                      // رنگ خط از تم (شیشه‌ای)
+  ['--cr' as any]: '6px',                                                         // شعاع گوشه‌ی خطوط
 
   direction: 'ltr',
   textAlign: 'center',
@@ -631,7 +753,7 @@ const orgTreeSx = {
     paddingLeft: 0,
     margin: 0,
     display: 'inline-block',
-    paddingTop: 'var(--gy)',           // فاصله تا نوار افقیِ خواهر/برادرها
+    paddingTop: 'var(--gy)',                                                      // فاصله تا نوار افقی خواهر/برادرها
   },
 
   '& li': {
@@ -639,7 +761,7 @@ const orgTreeSx = {
     display: 'inline-block',
     verticalAlign: 'top',
     position: 'relative',
-    padding: 'var(--gy) var(--gx) 0 var(--gx)', // بالا = فاصله تا نوار افقی
+    padding: 'var(--gy) var(--gx) 0 var(--gx)',                                   // بالا = فاصله تا نوار افقی
   },
 
   // نیمه‌های نوار افقی بین خواهر/برادرها
@@ -658,7 +780,7 @@ const orgTreeSx = {
   '& li:only-child::before, & li:only-child::after': { display: 'none' },
   '& li:only-child': { paddingTop: 0 },
 
-  // ابتدا/انتهای خواهر/برادرها: نیمه‌ی اضافی حذف + گوشه گرد
+  // ابتدا/انتهای خواهر/برادرها: حذف نیمه‌ی اضافی + گوشه‌گرد
   '& li:first-of-type::before': { borderTop: 'none' },
   '& li:last-of-type::after': { borderTop: 'none' },
   '& li:last-of-type::before': {
@@ -670,10 +792,8 @@ const orgTreeSx = {
     borderTopRightRadius: 'var(--cr)',
   },
 
-  // 👇 توجه: عمودیِ قدیمی را حذف کردیم تا اتصال دقیق را خودِ نود بکشد
-  // '& ul ul::before':  << اینو نداشته باش
-};
-
+  // اتصال عمودی قدیمی حذف شده؛ اگر نیاز داری، خود نود رسمش کند
+});
 
 // ——— نود بازگشتی درخت
 function OrgTreeNode({
@@ -1752,6 +1872,32 @@ function ManagerRoleSection({
     () => findNodeById(tree?.[0], selectedSAId ?? null),
     [tree, selectedSAId]
   );
+  useEffect(() => {
+    const root = tree?.[0];
+    if (!root) return;
+
+    // ایندکس id→node
+    const index = new Map<number, UserNode>();
+    (function dfs(n: UserNode) {
+      index.set(n.id, n);
+      (n.subordinates || []).forEach(dfs);
+    })(root);
+
+    const collectDrivers = (startId: number) => {
+      const start = index.get(startId);
+      if (!start) return [] as number[];
+      const ids: number[] = [];
+      (function walk(n: UserNode) {
+        if (n.role_level === 6) ids.push(n.id);
+        (n.subordinates || []).forEach(walk);
+      })(start);
+      return ids;
+    };
+
+    HoverSummaryBus.setDriverCollector(collectDrivers);
+    return () => HoverSummaryBus.setDriverCollector(null);
+  }, [tree]);
+
   return (
 
     <div>
@@ -2127,7 +2273,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
       </IconButton>
 
       <h2>مدیریت نقش‌ها ({roleLabel(user.role_level, saType)})</h2>
-      <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+      <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap-reverse' }}>
         {canCreate && (
           <Magnetic>
 
@@ -3938,6 +4084,7 @@ function SubUserVehicleAccessDialog({
 import { useLayoutEffect, useRef } from 'react';
 import Tilt from '../theme/Tilt';
 import Magnetic from '../theme/Magnetic';
+import { getTheme } from '../theme/theme';
 export function AutoFitTree({
   children,
   minScale = 0.45,               // اگر درخت خیلی پهن شد، بیشتر کوچیک می‌کنه

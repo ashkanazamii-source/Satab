@@ -64,6 +64,25 @@ function sanitizeKeys(input: unknown): MonitorKey[] {
   return out;
 }
 
+
+// ----- بالا، کنار importها
+type TelemetryMsg = {
+  ts?: string | number | Date;
+  ignition?: boolean;
+  idle_time?: number | string | null;
+  odometer?: number | string | null;
+  engine_on_duration?: number | string | null;
+  distance_m?: number | string | null;
+  mission_count?: number | string | null;
+  lat?: number | string;
+  lng?: number | string;
+  [k: string]: any;
+};
+
+
+
+
+
 @Injectable()
 export class DriverRouteService {
   dailyTrackRepo: any;
@@ -78,18 +97,192 @@ export class DriverRouteService {
   ) { }
 
   /** محاسبه مسافت بر حسب کیلومتر */
-  calculateDistance(points: { lat: number; lng: number }[]): number {
-    if (!points || points.length < 2) return 0;
-    let total = 0;
-    for (let i = 1; i < points.length; i++) {
-      total += getDistance(
-        { latitude: points[i - 1].lat, longitude: points[i - 1].lng },
-        { latitude: points[i].lat, longitude: points[i].lng },
+  // جایگزین calculateDistance
+  calculateDistance(points: { lat: any; lng: any; timestamp?: any }[]): number {
+    if (!Array.isArray(points) || points.length < 2) return 0;
+
+    // 1) نرمال‌سازی + سورت زمانی اگر timestamp داریم
+    const norm = points
+      .map(p => ({
+        lat: Number((p as any).lat),
+        lng: Number((p as any).lng),
+        ts: (p as any).timestamp ? new Date((p as any).timestamp).getTime() : null
+      }))
+      .filter(p =>
+        Number.isFinite(p.lat) && Number.isFinite(p.lng) &&
+        p.lat >= -90 && p.lat <= 90 && p.lng >= -180 && p.lng <= 180 &&
+        !(p.lat === 0 && p.lng === 0)
       );
+    norm.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
+
+    let total = 0;
+    for (let i = 1; i < norm.length; i++) {
+      const a = norm[i - 1], b = norm[i];
+      const d = getDistance({ latitude: a.lat, longitude: a.lng }, { latitude: b.lat, longitude: b.lng });
+      const dt = (a.ts != null && b.ts != null) ? Math.max(1, (b.ts - a.ts) / 1000) : null;
+
+      // فیلتر نویز/پرش
+      if (d < 3) continue;                       // کمتر از 3 متر بی‌اثر
+      if (dt != null && d / dt > 60) continue;     // سرعت غیرواقعی
+      if (dt == null && d > 1000) continue;      // پرش بزرگ بدون زمان
+
+      total += d;
     }
     return total / 1000;
   }
-  // DriverRouteService
+
+
+  private num(v: any) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  private parseDate(v: any): Date | null {
+    if (v instanceof Date && !isNaN(+v)) return v;
+    if (typeof v === 'number') { const d = new Date(v); return isNaN(+d) ? null : d; }
+    if (typeof v === 'string') { const d = new Date(v); return isNaN(+d) ? null : d; }
+    return null;
+  }
+  // راننده‌ی سوار روی این vehicle در لحظه‌ی at
+  private async resolveDriverAt(vehicleId: number, at: Date): Promise<{ driverId: number, assignmentId: number | null } | null> {
+    const rows = await this.userRepo.query(
+      `
+    SELECT id, driver_id
+    FROM driver_vehicle_assignments
+    WHERE vehicle_id = $1
+      AND started_at <= $2
+      AND (ended_at IS NULL OR ended_at > $2)
+    ORDER BY started_at DESC
+    LIMIT 1
+    `,
+      [vehicleId, at.toISOString()],
+    );
+    if (!rows?.length) return null;
+    return { driverId: Number(rows[0].driver_id), assignmentId: Number(rows[0].id) || null };
+  }
+
+  // Route راننده که لحظه‌ی at را پوشش دهد (active یا خاتمه‌نیافته در آن لحظه)
+  private async getRouteByDriverAt(driverId: number, at: Date) {
+    return this.routeRepo.findOne({
+      where: {
+        driver_id: driverId,
+        started_at: Between(new Date('1970-01-01T00:00:00Z'), at),
+      } as any,
+      order: { started_at: 'DESC' },
+    }).then(r => (r && (!r.finished_at || r.finished_at > at) ? r : null));
+  }
+
+  // ساخت Route از لحظه‌ی at (وقتی راننده مسیر فعال ندارد اما تله‌متری داریم)
+  private async createRouteAt(driverId: number, vehicleId: number | null, assignmentId: number | null, at: Date) {
+    const dayBucket = at.toISOString().slice(0, 10);
+    const driver = await this.userRepo.findOne({ where: { id: driverId } });
+    if (!driver) throw new NotFoundException('راننده پیدا نشد');
+
+    const route = this.routeRepo.create({
+      driver,
+      driver_id: driverId,
+      vehicle_id: vehicleId ?? null,
+      assignment_id: assignmentId ?? null,
+      started_at: at,
+      status: DriverRouteStatus.active,
+      day_bucket: dayBucket,
+      gps_points: [],
+      telemetry_events: [],
+      points_count: 0,
+      total_distance_km: 0,
+      last_lat: null,
+      last_lng: null,
+      last_point_ts: null,
+    });
+    return this.routeRepo.save(route);
+  }
+  /** تله‌متری تکیِ خودرو → میرور به راننده/Route مطابق زمان پیام */
+  async ingestTelemetryForVehicle(vehicleId: number, msg: TelemetryMsg) {
+    const at = this.parseDate(msg?.ts ?? new Date());
+    if (!at) throw new BadRequestException('ts نامعتبر است.');
+
+    // چه راننده‌ای سوار بوده؟
+    const resolved = await this.resolveDriverAt(vehicleId, at);
+    if (!resolved) return { ok: true, mirrored: false };
+
+    const { driverId, assignmentId } = resolved;
+
+    // Route پوشش‌دهنده‌ی این لحظه
+    let route = await this.getRouteByDriverAt(driverId, at);
+    if (!route) {
+      // اگر راننده Route فعال در آن لحظه نداشت، برای پیوستگی داده‌ها یک Route بساز
+      route = await this.createRouteAt(driverId, vehicleId ?? null, assignmentId, at);
+    }
+
+    // رویدادهای تله‌متری را به Route بچسبان
+    await this.addRouteMeta(route.id, {
+      ts: at.toISOString(),
+      ignition: typeof msg.ignition === 'boolean' ? msg.ignition : undefined,
+      idle_time: this.num(msg.idle_time) ?? undefined,
+      odometer: this.num(msg.odometer) ?? undefined,
+      engine_temp: this.num(msg.engine_temp) ?? undefined,
+    });
+
+    // اگر مختصات هم همراه پیام آمد، به عنوان نقطه‌ی مسیر ذخیره کن (افزایشی)
+    const lat = this.num(msg.lat);
+    const lng = this.num(msg.lng);
+    if (lat != null && lng != null) {
+      await this.addPoint(route.id, { lat, lng, ts: at.toISOString() });
+    }
+
+    return { ok: true, mirrored: true, driver_id: driverId, route_id: route.id };
+  }
+
+  /** تله‌متری Batchِ خودرو → میرور به راننده/Route */
+  async ingestTelemetryBatchForVehicle(vehicleId: number, items: TelemetryMsg[]) {
+    let mirrored = 0, skipped = 0;
+
+    // برای کارایی بهتر، پیام‌ها را بر اساس ts صعودی مرتب کنیم
+    const arr: TelemetryMsg[] = Array.isArray(items) ? [...items] : [];
+    arr.sort((a, b) => this.toEpochMs(a?.ts) - this.toEpochMs(b?.ts));
+
+    // کش کوچک برای جلوگیری از ساخت Route‌های اضافی در یک بازه
+    const routeCache = new Map<string, DriverRoute>(); // key: driverId@epochMinute
+
+    for (const raw of arr) {
+      const at = this.parseDate(raw?.ts ?? new Date());
+      if (!at) { skipped++; continue; }
+
+      const resolved = await this.resolveDriverAt(vehicleId, at);
+      if (!resolved) { skipped++; continue; }
+      const { driverId, assignmentId } = resolved;
+
+      // Route در لحظه‌ی at
+      let route = await this.getRouteByDriverAt(driverId, at);
+      if (!route) {
+        const key = `${driverId}@${Math.floor(at.getTime() / 60000)}`; // دقیقه‌ای
+        route = routeCache.get(key) || await this.createRouteAt(driverId, vehicleId, assignmentId, at);
+        routeCache.set(key, route);
+      }
+
+      await this.addRouteMeta(route.id, {
+        ts: at.toISOString(),
+        ignition: typeof raw.ignition === 'boolean' ? raw.ignition : undefined,
+        idle_time: this.num(raw.idle_time) ?? undefined,
+        odometer: this.num(raw.odometer) ?? undefined,
+        engine_temp: this.num(raw.engine_temp) ?? undefined,
+      });
+
+      const lat = this.num(raw.lat);
+      const lng = this.num(raw.lng);
+      if (lat != null && lng != null) {
+        await this.addPoint(route.id, { lat, lng, ts: at.toISOString() });
+      }
+
+      mirrored++;
+    }
+
+    return { ok: true, mirrored, skipped, total: arr.length };
+  }
+
+  private toEpochMs(v: any): number {
+    const d = this.parseDate(v);
+    return d ? d.getTime() : 0;
+  }
   async addRouteMeta(
     routeId: number,
     meta: {
@@ -212,60 +405,100 @@ export class DriverRouteService {
 
 
   async addPoint(routeId: number, point: PointInput) {
-    // مرحله ۱: مسیر فعال را پیدا کن
-    const route = await this.routeRepo.findOne({ where: { id: routeId } });
-    if (!route) {
-      throw new NotFoundException('مسیر پیدا نشد');
-    }
-    if (route.status !== DriverRouteStatus.active) {
-      throw new BadRequestException('این مسیر بسته شده است');
-    }
-
-    // مرحله ۲: مختصات ورودی را اعتبارسنجی کن
-    const lat = Number(point.lat);
-    const lng = Number(point.lng);
-    if (
-      !Number.isFinite(lat) || !Number.isFinite(lng) ||
-      lat < -90 || lat > 90 || lng < -180 || lng > 180
-    ) {
+    const lat = Number(point.lat), lng = Number(point.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
       throw new BadRequestException('مختصات نامعتبر است');
     }
+    if (lat === 0 && lng === 0) return; // رد 0,0
 
-    const ts = point.ts ?? point.timestamp ?? new Date().toISOString();
-    const existingPoints = Array.isArray(route.gps_points) ? route.gps_points : [];
-    const newPointObject = { lat, lng, timestamp: ts };
+    const ts = new Date(point.ts ?? point.timestamp ?? Date.now());
+    if (isNaN(+ts)) throw new BadRequestException('ts نامعتبر است');
 
-    // مرحله ۳: تمام تغییرات را روی آبجکت در حافظه اعمال کن
+    const qr = this.routeRepo.manager.connection.createQueryRunner();
+    await qr.connect();
+    await qr.startTransaction();
+    try {
+      // قفل برای جلوگیری از race
+      const route = await qr.manager
+        .createQueryBuilder(DriverRoute, 'r')
+        .setLock('pessimistic_write')
+        .where('r.id = :id', { id: routeId })
+        .getOne();
 
-    // ۱. مسافت را به صورت افزایشی آپدیت کن
-    if (existingPoints.length > 0) {
-      const lastPoint = existingPoints[existingPoints.length - 1];
-      const distanceIncrementMeters = getDistance(
-        { latitude: lastPoint.lat, longitude: lastPoint.lng },
-        { latitude: newPointObject.lat, longitude: newPointObject.lng },
+      if (!route) throw new NotFoundException('مسیر پیدا نشد');
+      if (route.status !== DriverRouteStatus.active) throw new BadRequestException('این مسیر بسته شده است');
+
+      // ترتیب زمانی: نقطهٔ out-of-order را فعلاً نادیده بگیر
+      if (route.last_point_ts && ts.getTime() <= new Date(route.last_point_ts).getTime()) {
+        await qr.rollbackTransaction();
+        return route;
+      }
+
+      // محاسبهٔ افزایشی با فیلتر نویز/پرش
+      let deltaM = 0;
+      const lastLat = Number(route.last_lat);
+      const lastLng = Number(route.last_lng);
+      if (Number.isFinite(lastLat) && Number.isFinite(lastLng)) {
+        const d = getDistance(
+          { latitude: lastLat, longitude: lastLng },
+          { latitude: lat, longitude: lng }, // ← فیکسِ latitude
+        );
+        const dt = route.last_point_ts ? (ts.getTime() - new Date(route.last_point_ts).getTime()) / 1000 : null;
+
+        // فیلتر: <3m نویز، >60 m/s سرعت غیرواقعی، یا پرش >1000m بدون زمان
+        const tooNoisy = d < 3;
+        const tooFast = dt != null && d / dt > 60;
+        const bigJump = dt == null && d > 1000;
+        if (!tooNoisy && !tooFast && !bigJump) {
+          deltaM = d;
+        }
+      }
+
+      const newPoint = { lat, lng, timestamp: ts.toISOString() };
+
+      // بهتر: فقط id را برگردانیم و بعد entity را بخوانیم تا تایپ درست باشد
+      type Row = { id: number };
+      const rows: Row[] = await qr.manager.query(
+        `
+      UPDATE driver_routes
+      SET
+        gps_points = COALESCE(gps_points, '[]'::jsonb) || $1::jsonb,
+        points_count = COALESCE(points_count,0) + 1,
+        total_distance_km = COALESCE(total_distance_km,0) + $2,
+        last_lat = $3,
+        last_lng = $4,
+        last_point_ts = $5
+      WHERE id = $6 AND status = 'active'
+      RETURNING id;
+      `,
+        [JSON.stringify([newPoint]), deltaM / 1000, lat, lng, ts.toISOString(), routeId]
       );
-      route.total_distance_km = (route.total_distance_km || 0) + distanceIncrementMeters / 1000;
+
+      if (!rows?.length) {
+        // هیچ ردیفی آپدیت نشد (مثلاً وضعیت active نبود) → رول‌بک کن و همین route را برگردان
+        await qr.rollbackTransaction();
+        return route;
+      }
+
+      await qr.commitTransaction();
+
+      // داخل همان QueryRunner entity را بخوان تا تایپ دقیق DriverRoute داشته باشی
+      const savedRoute = await qr.manager.findOne(DriverRoute, { where: { id: rows[0].id } });
+      if (savedRoute) {
+        this.gateway.broadcastLocationUpdate(savedRoute); // ← الان DriverRoute است، نه آرایه
+        return savedRoute;
+      }
+
+      // فالس‌بک: اگر به هر دلیلی findOne چیزی نداد
+      return await this.routeRepo.findOne({ where: { id: rows[0].id } });
+    } catch (e) {
+      await qr.rollbackTransaction();
+      throw e;
+    } finally {
+      await qr.release();
     }
-
-    // ۲. نقطه جدید را به آرایه اضافه کن
-    route.gps_points = [...existingPoints, newPointObject];
-
-    // ۳. داده‌های کش‌شده دیگر را آپدیت کن
-    route.points_count = (route.points_count || 0) + 1;
-    route.last_lat = newPointObject.lat;
-    route.last_lng = newPointObject.lng;
-    route.last_point_ts = new Date(ts);
-
-    // مرحله ۴: آبجکت کامل و آپدیت‌شده را فقط یک بار در دیتابیس ذخیره کن
-    const savedRoute = await this.routeRepo.save(route);
-
-    // مرحله ۵: آبجکت ذخیره‌شده و نهایی را برای همه broadcast کن
-    // (اطمینان حاصل می‌کند که همه دقیقاً همان چیزی را می‌بینند که در دیتابیس است)
-    this.gateway.broadcastLocationUpdate(savedRoute);
-
-    // مرحله ۶: آبجکت نهایی را برگردان
-    return savedRoute;
   }
+
   async processUnprocessedAssignments(): Promise<{ created_routes: number; processed_assignments: number; }> {
     console.log(`[PROCESS_PAST_DATA] Starting job to find and process unprocessed assignments...`);
 

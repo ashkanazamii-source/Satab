@@ -7,7 +7,7 @@ export const brand = {
   secondary: '#374151',
   success: '#16A34A',
   warning: '#D97706',
-  error:   '#DC2626',
+  error: '#DC2626',
   surfaceGrad: `radial-gradient(60% 50% at 100% 0%, ${alpha('#000', .04)} 0%, transparent 60%),
                 radial-gradient(70% 55% at 0% 15%, ${alpha('#000', .05)} 0%, transparent 65%)`
 };
@@ -22,20 +22,23 @@ export const getTheme = () =>
     direction: 'rtl',
     palette: {
       mode: 'light',
-      primary:   { main: brand.primary },
+      primary: { main: brand.primary },
       secondary: { main: brand.secondary },
-      success:   { main: brand.success },
-      warning:   { main: brand.warning },
-      error:     { main: brand.error },
+      success: { main: brand.success },
+      warning: { main: brand.warning },
+      error: { main: brand.error },
 
       // کاملاً سفید/روشن
-      background: {
+      /*background: {
         default: '#F7F9FC',
         paper:   '#FFFFFF',
+      },*/
+      background: {
+        default: '#eef0f2ff',
+        paper: '#dde2e7f3',
       },
-
       text: {
-        primary:   '#0A0A0A',
+        primary: '#0A0A0A',
         secondary: '#4B5563',
       },
 
@@ -50,11 +53,11 @@ export const getTheme = () =>
       htmlFontSize: 16,
       fontSize: 15,
       h1: { fontWeight: 900, fontSize: '2.4rem', lineHeight: 1.2 },
-      h2: { fontWeight: 900, fontSize: '2rem',   lineHeight: 1.25 },
-      h3: { fontWeight: 900, fontSize: '1.75rem',lineHeight: 1.3 },
+      h2: { fontWeight: 900, fontSize: '2rem', lineHeight: 1.25 },
+      h3: { fontWeight: 900, fontSize: '1.75rem', lineHeight: 1.3 },
       h4: { fontWeight: 800, fontSize: '1.5rem', lineHeight: 1.35 },
-      h5: { fontWeight: 800, fontSize: '1.25rem',lineHeight: 1.4 },
-      h6: { fontWeight: 800, fontSize: '1.125rem',lineHeight: 1.45 },
+      h5: { fontWeight: 800, fontSize: '1.25rem', lineHeight: 1.4 },
+      h6: { fontWeight: 800, fontSize: '1.125rem', lineHeight: 1.45 },
       subtitle1: { fontWeight: 700, fontSize: '1rem' },
       subtitle2: { fontWeight: 700, fontSize: '0.95rem' },
       body1: { fontSize: '0.975rem' },
@@ -128,7 +131,65 @@ export const getTheme = () =>
           }
         }
       },
+      MuiDialog: {
+        defaultProps: {
+          PaperProps: { elevation: 0 }, // از سایه‌ی خشن جلوگیری می‌کند
+        },
+        styleOverrides: {
+          paper: ({ theme }) => ({
+            borderRadius: 18,
+            border: `1px solid ${alpha('#111827', .12)}`,
+            boxShadow: '0 22px 60px rgba(17,24,39,.16)',
+            // شیشه‌ای: شفاف + بلور
+            background: `linear-gradient(
+          ${alpha(theme.palette.background.paper, .58)},
+          ${alpha(theme.palette.background.paper, .58)}
+        )`,
+            backdropFilter: 'blur(16px) saturate(120%)',
+            WebkitBackdropFilter: 'blur(16px) saturate(120%)',
+          }),
+          // اختیاری: چینش وسطِ صفحه و فاصله‌ها
+          container: {
+            alignItems: 'center',
+          },
+        },
+      },
 
+      // 👇 شیشه‌ای/مه‌آلود کردن پس‌زمینه‌ی پشت دیالوگ
+      MuiBackdrop: {
+        styleOverrides: {
+          root: {
+            backgroundColor: alpha('#0B0F13', .35), // تیرگی لطیف
+            backdropFilter: 'blur(2px)',            // محوِ پس‌زمینه
+            WebkitBackdropFilter: 'blur(2px)',
+          },
+        },
+      },
+
+      // اختیاری: هماهنگی عنوان/اکشن‌ها
+      MuiDialogTitle: {
+        styleOverrides: {
+          root: {
+            fontWeight: 900,
+            padding: '16px 20px',
+          },
+        },
+      },
+      MuiDialogContent: {
+        styleOverrides: {
+          root: {
+            padding: 20,
+          },
+        },
+      },
+      MuiDialogActions: {
+        styleOverrides: {
+          root: {
+            padding: 16,
+            gap: 8,
+          },
+        },
+      },
       MuiTooltip: {
         styleOverrides: {
           tooltip: {
@@ -163,7 +224,7 @@ export const getTheme = () =>
     },
 
     motion: {
-      dur:  { xs: .16, sm: .22, md: .30, lg: .45 },
+      dur: { xs: .16, sm: .22, md: .30, lg: .45 },
       ease: { out: [0.22, 0.61, 0.36, 1], in: [0.4, 0, 1, 1], inOut: [0.85, 0, 0.15, 1] }
     }
   });

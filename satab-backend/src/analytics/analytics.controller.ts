@@ -5,7 +5,7 @@ import { AclGuard } from '../acl/acl.guard';
 import { ACL } from '../acl/acl.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { Users } from '../users/users.entity';
-enum Bucket { day='day', week='week', month='month' }
+enum Bucket { day = 'day', week = 'week', month = 'month' }
 
 @Controller('analytics')
 @UseGuards(JwtAuthGuard, AclGuard)
@@ -30,22 +30,35 @@ export class AnalyticsController {
     return this.svc.getTree(me, userId, fromD, toD);
   }
 
- @Get('node-summary')
-  @ACL({ roles: [1,2,3,4,5,6] })
+  @Get('node-summary')
+  @ACL({ roles: [1, 2, 3, 4, 5, 6] })
   async nodeSummary(
     @CurrentUser() me: Users,
     @Query('userId') userIdStr?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    // ↓ پارامترهای اختیاری برای کنترل خروجی
+    @Query('includeTelemetry') includeTelemetry?: 'true' | 'false',
+    @Query('points') pointsStr?: string,   // حداکثر تعداد نقاط GPS
+    @Query('events') eventsStr?: string,   // حداکثر تعداد ایونت‌های تله‌متری
   ) {
     const userId = userIdStr ? Number(userIdStr) : undefined;
     const fromD = from ? new Date(from) : new Date('1970-01-01');
-    const toD   = to   ? new Date(to)   : new Date();
-    return this.svc.getNodeSummary(me, userId, fromD, toD);
+    const toD = to ? new Date(to) : new Date();
+
+    const maxPoints = Math.max(1, Math.min(5000, Number(pointsStr ?? 500) || 500));
+    const maxEvents = Math.max(1, Math.min(5000, Number(eventsStr ?? 200) || 200));
+    const wantTel = includeTelemetry !== 'false'; // پیش‌فرض: بیاور
+
+    return this.svc.getNodeSummary(me, userId, fromD, toD, {
+      includeTelemetry: wantTel,
+      limits: { maxPoints, maxEvents },
+    });
   }
 
+
   @Get('dashboard')
-  @ACL({ roles: [1,2,3,4,5,6] }) // ← اضافه شد
+  @ACL({ roles: [1, 2, 3, 4, 5, 6] }) // ← اضافه شد
   async dashboard(
     @CurrentUser() me: Users,
     @Query('userId') userIdStr?: string, // ← حذف ParseIntPipe
@@ -56,7 +69,7 @@ export class AnalyticsController {
   ) {
     const userId = userIdStr ? Number(userIdStr) : undefined;
     const fromD = from ? new Date(from) : new Date('1970-01-01');
-    const toD   = to   ? new Date(to)   : new Date();
+    const toD = to ? new Date(to) : new Date();
     return this.svc.getDashboard(me, userId, bucket, fromD, toD);
   }
 

@@ -26,21 +26,20 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { ProfilesModule } from './profiles/profiles.module';
 import { PairingModule } from './pairing/pairing.module';
 import { OtpModule } from './sms/otp.module';
-import { ViolationsModule } from './telemetry/violations.module';
-import { TelemetryModule } from './telemetry/telemetry.module';
+import { ViolationsModule } from './violations/violations.module';
 import { ContextMiddleware } from './common/context.middleware';
-import { BoardModule } from './board/board.module';
 import { ShiftsModule } from './shifts/shifts.module';
 import { ShiftProfilesModule } from './shifts/shift-profiles.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TemporaryAssignmentsModule } from './temporary-assignments/temporary-assignments.module';
+import { IngestModule } from './board/ingest.module';
 
 
 @Module({
   imports: [
     EventEmitterModule.forRoot(),   // ⬅️ اینجا باید باشه
     ScheduleModule.forRoot(),   // ← فقط یک بار
-    
+
     // ENV
     ConfigModule.forRoot({ isGlobal: true }),
 
@@ -79,13 +78,11 @@ import { TemporaryAssignmentsModule } from './temporary-assignments/temporary-as
     ProfilesModule,
     PairingModule,
     OtpModule,
-    TelemetryModule,
     ViolationsModule,
-    BoardModule,
     ShiftsModule,
     ShiftProfilesModule,
-    TemporaryAssignmentsModule,   // ⬅️ این باید اینجا باشد
-
+    TemporaryAssignmentsModule,
+    IngestModule,
   ],
   providers: [
     // لاگ همهٔ درخواست‌های HTTP

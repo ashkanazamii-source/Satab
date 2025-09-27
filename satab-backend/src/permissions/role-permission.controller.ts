@@ -26,7 +26,7 @@ export class RolePermissionController {
   constructor(
     private readonly rolePermissionService: RolePermissionService,
     private readonly userService: UserService,
-    private readonly analytics: AnalyticsService, 
+    private readonly analytics: AnalyticsService,
 
   ) { }
   @Get('user/:id/summary')
@@ -36,11 +36,23 @@ export class RolePermissionController {
     @Param('id', ParseIntPipe) userId: number,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('includeTelemetry') includeTelemetry?: 'true' | 'false',
+    @Query('points') pointsStr?: string,
+    @Query('events') eventsStr?: string,
   ) {
     const fromD = from ? new Date(from) : new Date('1970-01-01');
     const toD = to ? new Date(to) : new Date();
-    return this.analytics.getNodeSummary(me, userId, fromD, toD);
+
+    const wantTel = includeTelemetry !== 'false'; // پیش‌فرض: بیاور
+    const maxPoints = Math.max(1, Math.min(5000, Number(pointsStr ?? 500) || 500));
+    const maxEvents = Math.max(1, Math.min(5000, Number(eventsStr ?? 200) || 200));
+
+    return this.analytics.getNodeSummary(me, userId, fromD, toD, {
+      includeTelemetry: wantTel,
+      limits: { maxPoints, maxEvents },
+    });
   }
+
   @Get('user/:id/dashboard')
   @ACL({ roles: [1, 2, 3, 4, 5, 6] })
   async getUserAnalyticsDashboard(

@@ -177,15 +177,21 @@ export class VehiclesController {
     return { options }; // خروجی استاندارد برای فرانت
   }
 
-  // تله‌متری خواندن
   @Get(':id/telemetry')
   async getTelemetry(
     @Param('id', ParseIntPipe) id: number,
     @Query('keys') keys?: string | string[],
+    @Query('from') from?: string,   // ISO
+    @Query('to') to?: string        // ISO
   ) {
     const ks = Array.isArray(keys) ? keys : keys ? String(keys).split(',') : [];
-    return this.service.readVehicleTelemetry(id, ks);
+    const range = {
+      from: from ? new Date(from) : undefined,
+      to: to ? new Date(to) : undefined,
+    };
+    return this.service.readVehicleTelemetry(id, ks, range);
   }
+
 
   // ایستگاه‌ها
   @Get(':id/stations')

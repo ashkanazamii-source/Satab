@@ -1,8 +1,12 @@
+// src/geofence/geofence.entity.ts
 import {
-  Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, Index, Unique,
+  Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn,
+  Index, Unique, ManyToOne, JoinColumn, RelationId
 } from 'typeorm';
+import { Vehicle } from '../vehicles/vehicle.entity'; // مسیر صحیح پروژه خودت
 
 export type GeofenceType = 'polygon' | 'circle';
+// اگر LatLng جای دیگری تعریف شده، از آن import کن و این را حذف کن
 export type LatLng = { lat: number; lng: number };
 
 @Entity({ name: 'geofences' })
@@ -11,6 +15,11 @@ export class GeofenceEntity {
   @PrimaryGeneratedColumn()
   id!: number;
 
+  @ManyToOne(() => Vehicle, { onDelete: 'CASCADE', eager: false })
+  @JoinColumn({ name: 'vehicleId' })
+  vehicle!: Vehicle;
+
+  @RelationId((g: GeofenceEntity) => g.vehicle)
   @Index()
   @Column({ type: 'int' })
   vehicleId!: number;
@@ -34,14 +43,13 @@ export class GeofenceEntity {
 
   // common settings
   @Column({ type: 'int', default: 5 })
-  toleranceM!: number; // حاشیه اطمینان (متر)
+  toleranceM!: number; // (m)
 
-  // ⬇️ قبلاً 3 بود؛ برای ثبت با اولین خروج می‌گذاریم 1
   @Column({ type: 'int', default: 1 })
   outsideN!: number;
 
   @Column({ type: 'int', default: 60000 })
-  cooldownMs!: number; // فاصله بین ثبت تخلف (ms)
+  cooldownMs!: number; // ms
 
   @Column({ type: 'boolean', default: true })
   active!: boolean;

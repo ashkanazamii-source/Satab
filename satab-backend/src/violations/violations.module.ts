@@ -9,6 +9,6 @@ import { ViolationsController } from './violations.controller';
   imports: [TypeOrmModule.forFeature([ViolationEntity])],
   providers: [ViolationsService],
   controllers: [ViolationsController],
-  exports: [ViolationsService], // ⬅️ حتماً اکسپورت شود
+  exports: [ViolationsService],
 })
 export class ViolationsModule {}

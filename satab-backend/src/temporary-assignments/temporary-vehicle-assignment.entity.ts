@@ -1,4 +1,3 @@
-// src/temporary-assignments/temporary-vehicle-assignment.entity.ts
 import { Entity, PrimaryGeneratedColumn, Column, Index, CreateDateColumn, UpdateDateColumn } from 'typeorm';
 
 export type VehicleSettingsSnapshot = {

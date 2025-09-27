@@ -22,7 +22,7 @@ import { VehiclesGateway } from './vehicles.gateway';
 // Modules
 import { UserModule } from '../users/users.module';
 import { VehiclePoliciesModule } from '../vehicle-policies/vehicle-policies.module';
-import { ViolationsModule } from '../telemetry/violations.module';
+import { ViolationsModule } from '../violations/violations.module';
 import { DriverVehicleAssignmentModule } from '../driver-vehicle-assignment/driver-vehicle-assignment.module';
 import { DriverRouteModule } from '../drivers/driver-route.module';
 import { RolePermissionModule } from '../permissions/role-permission.module'; // ✅ ایمپورت کردن ماژول دسترسی‌ها
@@ -39,24 +39,18 @@ import { RolePermissionModule } from '../permissions/role-permission.module'; //
       RouteGeofenceEvent,
       VehiclePolicy,
     ]),
-    
     forwardRef(() => DriverRouteModule),
     UserModule,
     VehiclePoliciesModule,
     ViolationsModule,
     DriverVehicleAssignmentModule,
-    RolePermissionModule, // ✅✅✅ این ماژول باید اینجا ایمپورت شود ✅✅✅
+    RolePermissionModule,
   ],
-  controllers: [
-    VehiclesController,
-    RoutesController
-  ],
-  providers: [
-    VehiclesService,
-    VehiclesGateway
-  ],
+  controllers: [VehiclesController, RoutesController],
+  providers: [VehiclesService, VehiclesGateway],
   exports: [
-    VehiclesService
+    VehiclesService,
+    VehiclesGateway, // ✅ اضافه شد
   ],
 })
 export class VehiclesModule {}

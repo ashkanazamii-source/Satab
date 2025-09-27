@@ -18,12 +18,49 @@ import { RouteGeofenceState } from './route-geofence-state.entity';
 import { RouteGeofenceEvent } from './route-geofence-event.entity';
 import { CreateRouteDto } from 'src/dto/create-route.dto';
 import { DeepPartial } from 'typeorm';
-import { ViolationsService } from '../telemetry/violations.service'; // ⬅️ اضافه
+import { ViolationsService } from '../violations/violations.service'; // ⬅️ اضافه
 import { DriverVehicleAssignmentService } from '../driver-vehicle-assignment/driver-vehicle-assignment.service';
 import { DriverRouteService } from 'src/drivers/driver-route.service';
 
+
+
+type TelemetryRange = { from?: Date | string; to?: Date | string };
+
+function startOfToday() {
+  const d = new Date(); d.setHours(0, 0, 0, 0); return d;
+}
+function endOfToday() {
+  const d = new Date(); d.setHours(23, 59, 59, 999); return d;
+}
+function toDate(v?: Date | string) {
+  if (!v) return undefined;
+  const d = new Date(v); return isNaN(+d) ? undefined : d;
+}
+
+// جمع فاصله‌ی هورساین بین نقاط
+function haversineSum(points: Array<{ lat: number; lng: number }>): number {
+  const R = 6371; // km
+  const toRad = (x: number) => x * Math.PI / 180;
+  let d = 0;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i];
+    const dLat = toRad(b.lat - a.lat);
+    const dLng = toRad(b.lng - a.lng);
+    const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+    d += 2 * R * Math.asin(Math.sqrt(h));
+  }
+  return +d.toFixed(2);
+}
+
+
+
 @Injectable()
 export class VehiclesService {
+  driverRoutesRepo: any;
+  missionsRepo: any;
+  trackRepo: any;
+  tlmRepo: any;
   constructor(
 
     @InjectRepository(Vehicle)
@@ -341,25 +378,90 @@ export class VehiclesService {
 
 
 
-  async readVehicleTelemetry(vehicleId: number, keys: string[] = []) {
+  async readVehicleTelemetry(
+    vehicleId: number,
+    keys: string[] = [],
+    range?: TelemetryRange,   // ⬅️ بازه اختیاری
+  ) {
     const out: any = {};
+
+    // وسیله و سیاست
     const v = await this.repo.findOne({
       where: { id: vehicleId },
       relations: { owner_user: true },
-      select: { id: true, vehicle_type_code: true, owner_user: { id: true } },
+      select: {
+        id: true,
+        vehicle_type_code: true,
+        owner_user: { id: true },
+        // اگر این فیلدها روی جدول vehicle داری و می‌خوای مستقیم هم بدهی:
+        ignition: true as any,
+        idletime_sec: false as any,    // فقط برای تایپ‌هینت
+        odometer_km: true as any,
+        ignition_on_sec_since_reset: true as any,
+      } as any,
     });
     if (!v) throw new NotFoundException('Vehicle not found');
 
-    const pol = await this.policyRepo.findOne({
-      where: { user_id: Number(v.owner_user?.id), vehicle_type_code: v.vehicle_type_code },
-    });
+    // اگر لازم داری:
+    // const pol = await this.policyRepo.findOne({
+    //   where: { user_id: Number(v.owner_user?.id), vehicle_type_code: v.vehicle_type_code },
+    // });
 
-    if (!v) return out;
+    const want = (k: string) => !keys.length || keys.includes(k);
 
-    if (!keys.length || keys.includes('ignition')) out.ignition = v.ignition ?? null;
-    if (!keys.length || keys.includes('idle_time')) out.idle_time = v.idle_time_sec ?? null;
-    if (!keys.length || keys.includes('odometer')) out.odometer = v.odometer_km ?? null;
-    if (!keys.length || keys.includes('engine_on_duration')) out.engine_on_duration = v.ignition_on_sec_since_reset ?? 0;
+    // پایه‌ها (آخرین وضعیت ذخیره‌شده روی رکورد vehicle)
+    if (want('ignition')) out.ignition = (v as any).ignition ?? null;
+    if (want('idle_time')) out.idle_time = (v as any).idletime_sec ?? (v as any).idle_time_sec ?? null;
+    if (want('odometer')) out.odometer = (v as any).odometer_km ?? null;
+    if (want('engine_on_duration')) out.engine_on_duration = (v as any).ignition_on_sec_since_reset ?? 0;
+
+    // بازه‌ی زمانی
+    const from = toDate(range?.from) ?? startOfToday();
+    const to = toDate(range?.to) ?? endOfToday();
+
+    // --- distance_km: اول اختلاف کیلومترشمار، فالبک = جمع GPS ---
+    if (want('distance_km')) {
+      let dist: number | null = null;
+
+      // اگر جدول/ریپوی تله‌متری داری که تاریخچهٔ کیلومترشمار را نگه می‌دارد:
+      try {
+        if (this.tlmRepo?.nearestNumber) {
+          const odoStart = await this.tlmRepo.nearestNumber(vehicleId, 'odometer', from, 'lte');
+          const odoEnd = await this.tlmRepo.nearestNumber(vehicleId, 'odometer', to, 'lte');
+          if (odoStart != null && odoEnd != null) {
+            const d = odoEnd - odoStart;
+            if (Number.isFinite(d) && d >= 0) dist = +d.toFixed(2);
+          }
+        }
+      } catch { /* ignore */ }
+
+      // فالبک: از نقاط GPS بازه جمع بزن
+      if (dist == null) {
+        try {
+          if (this.trackRepo?.getPoints) {
+            const pts = await this.trackRepo.getPoints(vehicleId, from, to); // [{lat,lng,ts}, ...]
+            const arr = Array.isArray(pts) ? pts.map(p => ({ lat: +p.lat, lng: +p.lng })).filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lng)) : [];
+            dist = arr.length >= 2 ? haversineSum(arr) : 0;
+          }
+        } catch { /* ignore */ }
+      }
+
+      out.distance_km = dist ?? null;
+    }
+
+    // --- jobs_count: تعداد مأموریت‌های این ماشین در بازه ---
+    if (want('jobs_count')) {
+      let cnt: number | null = null;
+      try {
+        if (this.missionsRepo?.countByVehicle) {
+          cnt = await this.missionsRepo.countByVehicle(vehicleId, from, to);
+        } else if (this.driverRoutesRepo?.countByVehicleFinished) {
+          // اگر مأموریت‌ها را در driver_routes نگه می‌داری:
+          cnt = await this.driverRoutesRepo.countByVehicleFinished(vehicleId, from, to);
+        }
+      } catch { /* ignore */ }
+      out.jobs_count = cnt ?? null;
+    }
 
     return out;
   }
@@ -487,8 +589,27 @@ export class VehiclesService {
       console.log(`LOG 6: New route created (ID: ${newRoute.id}). Adding the first point.`);
       await this.driverRoutes.addPoint(newRoute.id, { lat, lng, ts: when.toISOString() });
     }
+    await this.checkRouteGeofence(vehicleId, lat, lng, when);
 
     console.log("--- [END] Finished processing driver logic successfully. ---");
+  }
+  // vehicles.service.ts
+  async handleGeofenceExit(vehicleId: number, lat: number, lng: number, when: Date) {
+    // بهتر: راننده در همان زمانِ رویداد
+    const driverUserId =
+      (this.assignments.getDriverByVehicleAt
+        ? await this.assignments.getDriverByVehicleAt(vehicleId, when)
+        : await this.assignments.getActiveDriverByVehicle(vehicleId));
+
+    await this.violations.addGeofenceExit({
+      vehicleId,
+      driverUserId,
+      meta: { lat, lng, at: when.toISOString() },
+    });
+
+    this.gw.emitGeofenceViolation(vehicleId, {
+      vehicleId, lat, lng, ts: when.toISOString(),
+    });
   }
 
 
@@ -973,7 +1094,6 @@ export class VehiclesService {
     st.inside = res.inside;
     st.last_distance_m = res.distance_m;
     st.last_segment_index = res.segment_index;
-    if (changed) st.last_changed_at = when;
     await this.fenceStateRepo.save(st);
 
     if (changed) {
@@ -987,12 +1107,13 @@ export class VehiclesService {
       });
       const savedEv = await this.fenceEventRepo.save(ev);
 
-      // ✅ فقط در «خروج» از مسیر تخلف ثبت کن
-      if (!res.inside) {
-        // رانندهٔ فعال با سرویس انتساب
-        const driverUserId = await this.assignments.getActiveDriverByVehicle(vehicleId);
+      // راننده دقیق در لحظه‌ی رویداد
+      const driverUserId = this.assignments.getDriverByVehicleAt
+        ? await this.assignments.getDriverByVehicleAt(vehicleId, when)
+        : await this.assignments.getActiveDriverByVehicle(vehicleId);
 
-        // متای کامل (برای گزارشات)
+      if (!res.inside) {
+        // فقط یکی از اینها را نگه دار (یا هر دو اگر واقعا هر دو نوع تخلف می‌خواهی)
         await this.violations.addOffRoute({
           vehicleId,
           driverUserId,
@@ -1006,19 +1127,23 @@ export class VehiclesService {
             at: when.toISOString(),
           },
         });
+
+        // اگر geofence_exit هم می‌خواهی:
+        await this.handleGeofenceExit(vehicleId, lat, lng, when);
       }
 
-      // برادکست اختیاری به UI
+      // اگر ستون زمان رویداد در entity اسمش created_at است:
       (this.gw as any)?.emitRouteGeofence?.(vehicleId, {
         route_id: routeId,
         type: ev.type,
-        at: (savedEv as any).at,
+        at: (savedEv as any).created_at ?? when.toISOString(),
         distance_m: ev.distance_m,
         segment_index: ev.segment_index,
         lat, lng,
         threshold_m: res.threshold_m,
       });
     }
+
   }
 
   async getCurrentRouteGeofenceEvents(vehicleId: number, limit = 50) {
