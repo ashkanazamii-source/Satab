@@ -1,6 +1,6 @@
 'use client';
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { ButtonGroup, Collapse } from '@mui/material';
+import { ButtonGroup, Collapse, Slider } from '@mui/material';
 import {
   Box, Typography, CircularProgress, Paper, IconButton, Chip, ListItemAvatar, Accordion, AccordionSummary, AccordionDetails, Divider,
   List, ListItem, ListItemText, Avatar, Stack, TextField, InputAdornment, Tabs, Tab, Tooltip, Dialog, DialogTitle, DialogContent, DialogActions
@@ -9299,6 +9299,118 @@ function BranchManagerRoleSection({ user }: { user: User }) {
   );
 
 
+  // === ANIMATION: state + helpers ===
+  type AnimMode = 'driver' | 'vehicle' | null;
+  type AnimState = { mode: AnimMode; idx: number; playing: boolean; speed: number; follow: boolean };
+  const [animState, setAnimState] = React.useState<AnimState>({ mode: null, idx: 0, playing: false, speed: 1, follow: true });
+  const animRef = React.useRef(animState);
+  React.useEffect(() => { animRef.current = animState; }, [animState]);
+
+  const ANIM_BASE_MS = 120; // هر فریم پایه
+  const animTimerRef = React.useRef<number | null>(null);
+
+  const getActivePts = React.useCallback((mode: AnimMode) => {
+    if (mode === 'driver') return driverTrackPts;
+    if (mode === 'vehicle') return vehicleTrackPts;
+    return [];
+  }, [driverTrackPts, vehicleTrackPts]);
+
+  const clearAnimTimer = () => {
+    if (animTimerRef.current != null) {
+      window.clearInterval(animTimerRef.current);
+      animTimerRef.current = null;
+    }
+  };
+
+  const stopAnimation = React.useCallback(() => {
+    clearAnimTimer();
+    setAnimState(s => ({ ...s, playing: false }));
+  }, []);
+
+  const startAnimation = React.useCallback((mode: AnimMode) => {
+    if (!mode) return;
+    const pts = getActivePts(mode);
+    if (!pts || pts.length < 2) return;
+
+    // اگر روی مود دیگری بودیم، از صفر شروع کن
+    setAnimState({ mode, idx: 0, playing: true, speed: 1, follow: true });
+  }, [getActivePts]);
+
+  const togglePlayPause = React.useCallback(() => {
+    setAnimState(s => {
+      if (!s.mode) return s;
+      if (!s.playing) {
+        // اگر در انتها بود، دوباره از اول
+        const pts = getActivePts(s.mode);
+        const atEnd = s.idx >= Math.max(0, pts.length - 1);
+        return { ...s, idx: atEnd ? 0 : s.idx, playing: true };
+      }
+      return { ...s, playing: false };
+    });
+  }, [getActivePts]);
+
+  // رانِ فریم‌ها بر اساس سرعت
+  React.useEffect(() => {
+    clearAnimTimer();
+    if (!animState.playing || !animState.mode) return;
+
+    const interval = Math.max(20, ANIM_BASE_MS / (animState.speed || 1));
+    animTimerRef.current = window.setInterval(() => {
+      setAnimState(s => {
+        if (!s.mode) return s;
+        const pts = getActivePts(s.mode);
+        if (!pts || pts.length < 2) return { ...s, playing: false };
+
+        const nextIdx = Math.min(s.idx + 1, pts.length - 1);
+        if (nextIdx >= pts.length - 1) {
+          // رسید به آخر
+          clearAnimTimer();
+          return { ...s, idx: nextIdx, playing: false };
+        }
+        return { ...s, idx: nextIdx };
+      });
+    }, interval);
+
+    return () => clearAnimTimer();
+  }, [animState.playing, animState.mode, animState.speed, getActivePts]);
+
+  // وقتی ترک تغییر می‌کند، ایندکس را ریست کن تا با ترک جدید هم‌راستا شود
+  React.useEffect(() => {
+    if (animState.mode === 'driver') setAnimState(s => ({ ...s, idx: 0, playing: false }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [driverTrackPts]);
+  React.useEffect(() => {
+    if (animState.mode === 'vehicle') setAnimState(s => ({ ...s, idx: 0, playing: false }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vehicleTrackPts]);
+
+  // اگر تب عوض شد، پخش را متوقف کن تا اشتباهی نماند
+  React.useEffect(() => { stopAnimation(); setAnimState({ mode: null, idx: 0, playing: false, speed: 1, follow: true }); }, [tab, stopAnimation]);
+  // === ANIMATION: layer ===
+  function TrackAnimationLayer({ pts, idx, follow }: { pts: [number, number][], idx: number, follow: boolean }) {
+    const map = useMap();
+    const safeIdx = Math.min(Math.max(0, idx), Math.max(0, pts.length - 1));
+    const head = pts[safeIdx];
+
+    React.useEffect(() => {
+      if (follow && head) {
+        // پانِ نرم به نقطه‌ی فعلی
+        (map as any).panTo(head, { animate: true, duration: 0.25 });
+      }
+    }, [head?.[0], head?.[1], follow, map]);
+
+    if (!pts || pts.length < 2) return null;
+
+    return (
+      <>
+        <Polyline positions={pts.slice(0, safeIdx + 1)} pathOptions={{ color: '#ff9800', weight: 5, opacity: 0.9 }} />
+        <Marker position={pts[0]} icon={badgeIcon('شروع', '#43a047') as any} />
+        <Marker position={head} icon={badgeIcon('پخش', '#ff9800') as any} />
+        {/* انتهای مسیر برای مرجع */}
+        <Marker position={pts[pts.length - 1]} icon={badgeIcon('پایان', '#e53935') as any} />
+      </>
+    );
+  }
 
   const loadDriverKPI = React.useCallback(
     async (driverId: number, from = fromISO, to = toISO) => {
@@ -10638,7 +10750,7 @@ function BranchManagerRoleSection({ user }: { user: User }) {
 
   // ===== نقشه =====
   const [useMapTiler] = React.useState(Boolean(MT_KEY));
-  const tileUrl = useMapTiler && MT_KEY ? `https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=${MT_KEY}` : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+  const tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
   const [focusLatLng, setFocusLatLng] = React.useState<[number, number] | undefined>(undefined);
 
   // تا مجبور نشی useEffect سوکت رو به selectedVehicleId وابسته کنی:
@@ -11777,6 +11889,38 @@ function BranchManagerRoleSection({ user }: { user: User }) {
 
             {/* لایه راننده‌ها/ماشین‌ها با z-index بالاتر مثل بالا */}
             <Pane name="vehicles-layer" style={{ zIndex: 650 }}>
+              {/* === ANIMATION-aware track rendering === */}
+              {(() => {
+                const isAnimDriver = animState.mode === 'driver' && tab === 'drivers' && driverTrackPts.length > 1;
+                const isAnimVehicle = animState.mode === 'vehicle' && tab !== 'drivers' && vehicleTrackPts.length > 1;
+
+                // DRIVER
+                if (tab === 'drivers') {
+                  return isAnimDriver ? (
+                    <TrackAnimationLayer pts={driverTrackPts} idx={animState.idx} follow={animState.follow} />
+                  ) : (
+                    driverTrackPts.length > 1 && (
+                      <>
+                        <FitToTrack pts={driverTrackPts} />
+                        <Polyline positions={driverTrackPts} pathOptions={{ color: '#1976d2', weight: 4, opacity: 0.9 }} />
+                      </>
+                    )
+                  );
+                }
+
+                // VEHICLE
+                return isAnimVehicle ? (
+                  <TrackAnimationLayer pts={vehicleTrackPts} idx={animState.idx} follow={animState.follow} />
+                ) : (
+                  vehicleTrackPts.length > 1 && (
+                    <>
+                      <FitToTrack pts={vehicleTrackPts} />
+                      <Polyline positions={vehicleTrackPts} pathOptions={{ color: '#00796b', weight: 4, opacity: 0.9 }} />
+                    </>
+                  )
+                );
+              })()}
+
               {/* راننده‌ها + مسیر لحظه‌ای راننده (حفظ منطق) */}
               {tab === 'drivers' && canTrackDrivers && filteredDrivers.map(d => (d as any).last_location && (
                 <Marker
@@ -11792,8 +11936,6 @@ function BranchManagerRoleSection({ user }: { user: User }) {
               {tab === 'drivers' && driverTrackPts.length > 1 && (
                 <>
                   <FitToTrack pts={driverTrackPts} />
-                  <Marker position={driverTrackPts[0]} icon={badgeIcon('شروع', '#43a047') as any} />
-                  <Marker position={driverTrackPts[driverTrackPts.length - 1]} icon={badgeIcon('پایان', '#e53935') as any} />
                   <Polyline positions={driverTrackPts} pathOptions={{ color: '#1976d2', weight: 4, opacity: 0.9 }} />
                 </>
               )}
@@ -11972,6 +12114,108 @@ function BranchManagerRoleSection({ user }: { user: User }) {
                     </Button>
                   </Stack>
                 </Paper>
+                {/* === ANIMATION: controls === */}
+                {(tab === 'drivers' ? driverTrackPts.length > 1 : vehicleTrackPts.length > 1) && (
+
+                  <Paper
+                    sx={(t) => ({
+                      mt: 55,
+                      p: 0.5,
+                      borderRadius: 1.5,
+                      border: `1px solid ${t.palette.divider}`,
+                      bgcolor: `${t.palette.background.paper}C6`,
+                      backdropFilter: 'blur(6px)',
+                      boxShadow: '0 6px 16px rgba(0,0,0,.18)',
+                      minWidth: 280,
+                    })}
+                  >
+                    <Stack direction="row" alignItems="center" spacing={0.75}>
+                      <Chip
+                        size="small"
+                        icon={<span>🎞️</span> as any}
+                        label="پخش مسیر"
+                        sx={{ '& .MuiChip-label': { px: 0.75, py: 0.25, fontSize: 10 }, fontWeight: 700 }}
+                      />
+
+                      {/* دکمه‌های اصلی */}
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={() => startAnimation(tab === 'drivers' ? 'driver' : 'vehicle')}
+                        disabled={(tab === 'drivers' ? driverTrackPts.length < 2 : vehicleTrackPts.length < 2)}
+                      >
+                        شروع
+                      </Button>
+                      <Button
+                        size="small"
+                        variant={animState.playing ? 'contained' : 'outlined'}
+                        onClick={togglePlayPause}
+                        disabled={!animState.mode}
+                      >
+                        {animState.playing ? 'توقف موقّت' : 'ادامه'}
+                      </Button>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        color="error"
+                        onClick={() => { stopAnimation(); setAnimState({ mode: animState.mode, idx: 0, playing: false, speed: 1, follow: animState.follow }); }}
+                        disabled={!animState.mode}
+                      >
+                        پایان
+                      </Button>
+
+                      {/* سرعت */}
+                      <TextField
+                        size="small"
+                        select
+                        label="سرعت"
+                        value={String(animState.speed)}
+                        onChange={(e) => setAnimState(s => ({ ...s, speed: Number(e.target.value) || 1 }))}
+                        sx={{ width: 90 }}
+                      >
+                        <MenuItem value="0.5">۰٫۵×</MenuItem>
+                        <MenuItem value="1">۱×</MenuItem>
+                        <MenuItem value="2">۲×</MenuItem>
+                        <MenuItem value="4">۴×</MenuItem>
+                      </TextField>
+
+                      {/* follow */}
+                      <FormControlLabel
+                        sx={{ ml: 0.5 }}
+                        control={
+                          <Checkbox
+                            size="small"
+                            checked={animState.follow}
+                            onChange={(_, v) => setAnimState(s => ({ ...s, follow: v }))}
+                          />
+                        }
+                        label={<span style={{ fontSize: 12, opacity: .9 }}>دنبال کردن</span>}
+                      />
+                    </Stack>
+
+                    {/* اسلایدر پیشرفت */}
+                    {(() => {
+                      const pts = getActivePts(animState.mode);
+                      const max = Math.max(0, pts.length - 1);
+                      return (
+                        <Box sx={{ px: 1, mt: 0.5 }}>
+                          <Slider
+                            size="small"
+                            value={Math.min(animState.idx, max)}
+                            min={0}
+                            max={max || 1}
+                            onChange={(_, v) => {
+                              const idx = Array.isArray(v) ? v[0] : v;
+                              setAnimState(s => ({ ...s, idx: Number(idx), playing: false }));
+                            }}
+                            valueLabelDisplay="auto"
+                          />
+                        </Box>
+                      );
+                    })()}
+                  </Paper>
+                )}
+
               </Box>
             </Box>
 
@@ -12046,8 +12290,6 @@ function BranchManagerRoleSection({ user }: { user: User }) {
             {tab === 'drivers' && canTrackDrivers && driverTrackPts.length > 1 && (
               <>
                 <FitToTrack pts={driverTrackPts} />
-                <Marker position={driverTrackPts[0]} icon={badgeIcon('شروع', '#43a047') as any} />
-                <Marker position={driverTrackPts[driverTrackPts.length - 1]} icon={badgeIcon('پایان', '#e53935') as any} />
                 <Polyline positions={driverTrackPts} pathOptions={{ color: '#1976d2', weight: 4, opacity: 0.9 }} />
               </>
             )}
@@ -12056,8 +12298,6 @@ function BranchManagerRoleSection({ user }: { user: User }) {
             {tab !== 'drivers' && canTrackVehicles && vehicleTrackPts.length > 1 && (
               <>
                 <FitToTrack pts={vehicleTrackPts} />
-                <Marker position={vehicleTrackPts[0]} icon={badgeIcon('شروع', '#43a047') as any} />
-                <Marker position={vehicleTrackPts[vehicleTrackPts.length - 1]} icon={badgeIcon('پایان', '#e53935') as any} />
                 <Polyline positions={vehicleTrackPts} pathOptions={{ color: '#00796b', weight: 4, opacity: 0.9 }} />
               </>
             )}
@@ -12217,6 +12457,8 @@ function BranchManagerRoleSection({ user }: { user: User }) {
                                 ev.stopPropagation();
                                 onPickDriver(d);                 // بازشدن شیت + انتخاب راننده
                                 await trackByDriverId(d.id, fromISO, toISO);   // ⬅️ این خط مهم است
+                                startAnimation('driver');
+
                                 // اگر دوست دارید ماشین فعلی راننده هم در سایدبار انتخاب شود (اختیاری):
                                 const vid = await getDriverCurrentVehicleId(d.id).catch(() => null);
                                 if (vid) setSelectedVehicleId(vid);
@@ -13026,7 +13268,24 @@ function BranchManagerRoleSection({ user }: { user: User }) {
 }
 
 function OwnerRoleSection({ user }: { user: User }) {
-  // ===== Permissions: نقشه همیشه؛ ردیابی فقط با تیک سطح نقش =====
+  const [drivers, setDrivers] = React.useState<User[]>([]);
+  const [statsMap, setStatsMap] = React.useState<Record<number, DriverStats>>({});
+  /** ===== TRACKS (فقط ترک‌ها) ===== */
+  // مسیر انتخاب‌شده روی نقشه
+  const [driverTrackPts, setDriverTrackPts] = React.useState<[number, number][]>([]);
+  const [vehicleTrackPts, setVehicleTrackPts] = React.useState<[number, number][]>([]);
+  const [selectedDriverId, setSelectedDriverId] = React.useState<number | null>(null);
+
+  // بافر لایو از سوکت برای فالبک و فوکوس (حداکثر 500 نقطه برای هر آی‌دی)
+  const driverLiveRef = React.useRef<Record<number, [number, number, number][]>>({});
+  const vehicleLiveRef = React.useRef<Record<number, [number, number, number][]>>({});
+
+  // ref برای تشخیص انتخاب فعلی در هندلرهای سوکت
+  const selectedDriverIdRef = React.useRef<number | null>(null);
+  React.useEffect(() => { selectedDriverIdRef.current = selectedDriverId; }, [selectedDriverId]);
+  // (selectedVehicleIdRef قبلاً داری؛ همون کافیه)
+
+  const myDriverIds = React.useMemo(() => new Set(drivers.map(d => d.id)), [drivers]);
   const DEFAULT_PERMS: string[] = ['view_report'];
   const [allowed, setAllowed] = React.useState<Set<string>>(new Set(DEFAULT_PERMS));
   const [permsLoading, setPermsLoading] = React.useState(false);
@@ -13040,17 +13299,475 @@ function OwnerRoleSection({ user }: { user: User }) {
   const roundLL = (v: number) => Math.round(v * 10 ** LL_DEC) / 10 ** LL_DEC;
   const fmtLL = (v: number) => Number.isFinite(v) ? v.toFixed(LL_DEC) : '';
   const [sheetOpen, setSheetOpen] = React.useState(false);
-  // ===== Route types =====
+  // بعد از type SimpleViolation و stateهای مربوط به تخلفات این‌ها را اضافه کن
+  const [toISO, setToISO] = React.useState<string>(() => new Date().toISOString());
+  // === DriverRoutes endpoints helpers (Nest) ===
+  // === DriverRoutes endpoints helpers (Nest) ===
+  // REPLACE getDriverStats with this version:
+  const getDriverStats = async (driverId: number, from: string, to: string): Promise<DriverStats> => {
+    const [statsRes, countRes] = await Promise.allSettled([
+      api.get(`/driver-routes/stats/${driverId}`, { params: { from, to } }),
+      api.get(`/driver-routes/missions/count/${driverId}`, { params: { from, to } }),
+    ]);
+
+    const raw: any = statsRes.status === 'fulfilled' ? (statsRes.value?.data ?? {}) : {};
+
+    // jobsCount می‌تونه هم در پاسخ count باشه هم داخل خود stats
+    const jobsCount =
+      countRes.status === 'fulfilled'
+        ? Number(countRes.value?.data?.count ?? countRes.value?.data ?? 0)
+        : Number(raw?.jobsCount ?? raw?.jobs_count ?? 0);
+
+    // مسافت (کلیدهای متداول snake/camel)
+    const distanceKm =
+      raw.total_distance_km ?? raw.totalDistanceKm ?? raw.distance_km ?? raw.distanceKm ?? raw.distance ?? 0;
+
+    // مدت روشن بودن/کار (به ثانیه) → دقیقه
+    const workSeconds =
+      raw.total_work_seconds ?? raw.totalWorkSeconds ??
+      raw.work_seconds ?? raw.engine_on_seconds ?? raw.engineOnSeconds ?? 0;
+
+    const totalDurationMin = Math.round(Number(workSeconds) / 60);
+
+    const stats: DriverStats = {
+      totalDistanceKm: Number(distanceKm) || 0,
+      totalDurationMin: Number.isFinite(totalDurationMin) ? totalDurationMin : 0,
+      jobsCount: Number.isFinite(jobsCount) ? jobsCount : 0,
+      breakdownsCount: Number(raw.breakdownsCount ?? raw.breakdowns_count ?? 0),
+    };
+    return stats;
+  };
+
+
+  // --- 1) State برای KPI هر راننده ---
+  type DriverKPI = {
+    distance_km?: number;
+    duration_min?: number;
+    avg_speed_kmh?: number;
+    jobs_count?: number;
+    violations: {
+      total: number;
+      speeding: number;
+      off_route: number;
+      geofence_exit: number;
+      idle_over: number;
+      severe: number; // اگر level تو متا/فیلد داری اینو پر می‌کنیم
+    };
+  };
+
+  const normalizeTrackPoints = (payload: any): [number, number][] => {
+    // 1) بیرون کشیدن آرایه‌ی اولیه
+    let arr: any[] =
+      Array.isArray(payload) ? payload :
+        Array.isArray(payload?.items) ? payload.items :
+          Array.isArray(payload?.data?.items) ? payload.data.items :
+            Array.isArray(payload?.data) ? payload.data :
+              Array.isArray(payload?.rows) ? payload.rows :
+                Array.isArray(payload?.points) ? payload.points :
+                  Array.isArray(payload?.track_points) ? payload.track_points :
+                    [];
+
+    // 2) اگر آرایه‌ی «روزا/بلاک‌ها»ست، به نقاط فلت کن
+    const flattenKnown = (rows: any[]) => {
+      if (!rows.length) return rows;
+      // حالت‌هایی مثل: [{ track_points:[...] }, { track_points:[...] }]
+      if (rows.every(r => Array.isArray(r?.track_points) || Array.isArray(r?.trackPoints) ||
+        Array.isArray(r?.points) || Array.isArray(r?.gps_points))) {
+        const out: any[] = [];
+        rows.forEach(r => {
+          if (Array.isArray(r?.track_points)) out.push(...r.track_points);
+          if (Array.isArray(r?.trackPoints)) out.push(...r.trackPoints);
+          if (Array.isArray(r?.points)) out.push(...r.points);
+          if (Array.isArray(r?.gps_points)) out.push(...r.gps_points);
+        });
+        return out;
+      }
+      // حالت شیء تکی
+      if (Array.isArray((rows[0] || {})?.track_points)) return rows[0].track_points;
+      if (Array.isArray((rows[0] || {})?.trackPoints)) return rows[0].trackPoints;
+      if (Array.isArray((rows[0] || {})?.points)) return rows[0].points;
+      if (Array.isArray((rows[0] || {})?.gps_points)) return rows[0].gps_points;
+      return rows;
+    };
+    arr = flattenKnown(arr);
+
+    // 3) نگاشت به [lat,lng] + زمان برای sort
+    const rows = arr.map((p: any, i: number) => {
+      const lat = Number(p?.lat ?? p?.latitude ?? p?.y ?? (Array.isArray(p) ? p[0] : undefined));
+      const lng = Number(p?.lng ?? p?.lon ?? p?.long ?? p?.longitude ?? p?.x ?? (Array.isArray(p) ? p[1] : undefined));
+      const tRaw = p?.ts ?? p?.timestamp ?? p?.t ?? p?.time ?? p?.at ?? p?.created_at ?? p?.createdAt;
+      const t = Number.isFinite(+tRaw) ? +tRaw : Date.parse(String(tRaw)) || i;
+      return { lat, lng, t };
+    }).filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng));
+
+    rows.sort((a, b) => a.t - b.t);
+    return rows.map(r => [r.lat, r.lng] as [number, number]);
+  };
+
+
+  const [kpiByDid, setKpiByDid] = React.useState<Record<number, DriverKPI>>({});
+  const [kpiStatusByDid, setKpiStatusByDid] =
+    React.useState<Record<number, 'idle' | 'loading' | 'loaded' | 'error'>>({});
+
+  // --- 2) نرمالایزر مطابق ViolationEntity سرویس ---
+  const normSimpleViolationFromService = (r: any): SimpleViolation | null => {
+    const createdAt = r?.created_at ?? r?.createdAt ?? new Date().toISOString();
+    const id = Number(r?.id);
+    const type = String(r?.type || '').toLowerCase() || 'speeding';
+    const meta = (r?.meta ?? {}) as any;
+    // نقطه ممکنه داخل meta باشه
+    const p = meta?.point ?? meta?.position ?? meta?.pos ?? null;
+    const point = (p && Number.isFinite(+p.lat) && Number.isFinite(+p.lng))
+      ? { lat: +p.lat, lng: +p.lng }
+      : undefined;
+
+    return {
+      id: Number.isFinite(id) ? id : (Date.parse(createdAt) || 0),
+      type,
+      created_at: new Date(createdAt).toISOString(),
+      driver_user_id: Number.isFinite(+r?.driver_user_id) ? +r.driver_user_id : undefined,
+      meta: {
+        ...meta,
+        ...(point ? { point } : {}),
+        threshold_m: Number.isFinite(+meta?.threshold_m) ? +meta.threshold_m : undefined,
+        distance_m: Number.isFinite(+meta?.distance_m) ? +meta.distance_m : undefined,
+        tolerance_m: Number.isFinite(+meta?.tolerance_m) ? +meta.tolerance_m : undefined,
+      },
+    };
+  };
+  const [fromISO, setFromISO] = React.useState<string>(() => new Date(new Date().setHours(0, 0, 0, 0)).toISOString());
+  // حداقل تایپ‌های استفاده‌شده
+  type GpsPoint = { lat: number; lng: number };
+  type DriverMission = { id: number; gps_points?: GpsPoint[] };
+  // REPLACE loadDriverTrack
+  const loadDriverTrack = React.useCallback(
+    async (driverId: number, from = fromISO, to = toISO) => {
+      if (!driverId) { setDriverTrackPts([]); return; }
+      try {
+        const { data } = await api.get(`/driver-routes/by-driver/${driverId}`, {
+          params: { from, to, limit: 1000 },
+        });
+
+        // gps_points ها را از تمام آیتم‌ها فلت کن
+        const rawPts: any[] = (Array.isArray(data?.items) ? data.items : [])
+          .flatMap((it: any) => Array.isArray(it?.gps_points) ? it.gps_points : []);
+
+        // به [lat,lng] نرمال کن (با پشتیبانی از lat/lon و latitude/longitude)
+        const pts = rawPts.map((p: any, i: number) => {
+          const lat = Number(p?.lat ?? p?.latitude ?? p?.y ?? (Array.isArray(p) ? p[0] : undefined));
+          const lng = Number(p?.lng ?? p?.lon ?? p?.long ?? p?.longitude ?? p?.x ?? (Array.isArray(p) ? p[1] : undefined));
+          // زمان اختیاری برای مرتب‌سازی
+          const tRaw = p?.ts ?? p?.timestamp ?? p?.t ?? p?.time ?? p?.at ?? p?.created_at ?? p?.createdAt;
+          const t = Number.isFinite(+tRaw) ? +tRaw : Date.parse(String(tRaw)) || i;
+          return { lat, lng, t };
+        }).filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng))
+          .sort((a, b) => a.t - b.t)
+          .map(r => [r.lat, r.lng] as [number, number]);
+
+        setDriverTrackPts(pts);
+        if (pts.length) setFocusLatLng(pts[pts.length - 1]);
+      } catch {
+        setDriverTrackPts([]); // یا فالبکِ لایو خودت
+      }
+    },
+    [api, fromISO, toISO]
+  );
+
+
+  // REPLACE loadVehicleTrack
+  const loadVehicleTrack = React.useCallback(
+    async (vehicleId: number, from = fromISO, to = toISO) => {
+      if (!vehicleId) { setVehicleTrackPts([]); return; }
+      try {
+        const { data } = await api.get('/tracks', { params: { vehicle_id: vehicleId, from, to, limit: 5000 } });
+        const pts = normalizeTrackPoints(data);
+        setVehicleTrackPts(pts);
+        if (pts.length) setFocusLatLng(pts[pts.length - 1]);
+      } catch {
+        const buf = vehicleLiveRef.current[vehicleId] || [];
+        const fromT = +new Date(from); const toT = +new Date(to);
+        const pts = buf
+          .filter((p) => p[2] >= fromT && p[2] <= toT)
+          .map((p) => [p[0], p[1]] as [number, number]);
+        setVehicleTrackPts(pts);
+        if (pts.length) setFocusLatLng(pts[pts.length - 1]);
+      }
+    },
+    [api, fromISO, toISO]
+  );
+
+
+  // === ANIMATION: state + helpers ===
+  type AnimMode = 'driver' | 'vehicle' | null;
+  type AnimState = { mode: AnimMode; idx: number; playing: boolean; speed: number; follow: boolean };
+  const [animState, setAnimState] = React.useState<AnimState>({ mode: null, idx: 0, playing: false, speed: 1, follow: true });
+  const animRef = React.useRef(animState);
+  React.useEffect(() => { animRef.current = animState; }, [animState]);
+
+  const ANIM_BASE_MS = 120; // هر فریم پایه
+  const animTimerRef = React.useRef<number | null>(null);
+
+  const getActivePts = React.useCallback((mode: AnimMode) => {
+    if (mode === 'driver') return driverTrackPts;
+    if (mode === 'vehicle') return vehicleTrackPts;
+    return [];
+  }, [driverTrackPts, vehicleTrackPts]);
+
+  const clearAnimTimer = () => {
+    if (animTimerRef.current != null) {
+      window.clearInterval(animTimerRef.current);
+      animTimerRef.current = null;
+    }
+  };
+
+  const stopAnimation = React.useCallback(() => {
+    clearAnimTimer();
+    setAnimState(s => ({ ...s, playing: false }));
+  }, []);
+
+  const startAnimation = React.useCallback((mode: AnimMode) => {
+    if (!mode) return;
+    const pts = getActivePts(mode);
+    if (!pts || pts.length < 2) return;
+
+    // اگر روی مود دیگری بودیم، از صفر شروع کن
+    setAnimState({ mode, idx: 0, playing: true, speed: 1, follow: true });
+  }, [getActivePts]);
+
+  const togglePlayPause = React.useCallback(() => {
+    setAnimState(s => {
+      if (!s.mode) return s;
+      if (!s.playing) {
+        // اگر در انتها بود، دوباره از اول
+        const pts = getActivePts(s.mode);
+        const atEnd = s.idx >= Math.max(0, pts.length - 1);
+        return { ...s, idx: atEnd ? 0 : s.idx, playing: true };
+      }
+      return { ...s, playing: false };
+    });
+  }, [getActivePts]);
+
+  // رانِ فریم‌ها بر اساس سرعت
+  React.useEffect(() => {
+    clearAnimTimer();
+    if (!animState.playing || !animState.mode) return;
+
+    const interval = Math.max(20, ANIM_BASE_MS / (animState.speed || 1));
+    animTimerRef.current = window.setInterval(() => {
+      setAnimState(s => {
+        if (!s.mode) return s;
+        const pts = getActivePts(s.mode);
+        if (!pts || pts.length < 2) return { ...s, playing: false };
+
+        const nextIdx = Math.min(s.idx + 1, pts.length - 1);
+        if (nextIdx >= pts.length - 1) {
+          // رسید به آخر
+          clearAnimTimer();
+          return { ...s, idx: nextIdx, playing: false };
+        }
+        return { ...s, idx: nextIdx };
+      });
+    }, interval);
+
+    return () => clearAnimTimer();
+  }, [animState.playing, animState.mode, animState.speed, getActivePts]);
+
+  // وقتی ترک تغییر می‌کند، ایندکس را ریست کن تا با ترک جدید هم‌راستا شود
+  React.useEffect(() => {
+    if (animState.mode === 'driver') setAnimState(s => ({ ...s, idx: 0, playing: false }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [driverTrackPts]);
+  React.useEffect(() => {
+    if (animState.mode === 'vehicle') setAnimState(s => ({ ...s, idx: 0, playing: false }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vehicleTrackPts]);
+
+  // اگر تب عوض شد، پخش را متوقف کن تا اشتباهی نماند
+  React.useEffect(() => { stopAnimation(); setAnimState({ mode: null, idx: 0, playing: false, speed: 1, follow: true }); }, [tab, stopAnimation]);
+  // === ANIMATION: layer ===
+  function TrackAnimationLayer({ pts, idx, follow }: { pts: [number, number][], idx: number, follow: boolean }) {
+    const map = useMap();
+    const safeIdx = Math.min(Math.max(0, idx), Math.max(0, pts.length - 1));
+    const head = pts[safeIdx];
+
+    React.useEffect(() => {
+      if (follow && head) {
+        // پانِ نرم به نقطه‌ی فعلی
+        (map as any).panTo(head, { animate: true, duration: 0.25 });
+      }
+    }, [head?.[0], head?.[1], follow, map]);
+
+    if (!pts || pts.length < 2) return null;
+
+    return (
+      <>
+        <Polyline positions={pts.slice(0, safeIdx + 1)} pathOptions={{ color: '#ff9800', weight: 5, opacity: 0.9 }} />
+        <Marker position={pts[0]} icon={badgeIcon('شروع', '#43a047') as any} />
+        <Marker position={head} icon={badgeIcon('پخش', '#ff9800') as any} />
+        {/* انتهای مسیر برای مرجع */}
+        <Marker position={pts[pts.length - 1]} icon={badgeIcon('پایان', '#e53935') as any} />
+      </>
+    );
+  }
+
+  const loadDriverKPI = React.useCallback(
+    async (driverId: number, from = fromISO, to = toISO) => {
+      if (!driverId || !myDriverIds.has(driverId)) {
+        setKpiStatusByDid(p => ({ ...p, [driverId]: 'idle' }));
+        setKpiByDid(p => ({ ...p, [driverId]: undefined }));
+        return;
+      }
+
+      setKpiStatusByDid(p => ({ ...p, [driverId]: 'loading' }));
+
+      try {
+        // آمار رسمی (distance/duration + jobs) از Nest
+        let stats = statsMap[driverId];
+        if (!stats || (stats.totalDistanceKm == null && stats.totalDurationMin == null && stats.jobsCount == null)) {
+          stats = await getDriverStats(driverId, from, to);
+          setStatsMap(p => ({ ...p, [driverId]: stats }));
+        }
+
+        // تخلفات همان منطق فعلی
+        const raw = await fetchDriverViolations(api, driverId, { from, to, limit: 500 });
+        const vios = normalizeViolations(raw) || [];
+
+        const speeding = vios.filter(v => v.type === 'speeding' || v.type === 'overspeed').length;
+        const offRoute = vios.filter(v => v.type === 'off_route' || v.type === 'route_deviation').length;
+        const geofenceExit = vios.filter(v => v.type === 'geofence_exit' || v.type === 'geofence_out').length;
+        const idleOver = vios.filter(v => v.type === 'idle_over').length;
+        const severe = vios.filter(v => {
+          const s = String((v as any).severity || '').toLowerCase();
+          return s === 'severe' || s === 'high' || s === 'critical';
+        }).length;
+
+        const distKm = Number(stats.totalDistanceKm ?? 0);
+        const durMin = Number(stats.totalDurationMin ?? 0);
+        const jobsCnt = Number(stats.jobsCount ?? 0);
+        const avgSpeed = durMin > 0 ? +(distKm / (durMin / 60)).toFixed(1) : undefined;
+
+        const kpi: DriverKPI = {
+          distance_km: Number.isFinite(distKm) ? +distKm.toFixed(2) : undefined,
+          duration_min: Number.isFinite(durMin) ? Math.round(durMin) : undefined,
+          avg_speed_kmh: avgSpeed,
+          jobs_count: Number.isFinite(jobsCnt) ? jobsCnt : undefined,
+          violations: {
+            total: vios.length,
+            speeding,
+            off_route: offRoute,
+            geofence_exit: geofenceExit,
+            idle_over: idleOver,
+            severe,
+          },
+        };
+
+        setKpiByDid(p => ({ ...p, [driverId]: kpi }));
+        setKpiStatusByDid(p => ({ ...p, [driverId]: 'loaded' }));
+      } catch (e) {
+        setKpiByDid(p => ({ ...p, [driverId]: undefined }));
+        setKpiStatusByDid(p => ({ ...p, [driverId]: 'error' }));
+      }
+    },
+    [api, myDriverIds, fromISO, toISO, statsMap]
+  );
+
+
+  // --- 3) فچر جدید: همه‌ی تخلفاتِ راننده از URL رسمی Nest ---
+  // GET /drivers/:driverId/violations  (cursor یا offset؛ ما ساده با limit/from/to می‌گیریم)
+  const loadDriverViolations = React.useCallback(
+    async (driverId: number, from = fromISO, to = toISO) => {
+      if (!driverId || !myDriverIds.has(driverId)) {
+        setViolationsByDid(p => ({ ...p, [driverId]: [] }));
+        setVioStatusByDid(p => ({ ...p, [driverId]: 'idle' }));
+        setKpiStatusByDid(p => ({ ...p, [driverId]: 'idle' }));
+        return;
+      }
+
+      setVioStatusByDid(p => ({ ...p, [driverId]: 'loading' }));
+      setKpiStatusByDid(p => ({ ...p, [driverId]: 'loading' }));
+
+      try {
+        // ⬇️ همون URLهای کنترلر:
+        //   GET /drivers/:driverId/violations?limit=200&from=...&to=...
+        //   (در صورت نیاز می‌تونی page یا before/after هم بدی)
+        const { data } = await api.get(`/drivers/${driverId}/violations`, {
+          params: { limit: 200, from, to },
+        });
+
+        const rows: any[] = Array.isArray(data?.items)
+          ? data.items
+          : Array.isArray(data)
+            ? data
+            : [];
+
+        const list: SimpleViolation[] = rows
+          .map(normSimpleViolationFromService)
+          .filter(Boolean) as SimpleViolation[];
+
+        // مرتب‌سازی نزولی بر اساس زمان (اگر کوئری برنگردوند)
+        list.sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
+
+        setViolationsByDid(p => ({ ...p, [driverId]: list }));
+        setVioStatusByDid(p => ({ ...p, [driverId]: 'loaded' }));
+
+        // --- 4) KPI: از statsMap + همین تخلفات
+        const s = statsMap[driverId] || {};
+        const dist = Number(s.totalDistanceKm ?? 0);
+        const durMin = Number(s.totalDurationMin ?? 0);
+        const jobs = Number(s.jobsCount ?? 0);
+        const avg = durMin > 0 ? +(dist / (durMin / 60)).toFixed(1) : undefined;
+
+        const cnt = (t: string) => list.filter(v => v.type === t).length;
+        // اگر سطح شدت در متا/فیلد داری، اینجا جمع کن:
+        const severe = list.filter(v =>
+          String((v.meta as any)?.severity ?? (v.meta as any)?.level ?? '')
+            .toLowerCase() === 'severe'
+        ).length;
+
+        setKpiByDid(p => ({
+          ...p,
+          [driverId]: {
+            distance_km: Number.isFinite(dist) ? +dist.toFixed(2) : undefined,
+            duration_min: Number.isFinite(durMin) ? Math.round(durMin) : undefined,
+            avg_speed_kmh: avg,
+            jobs_count: Number.isFinite(jobs) ? jobs : undefined,
+            violations: {
+              total: list.length,
+              speeding: cnt('speeding') + cnt('overspeed'),
+              off_route: cnt('off_route') + cnt('route_deviation'),
+              geofence_exit: cnt('geofence_exit') + cnt('geofence_out'),
+              idle_over: cnt('idle_over'),
+              severe,
+            },
+          },
+        }));
+        setKpiStatusByDid(p => ({ ...p, [driverId]: 'loaded' }));
+      } catch (err) {
+        setViolationsByDid(p => ({ ...p, [driverId]: [] }));
+        setVioStatusByDid(p => ({ ...p, [driverId]: 'error' }));
+        setKpiStatusByDid(p => ({ ...p, [driverId]: 'error' }));
+      }
+    },
+    [api, fromISO, toISO, myDriverIds, statsMap]
+  );
+
+  // --- 5) افکت: روی انتخاب راننده/تاریخ، از URL Nest بگیر ---
+  React.useEffect(() => {
+    if (selectedDriverId && fromISO && toISO) {
+      loadDriverViolations(selectedDriverId, fromISO, toISO);
+    }
+  }, [selectedDriverId, fromISO, toISO, loadDriverViolations]); // ← درست
+
+
+
   type RouteMeta = { id: number; name?: string | null; threshold_m?: number | null };
   type RoutePoint = { lat: number; lng: number; name?: string | null; radius_m?: number | null };
   const [sheetMode, setSheetMode] = React.useState<'vehicle' | 'driver' | null>(null);
-  // state ها
+
   const [drawingRoute, setDrawingRoute] = React.useState(false);
   const [routePoints, setRoutePoints] = useState<{ lat: number; lng: number }[]>([]);
   const [routeName, setRouteName] = useState('');
   const [routeThreshold, setRouteThreshold] = useState<number>(100);
-  const [fromISO, setFromISO] = React.useState<string>(() => new Date(new Date().setHours(0, 0, 0, 0)).toISOString());
-  const [toISO, setToISO] = React.useState<string>(() => new Date().toISOString());
   // کلیک‌گیر روی نقشه
   function PickPointsForRoute({ enabled, onPick }: { enabled: boolean; onPick: (lat: number, lng: number) => void }) {
     useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
@@ -13077,31 +13794,27 @@ function OwnerRoleSection({ user }: { user: User }) {
   };
   async function trackByDriverId(driverId: number, from = fromISO, to = toISO) {
     if (!driverId) return;
-
-    try {
-      const params = {
-        driver_id: driverId,         // ⬅️ اجباری
-        from,                        // ISO string
-        to,                          // ISO string
-      };
-
-      // اگر می‌خواهید URL لاگ شود:
-      // const q = new URLSearchParams({ driver_id: String(driverId), from, to }).toString();
-      // console.log(`[GET] /tracks?${q}`);
-
-      const { data } = await api.get('/tracks', { params });
-      const pts: { lat: number; lng: number }[] = Array.isArray(data) ? data : (data?.items || []);
-      setPolyline(pts.map(p => [p.lat, p.lng] as [number, number]));
-      liveTrackOnRef.current = true;
-      selectedDriverRef.current = drivers.find(x => x.id === driverId) ?? null;
-    } catch (e) {
-      console.error('trackByDriverId error:', e);
-      setPolyline([]);
-      liveTrackOnRef.current = true;
-      selectedDriverRef.current = drivers.find(x => x.id === driverId) ?? null;
-    }
+    await loadDriverTrack(driverId, from, to);
+    liveTrackOnRef.current = true;
+    selectedDriverRef.current = drivers.find(x => x.id === driverId) ?? null;
   }
 
+
+
+
+  // وقتی تب «راننده‌ها» است و انتخاب/بازه عوض شد → ترک راننده
+  React.useEffect(() => {
+    if (tab === 'drivers' && selectedDriverId && fromISO && toISO) {
+      loadDriverTrack(selectedDriverId, fromISO, toISO);
+    }
+  }, [tab, selectedDriverId, fromISO, toISO, loadDriverTrack]);
+
+  // وقتی تب خودرویی است و انتخاب/بازه عوض شد → ترک خودرو
+  React.useEffect(() => {
+    if (tab !== 'drivers' && selectedVehicleId && fromISO && toISO) {
+      loadVehicleTrack(selectedVehicleId, fromISO, toISO);
+    }
+  }, [tab, selectedVehicleId, fromISO, toISO, loadVehicleTrack]);
 
 
   async function saveRouteAndFenceForVehicle(opts: {
@@ -13174,7 +13887,6 @@ function OwnerRoleSection({ user }: { user: User }) {
     }
   }
   // انتخاب راننده
-  const [selectedDriverId, setSelectedDriverId] = React.useState<number | null>(null);
 
   // تخلفات راننده (بر اساس driverId و بازه زمانی)
   type SimpleViolation = {
@@ -13244,19 +13956,22 @@ function OwnerRoleSection({ user }: { user: User }) {
   );
 
 
-  // ✅ فقط از /assignments/current/:driverId استفاده کن
-  async function fetchDriverViolationsViaAssignment(api: any, driverId: number, limit = 200) {
+  // جایگزین کاملِ fetchDriverViolationsViaAssignment
+  async function fetchDriverViolationsViaAssignment(
+    api: any,
+    driverId: number,
+    opts: { limit?: number; from?: string; to?: string; types?: string } = {}
+  ) {
     try {
       const { data: cur } = await api.get(`/assignments/current/${driverId}`);
-      const vid =
-        Number(cur?.vehicle_id ?? cur?.vehicleId) ||
-        Number(cur?.vehicle?.id) || null;
-
-      if (!vid) return []; // راننده الآن روی ماشینی نیست
-      const { data } = await api.get(`/vehicles/${vid}/violations`, { params: { limit } });
+      const vid = cur?.vehicle_id ?? cur?.vehicleId;
+      if (!vid) return { items: [] };
+      const { data } = await api.get(`/vehicles/${Number(vid)}/violations`, {
+        params: { limit: opts.limit ?? 50, from: opts.from, to: opts.to, types: opts.types }
+      });
       return data;
     } catch {
-      return [];
+      return { items: [] };
     }
   }
 
@@ -13281,65 +13996,17 @@ function OwnerRoleSection({ user }: { user: User }) {
   };
 
 
-  const loadDriverViolations = React.useCallback(
-    async (driverId: number, from = fromISO, to = toISO) => {
-      if (!driverId) { setViolations([]); return; }
 
-      setViolationsLoading(true);
-      try {
-        const raw = await fetchDriverViolationsViaAssignment(api, driverId, 200);
-        const all: Violation[] = (normalizeViolations(raw) || []) as Violation[];
-
-        const fromT = Number.isFinite(+new Date(from)) ? +new Date(from) : -Infinity;
-        const toT = Number.isFinite(+new Date(to)) ? +new Date(to) : Infinity;
-
-        const list: SimpleViolation[] = all
-          .filter(v => {
-            const t = +new Date(v.created_at ?? (v as any).at ?? (v as any).time ?? (v as any).createdAt);
-            return Number.isFinite(t) && t >= fromT && t <= toT;
-          })
-          .map((v, idx) => {
-            const createdAtISO =
-              (v.created_at
-                ?? (v as any).at
-                ?? (v as any).time
-                ?? (v as any).createdAt
-                ?? new Date().toISOString());
-
-            const created_at = new Date(createdAtISO).toISOString(); // ⬅️ تضمین string
-
-            const stableId =
-              (typeof v.id === 'number' ? v.id : undefined) ??
-              Number(v.meta?.event_id) ??
-              Number((v.meta as any)?.id) ??
-              (Date.parse(created_at) || 0) + idx;
-
-            return {
-              id: stableId,
-              type: (v.type as any) || 'speeding',
-              created_at, // ⬅️ string
-              driver_user_id: (v as any).driver_id ?? (v as any).driver_user_id ?? driverId,
-              meta: v.meta ?? {},
-            };
-          });
-
-        setViolations(list);
-      } catch {
-        setViolations([]);
-      } finally {
-        setViolationsLoading(false);
-      }
-    },
-    [api, fromISO, toISO] // ⚠️ تابع fetchDriverViolationsViaAssignment را در deps نگذار تا فچ لوپ نشود
-  );
 
 
 
   useEffect(() => {
     if (selectedDriverId && fromISO && toISO) {
-      loadDriverViolations(selectedDriverId, fromISO, toISO);
+      loadDriverKPI(selectedDriverId, fromISO, toISO);        // ⬅️ جدید
     }
-  }, [selectedDriverId, fromISO, toISO, loadDriverViolations]);
+  }, [selectedDriverId, fromISO, toISO, loadDriverKPI]); // ← درست
+
+  const [extras, setExtras] = React.useState<Record<number, DriverExtra>>({});
 
 
 
@@ -13388,7 +14055,6 @@ function OwnerRoleSection({ user }: { user: User }) {
   };
   const [violations, setViolations] = React.useState<SimpleViolation[]>([]);
 
-  // جایگزین کاملِ fetchVehicleCurrentRouteMeta
   const fetchVehicleCurrentRouteMeta = async (vid: number): Promise<RouteMeta | null> => {
     try {
       const { data } = await api.get(`/vehicles/${vid}/routes/current`);
@@ -13404,24 +14070,7 @@ function OwnerRoleSection({ user }: { user: User }) {
     return null;
   };
 
-  const loadDriverTrack = async (driverId: number) => {
-    if (!canTrackDrivers) return;
-    try {
-      // 👇 بک‌اند می‌خواهد vehicle_id
-      const vid = await getDriverCurrentVehicleId(driverId);
-      const params: any = { from: fromISO, to: toISO };
-      if (vid) params.vehicle_id = vid; else params.driver_id = driverId; // فالبک
 
-      const { data } = await api.get('/tracks', { params });
-      const pts: { lat: number; lng: number }[] = Array.isArray(data) ? data : data?.items || [];
-      setPolyline(pts.map(p => [p.lat, p.lng] as [number, number]));
-      liveTrackOnRef.current = true;
-      selectedDriverRef.current = drivers.find(x => x.id === driverId) ?? null;
-    } catch {
-      setPolyline([]); liveTrackOnRef.current = true;
-      selectedDriverRef.current = drivers.find(x => x.id === driverId) ?? null;
-    }
-  };
   // فقط شیت را باز کن، هیچ فچی اینجا نزن
   const onPickDriver = (d: any) => {
     setSelectedDriverId(d.id);
@@ -13454,39 +14103,22 @@ function OwnerRoleSection({ user }: { user: User }) {
     return p;
   }
 
-  async function fetchDriverViolationsSmart(
+  // REPLACE
+  async function fetchDriverViolations(
     api: any,
     driverId: number,
-    { from, to, limit = 200 }: { from: string; to: string; limit?: number }
+    { from, to, limit = 200, types }: { from: string; to: string; limit?: number; types?: string }
   ) {
     const params: any = { from, to, limit };
-    const vid = await getCurrentVehicleIdSafe(api, driverId);
-
-    // 1) بر اساس vehicle اگر assignment وجود داشت
-    if (vid) {
-      try {
-        const { data } = await api.get(`/vehicles/${vid}/violations`, { params });
-        return data;
-      } catch { /* فالبک به درایور */ }
-    }
-
-    // 2) فالبک‌های بر پایهٔ راننده (حتی وقتی assignment خالی است)
-    try {
-      const { data } = await api.get('/violations', { params: { ...params, driver_id: String(driverId) } });
-      return data;
-    } catch { }
-
+    if (types) params.types = types;
     try {
       const { data } = await api.get(`/drivers/${driverId}/violations`, { params });
       return data;
-    } catch { }
-
-    try {
-      const { data } = await api.get('/events', { params: { ...params, category: 'violation', driver_id: String(driverId) } });
+    } catch {
+      // آخرین فالبک (در صورت یکی‌بودن دیتامدل)
+      const { data } = await api.get('/violations', { params: { ...params, driver_id: String(driverId) } });
       return data;
-    } catch { }
-
-    return [];
+    }
   }
 
 
@@ -13494,54 +14126,27 @@ function OwnerRoleSection({ user }: { user: User }) {
 
 
 
-  // نقاط مسیر بر اساس routeId
-  // نقاط مسیر — اول /points بعد /stations (طبق خواسته‌ی شما)
+
+  // جایگزین کاملِ fetchRoutePoints
   const fetchRoutePoints = async (routeId: number): Promise<RoutePoint[]> => {
-    const tries = [
-      () => api.get(`/routes/${routeId}/points`),   // 👈 اول points
-      () => api.get(`/routes/${routeId}/stations`), //    بعد stations
-    ];
-    for (const t of tries) {
-      try {
-        const { data } = await t();
-        return normalizeRoutePoints(data);
-      } catch { /* try next */ }
+    try {
+      const { data } = await api.get(`/routes/${routeId}/points`);
+      return normalizeRoutePoints(data);
+    } catch {
+      return [];
     }
-    return [];
   };
 
 
   // ست/آپدیت مسیر فعلی ماشین (اختیاری threshold)
+  // جایگزین کاملِ setOrUpdateVehicleRoute
   const setOrUpdateVehicleRoute = async (vid: number, body: { route_id?: number; threshold_m?: number }) => {
-    // PATCH/PUT ها متنوع‌اند؛ همه را هندل می‌کنیم
-    const tries = [
-      () => api.patch(`/vehicles/${vid}/route`, body),
-      () => api.put(`/vehicles/${vid}/route`, body),
-      () => api.post(`/vehicles/${vid}/route`, body),
-    ];
-    for (const t of tries) {
-      try { return await t(); } catch { /* next */ }
-    }
+    return api.patch(`/vehicles/${vid}/route`, body);
   };
 
-  // لغو مسیر فعلی ماشین
-  // لغو/برداشتن مسیر فعلی ماشین — فقط DELETE
+  // جایگزین کاملِ clearVehicleRoute
   const clearVehicleRoute = async (vid: number) => {
-    const tries = [
-      // رایج‌ترین‌ها
-      () => api.delete(`/vehicles/${vid}/route`),
-      () => api.delete(`/vehicles/${vid}/route/unassign`),
-
-      // چند فالبک احتمالی
-      () => api.delete(`/vehicles/${vid}/routes/current`),
-      () => api.delete(`/vehicles/${vid}/current-route`),
-    ];
-
-    let lastErr: any;
-    for (const t of tries) {
-      try { return await t(); } catch (e) { lastErr = e; }
-    }
-    throw lastErr;
+    return api.delete(`/vehicles/${vid}/route`);
   };
 
 
@@ -13998,11 +14603,8 @@ function OwnerRoleSection({ user }: { user: User }) {
   type Vehicle = { id: number; plate_no: string; vehicle_type_code: VehicleTypeCode; last_location?: { lat: number; lng: number } };
 
   // ===== State (راننده‌ها) =====
-  const [drivers, setDrivers] = React.useState<User[]>([]);
-  const [statsMap, setStatsMap] = React.useState<Record<number, DriverStats>>({});
-  const [extras, setExtras] = React.useState<Record<number, DriverExtra>>({});
-  const [loading, setLoading] = React.useState(true);
-
+  const [initLoading, setInitLoading] = React.useState(true);
+  const [statsLoading, setStatsLoading] = React.useState(false);
   // ✅ قابلیت‌های اعطاشده توسط SA به تفکیک نوع خودرو
   const [grantedPerType, setGrantedPerType] = React.useState<Record<VehicleTypeCode, MonitorKey[]>>({});
   const [parentSAName, setParentSAName] = React.useState<string | null>(null);
@@ -14031,26 +14633,16 @@ function OwnerRoleSection({ user }: { user: User }) {
   const normalizeUsersToDrivers = (arr: any[]): User[] =>
     (arr || []).map((u: any) => ({ id: u.id, role_level: 6, full_name: u.full_name ?? u.name ?? '—', phone: u.phone ?? '', ...(u.last_location ? { last_location: u.last_location } : {}) }));
 
+  // جایگزین کاملِ fetchBranchDrivers
   const fetchBranchDrivers = async (): Promise<User[]> => {
     try {
       const { data } = await api.get('/users/my-subordinates-flat');
       return normalizeUsersToDrivers((data || []).filter((u: any) => (u?.role_level ?? 6) === 6));
-    } catch { }
-    const tries = [
-      () => api.get(`/users/branch-manager/${user.id}/subordinates`),
-      () => api.get('/users', { params: { branch_manager_user_id: user.id, role_level: 6, limit: 1000 } }),
-      () => api.get('/drivers', { params: { branch_manager_user_id: user.id, limit: 1000 } }),
-    ];
-    for (const fn of tries) {
-      try {
-        const { data } = await fn();
-        const items = data?.items ?? data ?? [];
-        const out = Array.isArray(items) ? normalizeUsersToDrivers(items) : normalizeUsersToDrivers([items]);
-        if (out.length) return out;
-      } catch { }
+    } catch {
+      return [];
     }
-    return [];
   };
+
 
   const toRad = (x: number) => x * Math.PI / 180, R = 6371;
   const hav = (a: [number, number], b: [number, number]) => {
@@ -14060,15 +14652,52 @@ function OwnerRoleSection({ user }: { user: User }) {
   };
 
   const fetchStats = React.useCallback(async (ids: number[], from: string, to: string) => {
-    const settled = await Promise.allSettled(ids.map(id => api.get(`/driver-routes/stats/${id}`, { params: { from, to } })));
-    const entries: [number, DriverStats][] = []; const fallbackIds: number[] = [];
-    settled.forEach((r, i) => { const id = ids[i]; if (r.status === 'fulfilled') entries.push([id, r.value?.data ?? {}]); else fallbackIds.push(id); });
-    if (fallbackIds.length) {
-      const tr = await Promise.allSettled(fallbackIds.map(id => api.get('/tracks', { params: { driver_id: id, from, to } }).then(res => ({ id, data: res.data }))));
-      tr.forEach(fr => { if (fr.status === 'fulfilled') { const { id, data } = fr.value as any; const pts: { lat: number; lng: number }[] = Array.isArray(data) ? data : data?.items || []; let d = 0; for (let i = 1; i < pts.length; i++) d += hav([pts[i - 1].lat, pts[i - 1].lng], [pts[i].lat, pts[i].lng]); entries.push([id, { totalDistanceKm: +d.toFixed(2) }]); } });
+    const entries: [number, DriverStats][] = [];
+    const fails: number[] = [];
+
+    // سعی کن برای هر راننده آمار کامل را بگیری
+    const settled = await Promise.allSettled(ids.map(id => getDriverStats(id, from, to)));
+    settled.forEach((r, i) => {
+      const id = ids[i];
+      if (r.status === 'fulfilled') entries.push([id, r.value]);
+      else fails.push(id);
+    });
+
+    // فالبک: اگر برای بعضی‌ها آمار نگرفتیم، فقط مسافت را از /tracks تخمین بزن
+    if (fails.length) {
+      const toRad = (x: number) => (x * Math.PI) / 180, R = 6371;
+      const hav = (a: [number, number], b: [number, number]) => {
+        const dLat = toRad(b[0] - a[0]), dLon = toRad(b[1] - a[1]), lat1 = toRad(a[0]), lat2 = toRad(b[0]);
+        const h = Math.sin(dLat / 2) ** 2 + Math.sin(dLon / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
+        return 2 * R * Math.asin(Math.sqrt(h));
+      };
+
+      // inside fetchStats fallback (replace the fb Promise.allSettled(...) block)
+      const fb = await Promise.allSettled(
+        fails.map(async (id) => {
+          const vid = await getCurrentVehicleIdSafe(api, id);
+          if (!vid) return { id, data: [] };
+          const res = await api.get('/tracks', { params: { vehicle_id: vid, from, to, limit: 5000 } });
+          return { id, data: res.data };
+        })
+      );
+      fb.forEach(fr => {
+        if (fr.status === 'fulfilled') {
+          const { id, data } = fr.value as any;
+          const pts = normalizeTrackPoints(data).map(([lat, lng]) => ({ lat, lng }));
+          let d = 0;
+          for (let i = 1; i < pts.length; i++) {
+            d += hav([pts[i - 1].lat, pts[i - 1].lng], [pts[i].lat, pts[i].lng]);
+          }
+          entries.push([id, { totalDistanceKm: +d.toFixed(2), totalDurationMin: undefined, jobsCount: undefined, breakdownsCount: undefined }]);
+        }
+      });
+
     }
+
     setStatsMap(Object.fromEntries(entries));
   }, []);
+
   const [parentSAId, setParentSAId] = React.useState<number | null>(null);
 
   // ===== SA parent & granted policies =====
@@ -14088,10 +14717,11 @@ function OwnerRoleSection({ user }: { user: User }) {
 
   // برای جلوگیری از race-condition در fetch ها (به ازای هر نوع خودرو)
   const lastFetchReq = React.useRef<Record<VehicleTypeCode, number>>({});
+  const [policyRows, setPolicyRows] = React.useState<any[]>([]);
 
+  // REPLACE: fetchVehiclesOfType
   const fetchVehiclesOfType = React.useCallback(
     async (vt: VehicleTypeCode) => {
-      if (!parentSAId) return;
       const rid = Date.now();
       lastFetchReq.current[vt] = rid;
 
@@ -14099,14 +14729,11 @@ function OwnerRoleSection({ user }: { user: User }) {
         if (lastFetchReq.current[vt] !== rid) return;
 
         const list = (items || [])
+          .filter((v: any) => normType(v?.vehicle_type_code ?? v?.vehicleTypeCode) === normType(vt))
           .map((v: any) => {
-            const ll = v.last_location
-              ? {
-                lat: roundLL(Number(v.last_location.lat)),
-                lng: roundLL(Number(v.last_location.lng)),
-              }
+            const ll = v?.last_location
+              ? { lat: roundLL(Number(v.last_location.lat)), lng: roundLL(Number(v.last_location.lng)) }
               : undefined;
-
             return {
               id: Number(v.id),
               plate_no: String(v.plate_no ?? v.plateNo ?? ''),
@@ -14118,24 +14745,69 @@ function OwnerRoleSection({ user }: { user: User }) {
           .sort((a, b) => a.plate_no.localeCompare(b.plate_no, 'fa', { numeric: true }));
 
         setVehiclesByType(prev => ({ ...prev, [vt]: list }));
-        console.log(`[BM] fetched ${list.length} vehicles for <${vt}> from SA=${parentSAId}`);
+        console.log(`[BM] fetched ${list.length} vehicles for <${vt}> (role=${user?.role_level})`);
       };
 
-
       try {
-        const { data } = await api.get('/vehicles', { params: { owner_user_id: String(parentSAId), limit: 1000 } });
-        const all = Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
-        const items = all.filter((v: any) => normType(v.vehicle_type_code ?? v.vehicleTypeCode) === normType(vt));
-        apply(items);
+        const role = Number(user?.role_level);
+
+        // === فقط ماشین‌های تحت مسئولیت کاربر برای نقش‌های ۳/۴/۵ ===
+        if ([3, 4, 5].includes(role)) {
+          // 1) ترجیح: /users/:id/vehicles
+          try {
+            const { data } = await api.get('/vehicles', {
+              params: { responsible_user_id: String(user.id), limit: 1000 },
+            });
+            apply(ensureArray(data));
+            return;
+          } catch { /* به fallback بعدی برو */ }
+          // 2) fallback: /vehicles?responsible_user_id=:id
+          try {
+            const { data } = await api.get('/vehicles', {
+              params: { responsible_user_id: String(user.id), limit: 1000 },
+            });
+            apply(ensureArray(data));
+            return;
+          } catch { /* fallback */ }
+
+          // 3) fallback نهایی: از policy‌ها vehicle_id ها را بیاور
+          const ids = (policyRows || [])
+            .filter((r: any) => normType(r?.vehicle_type_code ?? r?.vehicleTypeCode) === normType(vt))
+            .map((r: any) => Number(r?.vehicle_id ?? r?.vehicleId))
+            .filter(Number.isFinite);
+
+          if (ids.length) {
+            const settled = await Promise.allSettled(ids.map(id => api.get(`/vehicles/${id}`)));
+            const items = settled
+              .filter(s => s.status === 'fulfilled')
+              .map((s: any) => s.value?.data)
+              .filter(Boolean);
+            apply(items);
+            return;
+          }
+
+          apply([]); // هیچ چیز پیدا نشد
+          return;
+        }
+
+        // === SA و بقیه نقش‌ها: رفتار قبلی (همهٔ ماشین‌های مالک SA والد) ===
+        if (parentSAId) {
+          const { data } = await api.get('/vehicles', {
+            params: { owner_user_id: String(parentSAId), limit: 1000 },
+          });
+          apply(ensureArray(data));
+        } else {
+          apply([]);
+        }
       } catch (e) {
         console.warn('[fetchVehiclesOfType] failed:', e);
         apply([]);
       }
     },
-    [parentSAId]
+    [api, user?.id, user?.role_level, parentSAId, policyRows]
   );
 
-  const [policyRows, setPolicyRows] = React.useState<any[]>([]);
+
 
   const availableTypes: VehicleTypeCode[] = React.useMemo(() => {
     const set = new Set<VehicleTypeCode>();
@@ -14193,15 +14865,32 @@ function OwnerRoleSection({ user }: { user: User }) {
     if (!user?.id) return;
     let alive = true;
     (async () => {
-      const sa = await resolveParentSA(user.id);
-      if (!alive) return;
-      setParentSA(sa);
-      setParentSAId(sa?.id ?? null);
-      setParentSAName(sa?.name ?? null);
-      console.log('[BM] parentSA resolved =>', sa);
+      try {
+        setInitLoading(true);
+        const ds = await fetchBranchDrivers();
+        if (!alive) return;
+        setDrivers(ds);
+      } catch (e) {
+        console.error('[branch-manager] init error:', e);
+      } finally {
+        if (alive) setInitLoading(false);
+      }
     })();
     return () => { alive = false; };
-  }, [user?.id, resolveParentSA]);
+  }, [user?.id]); // ⬅️ از fromISO/toISO اینجا حذف شد
+  React.useEffect(() => {
+    if (!drivers.length) return;
+    let alive = true;
+    setStatsLoading(true);
+    (async () => {
+      try {
+        await fetchStats(drivers.map(d => d.id), fromISO, toISO);
+      } finally {
+        if (alive) setStatsLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [drivers, fromISO, toISO, fetchStats]);
 
 
   const fetchGrantedPolicies = React.useCallback(async (uid: number) => {
@@ -14259,7 +14948,7 @@ function OwnerRoleSection({ user }: { user: User }) {
 
   // ===== نقشه =====
   const [useMapTiler] = React.useState(Boolean(MT_KEY));
-  const tileUrl = useMapTiler && MT_KEY ? `https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=${MT_KEY}` : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+  const tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
   const [focusLatLng, setFocusLatLng] = React.useState<[number, number] | undefined>(undefined);
 
   // تا مجبور نشی useEffect سوکت رو به selectedVehicleId وابسته کنی:
@@ -14283,6 +14972,50 @@ function OwnerRoleSection({ user }: { user: User }) {
   const [autoIndex, setAutoIndex] = React.useState(1);
   const [editingStation, setEditingStation] = React.useState<{ vid: number; st: Station } | null>(null);
   const [movingStationId, setMovingStationId] = React.useState<number | null>(null);
+  // === Violations types ===
+  const VIOLATION_TYPES = [
+    'overspeed',
+    'speeding',
+    'route_deviation',
+    'geofence_in',
+    'geofence_out',
+    'geofence',
+    'idle_over',
+    'harsh_brake',
+    'harsh_accel',
+    'harsh_turn',
+    'ignition_on_off_hours',
+  ] as const;
+  const VIO_LABEL: Record<ViolationType, string> = {
+    overspeed: 'سرعت غیرمجاز',
+    speeding: 'سرعت غیرمجاز',
+    route_deviation: 'انحراف از مسیر',
+    geofence_in: 'ورود ژئوفنس',
+    geofence_out: 'خروج ژئوفنس',
+    geofence: 'ژئوفنس',
+    idle_over: 'توقف طولانی',
+    harsh_brake: 'ترمز شدید',
+    harsh_accel: 'گاز شدید',
+    harsh_turn: 'پیچ تند',
+    ignition_on_off_hours: 'روشن/خاموش خارج از ساعات',
+  };
+
+  type ViolationType = typeof VIOLATION_TYPES[number];
+
+  type ViolationSeverity = 'low' | 'medium' | 'high' | 'severe' | 'critical';
+
+  interface Violation {
+    created_at: any;
+    id?: number;
+    vehicle_id: number;
+    driver_id: number | null;
+    at: string; // ISO
+    lat: number;
+    lng: number;
+    type: ViolationType;
+    severity?: ViolationSeverity | string;
+    meta?: Record<string, any>;
+  }
 
   // marker lists
   const driverMarkers = React.useMemo(() => {
@@ -14295,26 +15028,6 @@ function OwnerRoleSection({ user }: { user: User }) {
     typeGrants.map(s => String(s).toLowerCase().replace(/[-_]/g, ''))
       .includes(k.toLowerCase().replace(/[-_]/g, ''));
   // ===== Violations (types + state) =====
-  type ViolationType =
-    | 'overspeed' | 'speeding'
-    | 'route_deviation'
-    | 'geofence_in' | 'geofence_out' | 'geofence'
-    | 'idle_over'
-    | 'harsh_brake' | 'harsh_accel' | 'harsh_turn'
-    | 'ignition_on_off_hours';
-
-  type Violation = {
-    created_at: string | number | Date;
-    id?: number;
-    vehicle_id: number;
-    driver_id?: number | null;
-    at: string;                   // ISO date
-    lat: number;
-    lng: number;
-    type: ViolationType;
-    severity?: 'low' | 'med' | 'high';
-    meta?: Record<string, any>;
-  };
 
   const [violationsByVid, setViolationsByVid] =
     React.useState<Record<number, Violation[]>>({});
@@ -14371,6 +15084,7 @@ function OwnerRoleSection({ user }: { user: User }) {
 
   const vioReqRef = React.useRef<Record<number, number>>({});
 
+  // جایگزین کاملِ refreshViolations
   const refreshViolations = React.useCallback(
     async (vid: number, from: string, to: string) => {
       const stamp = Date.now();
@@ -14382,35 +15096,18 @@ function OwnerRoleSection({ user }: { user: User }) {
       if (types.length) params.types = types.join(',');
 
       try {
-        // مسیر اصلی
         const { data } = await api.get(`/vehicles/${vid}/violations`, { params });
         if (vioReqRef.current[vid] !== stamp) return;
         const list = normalizeViolations(data, vid);
         setViolationsByVid(p => ({ ...p, [vid]: list }));
         setVioStatusByVid(p => ({ ...p, [vid]: 'loaded' }));
       } catch {
-        // فالبک‌های رایج
-        try {
-          const { data } = await api.get('/violations', { params: { ...params, vehicle_id: String(vid) } });
-          if (vioReqRef.current[vid] !== stamp) return;
-          const list = normalizeViolations(data, vid);
-          setViolationsByVid(p => ({ ...p, [vid]: list }));
-          setVioStatusByVid(p => ({ ...p, [vid]: 'loaded' }));
-        } catch {
-          try {
-            const { data } = await api.get('/events', { params: { ...params, category: 'violation', vehicle_id: String(vid) } });
-            if (vioReqRef.current[vid] !== stamp) return;
-            const list = normalizeViolations(data, vid);
-            setViolationsByVid(p => ({ ...p, [vid]: list }));
-            setVioStatusByVid(p => ({ ...p, [vid]: 'loaded' }));
-          } catch {
-            setVioStatusByVid(p => ({ ...p, [vid]: 'error' }));
-          }
-        }
+        setVioStatusByVid(p => ({ ...p, [vid]: 'error' }));
       }
     },
     [vioFilterTypes]
   );
+
   const lastVioVidRef = React.useRef<number | null>(null);
 
   const canTrackVehicles = !!(activeType && hasGrant('gps'));
@@ -14518,33 +15215,19 @@ function OwnerRoleSection({ user }: { user: User }) {
     }
   }
 
+  // جایگزین کاملِ deleteGeofenceBM
   async function deleteGeofenceBM() {
     if (!selectedVehicleId) return;
     if (!confirm('ژئوفنس حذف شود؟')) return;
-
     try {
-      await api.delete(`/vehicles/${selectedVehicleId}/geofence`)  // اگر API شما فقط تکی پاک می‌کند
-        .catch(() => api.delete(`/geofences`, { params: { vehicle_id: String(selectedVehicleId) } })); // اگر جمعی دارید
-
+      await api.delete(`/vehicles/${selectedVehicleId}/geofence`);
       setGeofencesByVid(p => ({ ...p, [selectedVehicleId]: [] }));
-
       setGfDrawing(false); setGfCenter(null); setGfPoly([]);
     } catch (e) {
       console.error(e);
       alert('حذف ژئوفنس ناموفق بود');
     }
   }
-
-  // بالاتر از تابع، یه کمک‌تابع کوچک
-  /*  const ensureArray = (data: any) =>
-     Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
- */
-
-
-  // REPLACE: به جای نسخه‌ای که ownerId تکی می‌گرفت
-
-  // صدا زدنش
-
 
 
 
@@ -14616,13 +15299,32 @@ function OwnerRoleSection({ user }: { user: User }) {
     const s = io(url + '/vehicles', { transports: ['websocket'] });
     socketRef.current = s;
 
-    // === هندلرها ===
-    const onDriverPos = (v: { driver_id: number; lat: number; lng: number }) => {
-      // اختیاری: هر کاری لازم داری
+    const onDriverPos = (v: { driver_id: number; lat: number; lng: number; ts?: number; at?: string; time?: string }) => {
+      const id = Number(v?.driver_id);
+      const lat = Number(v?.lat), lng = Number(v?.lng);
+      const ts = Number.isFinite(Number(v?.ts)) ? Number(v?.ts)
+        : Date.parse(String(v?.at ?? v?.time ?? new Date().toISOString()));
+      if (!Number.isFinite(id) || !Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(ts)) return;
+
+      const buf = driverLiveRef.current[id] || (driverLiveRef.current[id] = []);
+      buf.push([lat, lng, ts]);
+      if (buf.length > 500) buf.splice(0, buf.length - 500);
+
+      if (selectedDriverIdRef.current === id) setFocusLatLng([lat, lng]);
     };
 
-    const onVehiclePos = (v: { vehicle_id: number; lat: number; lng: number }) => {
-      // اختیاری: هر کاری لازم داری
+    const onVehiclePos = (v: { vehicle_id: number; lat: number; lng: number; ts?: number; at?: string; time?: string }) => {
+      const id = Number(v?.vehicle_id);
+      const lat = Number(v?.lat), lng = Number(v?.lng);
+      const ts = Number.isFinite(Number(v?.ts)) ? Number(v?.ts)
+        : Date.parse(String(v?.at ?? v?.time ?? new Date().toISOString()));
+      if (!Number.isFinite(id) || !Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(ts)) return;
+
+      const buf = vehicleLiveRef.current[id] || (vehicleLiveRef.current[id] = []);
+      buf.push([lat, lng, ts]);
+      if (buf.length > 500) buf.splice(0, buf.length - 500);
+
+      if (selectedVehicleIdRef.current === id) setFocusLatLng([lat, lng]);
     };
 
     const onStations = (msg: any) => {
@@ -14738,6 +15440,63 @@ function OwnerRoleSection({ user }: { user: User }) {
   }, [activeType, parentSAId, vehiclesByType, fetchVehiclesOfType]);
 
 
+  const getVehicleStats = async (vid: number, from: string, to: string): Promise<VehicleKPI> => {
+    // تلاش اول: /vehicles/:vid/stats
+    try {
+      const { data } = await api.get(`/vehicles/${vid}/stats`, { params: { from, to } });
+      const pick = (o: any, ...keys: string[]) => keys.reduce((a, k) => (a ?? o?.[k]), undefined);
+
+      const dist = Number(
+        pick(data, 'total_distance_km', 'distance_km', 'distanceKm', 'totalDistanceKm', 'distance')
+      ) || 0;
+
+      const ignSec = Number(
+        pick(data, 'ignition_on_seconds', 'total_ignition_seconds', 'engine_on_seconds', 'engineOnSeconds')
+      ) || 0;
+
+      return { distance_km: +dist.toFixed(2), ignition_on_min: Math.round(ignSec / 60) };
+    } catch {
+      // فالبک: محاسبه مسافت از /tracks با هورساین
+      try {
+        const { data } = await api.get('/tracks', { params: { vehicle_id: vid, from, to } });
+        const pts: { lat: number; lng: number }[] = Array.isArray(data) ? data : (data?.items || []);
+        let d = 0;
+        const toRad = (x: number) => x * Math.PI / 180, R = 6371;
+        for (let i = 1; i < pts.length; i++) {
+          const a = pts[i - 1], b = pts[i];
+          const dLat = toRad(b.lat - a.lat), dLon = toRad(b.lng - a.lng);
+          const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
+          const h = Math.sin(dLat / 2) ** 2 + Math.sin(dLon / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
+          d += 2 * R * Math.asin(Math.sqrt(h));
+        }
+        return { distance_km: +d.toFixed(2) };
+      } catch {
+        return {};
+      }
+    }
+  };
+  // پایین‌تر از stateهای مشابه
+  type VehicleKPI = { distance_km?: number; ignition_on_min?: number };
+  const [kpiByVid, setKpiByVid] = React.useState<Record<number, VehicleKPI>>({});
+  const [kpiStatusByVid, setKpiStatusByVid] =
+    React.useState<Record<number, 'idle' | 'loading' | 'loaded' | 'error'>>({});
+  React.useEffect(() => {
+    if (!selectedVehicleId || !fromISO || !toISO) return;
+
+    const vid = selectedVehicleId;
+    setKpiStatusByVid(p => ({ ...p, [vid]: 'loading' }));
+
+    (async () => {
+      try {
+        const kpi = await getVehicleStats(vid, fromISO, toISO);
+        setKpiByVid(p => ({ ...p, [vid]: kpi }));
+        setKpiStatusByVid(p => ({ ...p, [vid]: 'loaded' }));
+      } catch {
+        setKpiByVid(p => ({ ...p, [vid]: {} }));
+        setKpiStatusByVid(p => ({ ...p, [vid]: 'error' }));
+      }
+    })();
+  }, [selectedVehicleId, fromISO, toISO]);
 
   // ===== ایستگاه‌ها =====
 
@@ -14901,6 +15660,7 @@ function OwnerRoleSection({ user }: { user: User }) {
     // ژئوفنس (در صورت مجوز)
     setSelectedVehicleId(v.id);
     await loadVehicleGeofences(v.id); // همین یکی بماند
+    await loadVehicleTrack(v.id, fromISO, toISO);
 
 
 
@@ -14985,6 +15745,17 @@ function OwnerRoleSection({ user }: { user: User }) {
       base_odometer_km: c.base_odometer_km ?? null,
     });
   };
+  // ADD
+  function FitToTrack({ pts }: { pts: [number, number][] }) {
+    const map = useMap();
+    React.useEffect(() => {
+      if (!pts || pts.length < 2) return;
+      const b = L.latLngBounds(pts.map(([lat, lng]) => [lat, lng] as [number, number]));
+      if (b.isValid()) map.fitBounds(b.pad(0.2));
+    }, [map, JSON.stringify(pts)]);
+    return null;
+  }
+
   const closeEditConsumable = () => setEditingCons(null);
   function normalizeGeofences(payload: any): Geofence[] {
     // به آرایه تبدیل کن
@@ -15213,7 +15984,7 @@ function OwnerRoleSection({ user }: { user: User }) {
   }, [parentSAId, availableTypesKey, fetchVehiclesOfType]);
 
   // ===== Guards =====
-  if (permsLoading || loading) {
+  if (permsLoading || initLoading) {
     return <Box p={2} display="flex" alignItems="center" justifyContent="center">
       <CircularProgress size={24} />
     </Box>;
@@ -15222,19 +15993,6 @@ function OwnerRoleSection({ user }: { user: User }) {
     return <Box p={2} color="text.secondary">دسترسی فعالی برای نمایش این صفحه برای شما تنظیم نشده است.</Box>;
   }
 
-  const VIO_LABEL: Record<ViolationType, string> = {
-    overspeed: 'سرعت غیرمجاز',
-    speeding: 'سرعت غیرمجاز',
-    route_deviation: 'انحراف از مسیر',
-    geofence_in: 'ورود ژئوفنس',
-    geofence_out: 'خروج ژئوفنس',
-    geofence: 'ژئوفنس',
-    idle_over: 'توقف طولانی',
-    harsh_brake: 'ترمز شدید',
-    harsh_accel: 'گاز شدید',
-    harsh_turn: 'پیچ تند',
-    ignition_on_off_hours: 'روشن/خاموش خارج از ساعات',
-  };
 
 
 
@@ -15329,6 +16087,38 @@ function OwnerRoleSection({ user }: { user: User }) {
 
             {/* لایه راننده‌ها/ماشین‌ها با z-index بالاتر مثل بالا */}
             <Pane name="vehicles-layer" style={{ zIndex: 650 }}>
+              {/* === ANIMATION-aware track rendering === */}
+              {(() => {
+                const isAnimDriver = animState.mode === 'driver' && tab === 'drivers' && driverTrackPts.length > 1;
+                const isAnimVehicle = animState.mode === 'vehicle' && tab !== 'drivers' && vehicleTrackPts.length > 1;
+
+                // DRIVER
+                if (tab === 'drivers') {
+                  return isAnimDriver ? (
+                    <TrackAnimationLayer pts={driverTrackPts} idx={animState.idx} follow={animState.follow} />
+                  ) : (
+                    driverTrackPts.length > 1 && (
+                      <>
+                        <FitToTrack pts={driverTrackPts} />
+                        <Polyline positions={driverTrackPts} pathOptions={{ color: '#1976d2', weight: 4, opacity: 0.9 }} />
+                      </>
+                    )
+                  );
+                }
+
+                // VEHICLE
+                return isAnimVehicle ? (
+                  <TrackAnimationLayer pts={vehicleTrackPts} idx={animState.idx} follow={animState.follow} />
+                ) : (
+                  vehicleTrackPts.length > 1 && (
+                    <>
+                      <FitToTrack pts={vehicleTrackPts} />
+                      <Polyline positions={vehicleTrackPts} pathOptions={{ color: '#00796b', weight: 4, opacity: 0.9 }} />
+                    </>
+                  )
+                );
+              })()}
+
               {/* راننده‌ها + مسیر لحظه‌ای راننده (حفظ منطق) */}
               {tab === 'drivers' && canTrackDrivers && filteredDrivers.map(d => (d as any).last_location && (
                 <Marker
@@ -15340,7 +16130,22 @@ function OwnerRoleSection({ user }: { user: User }) {
                   <Popup><strong>{d.full_name}</strong><br />{d.phone || '—'}</Popup>
                 </Marker>
               ))}
-              {tab === 'drivers' && canTrackDrivers && polyline.length > 1 && <Polyline positions={polyline} />}
+              {/* ترک راننده */}
+              {tab === 'drivers' && driverTrackPts.length > 1 && (
+                <>
+                  <FitToTrack pts={driverTrackPts} />
+                  <Polyline positions={driverTrackPts} pathOptions={{ color: '#1976d2', weight: 4, opacity: 0.9 }} />
+                </>
+              )}
+
+
+              {/* ترک خودرو */}
+              {tab !== 'drivers' && canTrackVehicles && vehicleTrackPts.length > 1 && (
+                <Polyline
+                  positions={vehicleTrackPts}
+                  pathOptions={{ color: '#00796b', weight: 4, opacity: 0.9 }}
+                />
+              )}
 
               {/* ماشین‌ها */}
               {activeType && canTrackVehicles && filteredVehicles.map(v => v.last_location && (
@@ -15363,7 +16168,8 @@ function OwnerRoleSection({ user }: { user: User }) {
             {/* ایستگاه‌های در حالت افزودن/ویرایش */}
             {!!addingStationsForVid && canStations && (vehicleStationsMap[addingStationsForVid] || []).map(st => (
               <React.Fragment key={`add-${st.id}`}>
-                <Circle center={[st.lat, st.lng]} radius={st.radius_m ?? stationRadius} />
+                <Circle center={[st.lat, st.lng]} radius={st.radius_m ?? stationRadius}
+                  pathOptions={{ color: MAP_COLORS.station, weight: 2, fillColor: MAP_COLORS.stationFill, fillOpacity: 0.2 }} />
                 <Marker position={[st.lat, st.lng]} />
               </React.Fragment>
             ))}
@@ -15506,6 +16312,108 @@ function OwnerRoleSection({ user }: { user: User }) {
                     </Button>
                   </Stack>
                 </Paper>
+                {/* === ANIMATION: controls === */}
+                {(tab === 'drivers' ? driverTrackPts.length > 1 : vehicleTrackPts.length > 1) && (
+
+                  <Paper
+                    sx={(t) => ({
+                      mt: 55,
+                      p: 0.5,
+                      borderRadius: 1.5,
+                      border: `1px solid ${t.palette.divider}`,
+                      bgcolor: `${t.palette.background.paper}C6`,
+                      backdropFilter: 'blur(6px)',
+                      boxShadow: '0 6px 16px rgba(0,0,0,.18)',
+                      minWidth: 280,
+                    })}
+                  >
+                    <Stack direction="row" alignItems="center" spacing={0.75}>
+                      <Chip
+                        size="small"
+                        icon={<span>🎞️</span> as any}
+                        label="پخش مسیر"
+                        sx={{ '& .MuiChip-label': { px: 0.75, py: 0.25, fontSize: 10 }, fontWeight: 700 }}
+                      />
+
+                      {/* دکمه‌های اصلی */}
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={() => startAnimation(tab === 'drivers' ? 'driver' : 'vehicle')}
+                        disabled={(tab === 'drivers' ? driverTrackPts.length < 2 : vehicleTrackPts.length < 2)}
+                      >
+                        شروع
+                      </Button>
+                      <Button
+                        size="small"
+                        variant={animState.playing ? 'contained' : 'outlined'}
+                        onClick={togglePlayPause}
+                        disabled={!animState.mode}
+                      >
+                        {animState.playing ? 'توقف موقّت' : 'ادامه'}
+                      </Button>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        color="error"
+                        onClick={() => { stopAnimation(); setAnimState({ mode: animState.mode, idx: 0, playing: false, speed: 1, follow: animState.follow }); }}
+                        disabled={!animState.mode}
+                      >
+                        پایان
+                      </Button>
+
+                      {/* سرعت */}
+                      <TextField
+                        size="small"
+                        select
+                        label="سرعت"
+                        value={String(animState.speed)}
+                        onChange={(e) => setAnimState(s => ({ ...s, speed: Number(e.target.value) || 1 }))}
+                        sx={{ width: 90 }}
+                      >
+                        <MenuItem value="0.5">۰٫۵×</MenuItem>
+                        <MenuItem value="1">۱×</MenuItem>
+                        <MenuItem value="2">۲×</MenuItem>
+                        <MenuItem value="4">۴×</MenuItem>
+                      </TextField>
+
+                      {/* follow */}
+                      <FormControlLabel
+                        sx={{ ml: 0.5 }}
+                        control={
+                          <Checkbox
+                            size="small"
+                            checked={animState.follow}
+                            onChange={(_, v) => setAnimState(s => ({ ...s, follow: v }))}
+                          />
+                        }
+                        label={<span style={{ fontSize: 12, opacity: .9 }}>دنبال کردن</span>}
+                      />
+                    </Stack>
+
+                    {/* اسلایدر پیشرفت */}
+                    {(() => {
+                      const pts = getActivePts(animState.mode);
+                      const max = Math.max(0, pts.length - 1);
+                      return (
+                        <Box sx={{ px: 1, mt: 0.5 }}>
+                          <Slider
+                            size="small"
+                            value={Math.min(animState.idx, max)}
+                            min={0}
+                            max={max || 1}
+                            onChange={(_, v) => {
+                              const idx = Array.isArray(v) ? v[0] : v;
+                              setAnimState(s => ({ ...s, idx: Number(idx), playing: false }));
+                            }}
+                            valueLabelDisplay="auto"
+                          />
+                        </Box>
+                      );
+                    })()}
+                  </Paper>
+                )}
+
               </Box>
             </Box>
 
@@ -15576,6 +16484,21 @@ function OwnerRoleSection({ user }: { user: User }) {
                 </Alert>
               </Snackbar>
             )}
+            {/* ترک راننده */}
+            {tab === 'drivers' && canTrackDrivers && driverTrackPts.length > 1 && (
+              <>
+                <FitToTrack pts={driverTrackPts} />
+                <Polyline positions={driverTrackPts} pathOptions={{ color: '#1976d2', weight: 4, opacity: 0.9 }} />
+              </>
+            )}
+
+            {/* ترک خودرو */}
+            {tab !== 'drivers' && canTrackVehicles && vehicleTrackPts.length > 1 && (
+              <>
+                <FitToTrack pts={vehicleTrackPts} />
+                <Polyline positions={vehicleTrackPts} pathOptions={{ color: '#00796b', weight: 4, opacity: 0.9 }} />
+              </>
+            )}
 
           </MapContainer>
         </Paper>
@@ -15598,38 +16521,50 @@ function OwnerRoleSection({ user }: { user: User }) {
           dir="rtl"
         >
           {/* بازه زمانی */}
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
-            <FormControl size="small" sx={{ minWidth: 120 }}>
-              <InputLabel id="preset-lbl">بازه</InputLabel>
-              <Select labelId="preset-lbl" value={preset} label="بازه" onChange={(e) => setPreset(e.target.value as any)}>
-                <MenuItem value="today">امروز</MenuItem>
-                <MenuItem value="yesterday">دیروز</MenuItem>
-                <MenuItem value="7d">۷ روز اخیر</MenuItem>
-                <MenuItem value="custom">دلخواه</MenuItem>
-              </Select>
-            </FormControl>
-            {preset === 'custom' && (
-              <LocalizationProvider dateAdapter={AdapterDateFnsJalali} adapterLocale={faIR}>
-                <DateTimePicker
-                  label="از"
-                  value={new Date(fromISO)}
-                  onChange={(v) => v && setFromISO(new Date(v).toISOString())}
-                  slotProps={{ textField: { size: 'small' } }}
-                />
-                <DateTimePicker
-                  label="تا"
-                  value={new Date(toISO)}
-                  onChange={(v) => v && setToISO(new Date(v).toISOString())}
-                  slotProps={{ textField: { size: 'small' } }}
-                />
-              </LocalizationProvider>
-            )}
-          </Stack>
+          <Paper sx={{ p: 1, mb: 1.25 }} variant="outlined">
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+              <FormControl size="small" sx={{ minWidth: 120 }}>
+                <InputLabel id="preset-lbl">بازه</InputLabel>
+                <Select
+                  labelId="preset-lbl"
+                  value={preset}
+                  label="بازه"
+                  onChange={(e) => setPreset(e.target.value as any)}
+                >
+                  <MenuItem value="today">امروز</MenuItem>
+                  <MenuItem value="yesterday">دیروز</MenuItem>
+                  <MenuItem value="7d">۷ روز اخیر</MenuItem>
+                  <MenuItem value="custom">دلخواه</MenuItem>
+                </Select>
+              </FormControl>
+            </Stack>
+
+            <JalaliRange
+              fromISO={fromISO}
+              toISO={toISO}
+              setFromISO={setFromISO}
+              setToISO={setToISO}
+              setPreset={setPreset}
+              apply={() => {
+
+              }}
+            />
+          </Paper>
+
 
           {/* تب‌ها با استایل مشابه */}
           <Tabs
             value={tab}
-            onChange={(_, v) => { setTab(v); setQ(''); setPolyline([]); setAddingStationsForVid(null); setTempStation(null); setEditingStation(null); setMovingStationId(null); }}
+            onChange={(_, v) => {
+              setTab(v);
+              setQ('');
+              setDriverTrackPts([]);
+              setVehicleTrackPts([]);
+              setAddingStationsForVid(null);
+              setTempStation(null);
+              setEditingStation(null);
+              setMovingStationId(null);
+            }}
             sx={{
               mb: 1,
               minHeight: 36,
@@ -15720,6 +16655,8 @@ function OwnerRoleSection({ user }: { user: User }) {
                                 ev.stopPropagation();
                                 onPickDriver(d);                 // بازشدن شیت + انتخاب راننده
                                 await trackByDriverId(d.id, fromISO, toISO);   // ⬅️ این خط مهم است
+                                startAnimation('driver');
+
                                 // اگر دوست دارید ماشین فعلی راننده هم در سایدبار انتخاب شود (اختیاری):
                                 const vid = await getDriverCurrentVehicleId(d.id).catch(() => null);
                                 if (vid) setSelectedVehicleId(vid);
@@ -16250,25 +17187,8 @@ function OwnerRoleSection({ user }: { user: User }) {
                   {activeType && (canIgnition || canIdleTime || canOdometer) && (
                     <Grid2 xs={12} md={6} lg={4}>
                       <Stack spacing={1} sx={{ mb: 1.5 }}>
-                        {canIgnition && (
-                          <Paper sx={{ p: 1.25, border: (t) => `1px solid ${t.palette.divider}` }}>
-                            <Typography variant="body2" color="text.secondary">وضعیت سوئیچ</Typography>
-                            <Typography variant="h6">
-                              {vehicleTlm.ignition === true ? 'موتور روشن است'
-                                : vehicleTlm.ignition === false ? 'موتور خاموش است' : 'نامشخص'}
-                            </Typography>
-                          </Paper>
-                        )}
-                        {canIdleTime && (
-                          <Paper sx={{ p: 1.25, border: (t) => `1px solid ${t.palette.divider}` }}>
-                            <Typography variant="body2" color="text.secondary">مدت توقف/سکون</Typography>
-                            <Typography variant="h6">
-                              {vehicleTlm.idle_time != null
-                                ? `${vehicleTlm.idle_time.toLocaleString('fa-IR')} ثانیه`
-                                : '—'}
-                            </Typography>
-                          </Paper>
-                        )}
+
+
                         {canOdometer && (
                           <Paper sx={{ p: 1.25, border: (t) => `1px solid ${t.palette.divider}` }}>
                             <Typography variant="body2" color="text.secondary">کیلومترشمار</Typography>
@@ -16407,34 +17327,9 @@ function OwnerRoleSection({ user }: { user: User }) {
 
                       return (
                         <Stack spacing={1.25} sx={{ mb: 1.5 }}>
-                          <Paper sx={{ p: 1.25, border: (t) => `1px solid ${t.palette.divider}` }}>
-                            <Stack direction="row" alignItems="center" justifyContent="space-between">
-                              <Box>
-                                <Typography variant="body2" color="text.secondary">موقعیت فعلی</Typography>
-                                <Typography variant="h6">
-                                  {ll ? `${ll.lat.toFixed(5)}, ${ll.lng.toFixed(5)}` : 'نامشخص'}
-                                </Typography>
-                              </Box>
-                              <Button
-                                size="small"
-                                disabled={!ll}
-                                onClick={() => ll && setFocusLatLng([ll.lat, ll.lng])}
-                                startIcon={<span>🎯</span>}
-                              >
-                                مرکز
-                              </Button>
-                            </Stack>
-                          </Paper>
 
-                          <Paper sx={{ p: 1.25, border: (t) => `1px solid ${t.palette.divider}` }}>
-                            <Typography variant="body2" color="text.secondary">وضعیت سوئیچ</Typography>
-                            <Typography variant="h6">{ignition}</Typography>
-                          </Paper>
 
-                          <Paper sx={{ p: 1.25, border: (t) => `1px solid ${t.palette.divider}` }}>
-                            <Typography variant="body2" color="text.secondary">مدت توقف/سکون</Typography>
-                            <Typography variant="h6">{idleTime}</Typography>
-                          </Paper>
+
 
                           <Paper sx={{ p: 1.25, border: (t) => `1px solid ${t.palette.divider}` }}>
                             <Typography variant="body2" color="text.secondary">مسافت پیموده‌شده (بازه)</Typography>
@@ -16465,9 +17360,33 @@ function OwnerRoleSection({ user }: { user: User }) {
                     })()}
                   </Grid2>
 
-                  {/* تخلفات راننده در بازه انتخابی */}
+                  {/* تخلفات راننده در بازه انتخابی + KPI */}
                   <Grid2 xs={12} md={12} lg={4}>
-                    <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 800 }}>تخلفات راننده در بازه انتخابی</Typography>
+                    <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 800 }}>
+                      تخلفات راننده در بازه انتخابی
+                    </Typography>
+
+                    {/* خلاصه KPI راننده */}
+                    {(() => {
+                      const kpi = kpiByDid[selectedDriverId];
+                      const status = kpiStatusByDid[selectedDriverId];
+
+                      if (status === 'loading') {
+                        return (
+                          <Box display="flex" alignItems="center" gap={1} color="text.secondary" sx={{ mt: .5 }}>
+                            <CircularProgress size={16} /> در حال محاسبه KPI…
+                          </Box>
+                        );
+                      }
+                      if (status === 'error') {
+                        return <Typography color="warning.main" sx={{ mb: 1 }}>خطا در دریافت KPI راننده.</Typography>;
+                      }
+                      if (!kpi) return null;
+
+
+                    })()}
+
+
                     {vioStatusByDid[selectedDriverId] === 'loading' && (
                       <Box display="flex" alignItems="center" gap={1} color="text.secondary" sx={{ mt: .5 }}>
                         <CircularProgress size={16} /> در حال دریافت…
@@ -16545,8 +17464,27 @@ function OwnerRoleSection({ user }: { user: User }) {
     return null;
   }
 }
+
+
 function TechnicianRoleSection({ user }: { user: User }) {
-  // ===== Permissions: نقشه همیشه؛ ردیابی فقط با تیک سطح نقش =====
+  const [drivers, setDrivers] = React.useState<User[]>([]);
+  const [statsMap, setStatsMap] = React.useState<Record<number, DriverStats>>({});
+  /** ===== TRACKS (فقط ترک‌ها) ===== */
+  // مسیر انتخاب‌شده روی نقشه
+  const [driverTrackPts, setDriverTrackPts] = React.useState<[number, number][]>([]);
+  const [vehicleTrackPts, setVehicleTrackPts] = React.useState<[number, number][]>([]);
+  const [selectedDriverId, setSelectedDriverId] = React.useState<number | null>(null);
+
+  // بافر لایو از سوکت برای فالبک و فوکوس (حداکثر 500 نقطه برای هر آی‌دی)
+  const driverLiveRef = React.useRef<Record<number, [number, number, number][]>>({});
+  const vehicleLiveRef = React.useRef<Record<number, [number, number, number][]>>({});
+
+  // ref برای تشخیص انتخاب فعلی در هندلرهای سوکت
+  const selectedDriverIdRef = React.useRef<number | null>(null);
+  React.useEffect(() => { selectedDriverIdRef.current = selectedDriverId; }, [selectedDriverId]);
+  // (selectedVehicleIdRef قبلاً داری؛ همون کافیه)
+
+  const myDriverIds = React.useMemo(() => new Set(drivers.map(d => d.id)), [drivers]);
   const DEFAULT_PERMS: string[] = ['view_report'];
   const [allowed, setAllowed] = React.useState<Set<string>>(new Set(DEFAULT_PERMS));
   const [permsLoading, setPermsLoading] = React.useState(false);
@@ -16560,17 +17498,475 @@ function TechnicianRoleSection({ user }: { user: User }) {
   const roundLL = (v: number) => Math.round(v * 10 ** LL_DEC) / 10 ** LL_DEC;
   const fmtLL = (v: number) => Number.isFinite(v) ? v.toFixed(LL_DEC) : '';
   const [sheetOpen, setSheetOpen] = React.useState(false);
-  // ===== Route types =====
+  // بعد از type SimpleViolation و stateهای مربوط به تخلفات این‌ها را اضافه کن
+  const [toISO, setToISO] = React.useState<string>(() => new Date().toISOString());
+  // === DriverRoutes endpoints helpers (Nest) ===
+  // === DriverRoutes endpoints helpers (Nest) ===
+  // REPLACE getDriverStats with this version:
+  const getDriverStats = async (driverId: number, from: string, to: string): Promise<DriverStats> => {
+    const [statsRes, countRes] = await Promise.allSettled([
+      api.get(`/driver-routes/stats/${driverId}`, { params: { from, to } }),
+      api.get(`/driver-routes/missions/count/${driverId}`, { params: { from, to } }),
+    ]);
+
+    const raw: any = statsRes.status === 'fulfilled' ? (statsRes.value?.data ?? {}) : {};
+
+    // jobsCount می‌تونه هم در پاسخ count باشه هم داخل خود stats
+    const jobsCount =
+      countRes.status === 'fulfilled'
+        ? Number(countRes.value?.data?.count ?? countRes.value?.data ?? 0)
+        : Number(raw?.jobsCount ?? raw?.jobs_count ?? 0);
+
+    // مسافت (کلیدهای متداول snake/camel)
+    const distanceKm =
+      raw.total_distance_km ?? raw.totalDistanceKm ?? raw.distance_km ?? raw.distanceKm ?? raw.distance ?? 0;
+
+    // مدت روشن بودن/کار (به ثانیه) → دقیقه
+    const workSeconds =
+      raw.total_work_seconds ?? raw.totalWorkSeconds ??
+      raw.work_seconds ?? raw.engine_on_seconds ?? raw.engineOnSeconds ?? 0;
+
+    const totalDurationMin = Math.round(Number(workSeconds) / 60);
+
+    const stats: DriverStats = {
+      totalDistanceKm: Number(distanceKm) || 0,
+      totalDurationMin: Number.isFinite(totalDurationMin) ? totalDurationMin : 0,
+      jobsCount: Number.isFinite(jobsCount) ? jobsCount : 0,
+      breakdownsCount: Number(raw.breakdownsCount ?? raw.breakdowns_count ?? 0),
+    };
+    return stats;
+  };
+
+
+  // --- 1) State برای KPI هر راننده ---
+  type DriverKPI = {
+    distance_km?: number;
+    duration_min?: number;
+    avg_speed_kmh?: number;
+    jobs_count?: number;
+    violations: {
+      total: number;
+      speeding: number;
+      off_route: number;
+      geofence_exit: number;
+      idle_over: number;
+      severe: number; // اگر level تو متا/فیلد داری اینو پر می‌کنیم
+    };
+  };
+
+  const normalizeTrackPoints = (payload: any): [number, number][] => {
+    // 1) بیرون کشیدن آرایه‌ی اولیه
+    let arr: any[] =
+      Array.isArray(payload) ? payload :
+        Array.isArray(payload?.items) ? payload.items :
+          Array.isArray(payload?.data?.items) ? payload.data.items :
+            Array.isArray(payload?.data) ? payload.data :
+              Array.isArray(payload?.rows) ? payload.rows :
+                Array.isArray(payload?.points) ? payload.points :
+                  Array.isArray(payload?.track_points) ? payload.track_points :
+                    [];
+
+    // 2) اگر آرایه‌ی «روزا/بلاک‌ها»ست، به نقاط فلت کن
+    const flattenKnown = (rows: any[]) => {
+      if (!rows.length) return rows;
+      // حالت‌هایی مثل: [{ track_points:[...] }, { track_points:[...] }]
+      if (rows.every(r => Array.isArray(r?.track_points) || Array.isArray(r?.trackPoints) ||
+        Array.isArray(r?.points) || Array.isArray(r?.gps_points))) {
+        const out: any[] = [];
+        rows.forEach(r => {
+          if (Array.isArray(r?.track_points)) out.push(...r.track_points);
+          if (Array.isArray(r?.trackPoints)) out.push(...r.trackPoints);
+          if (Array.isArray(r?.points)) out.push(...r.points);
+          if (Array.isArray(r?.gps_points)) out.push(...r.gps_points);
+        });
+        return out;
+      }
+      // حالت شیء تکی
+      if (Array.isArray((rows[0] || {})?.track_points)) return rows[0].track_points;
+      if (Array.isArray((rows[0] || {})?.trackPoints)) return rows[0].trackPoints;
+      if (Array.isArray((rows[0] || {})?.points)) return rows[0].points;
+      if (Array.isArray((rows[0] || {})?.gps_points)) return rows[0].gps_points;
+      return rows;
+    };
+    arr = flattenKnown(arr);
+
+    // 3) نگاشت به [lat,lng] + زمان برای sort
+    const rows = arr.map((p: any, i: number) => {
+      const lat = Number(p?.lat ?? p?.latitude ?? p?.y ?? (Array.isArray(p) ? p[0] : undefined));
+      const lng = Number(p?.lng ?? p?.lon ?? p?.long ?? p?.longitude ?? p?.x ?? (Array.isArray(p) ? p[1] : undefined));
+      const tRaw = p?.ts ?? p?.timestamp ?? p?.t ?? p?.time ?? p?.at ?? p?.created_at ?? p?.createdAt;
+      const t = Number.isFinite(+tRaw) ? +tRaw : Date.parse(String(tRaw)) || i;
+      return { lat, lng, t };
+    }).filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng));
+
+    rows.sort((a, b) => a.t - b.t);
+    return rows.map(r => [r.lat, r.lng] as [number, number]);
+  };
+
+
+  const [kpiByDid, setKpiByDid] = React.useState<Record<number, DriverKPI>>({});
+  const [kpiStatusByDid, setKpiStatusByDid] =
+    React.useState<Record<number, 'idle' | 'loading' | 'loaded' | 'error'>>({});
+
+  // --- 2) نرمالایزر مطابق ViolationEntity سرویس ---
+  const normSimpleViolationFromService = (r: any): SimpleViolation | null => {
+    const createdAt = r?.created_at ?? r?.createdAt ?? new Date().toISOString();
+    const id = Number(r?.id);
+    const type = String(r?.type || '').toLowerCase() || 'speeding';
+    const meta = (r?.meta ?? {}) as any;
+    // نقطه ممکنه داخل meta باشه
+    const p = meta?.point ?? meta?.position ?? meta?.pos ?? null;
+    const point = (p && Number.isFinite(+p.lat) && Number.isFinite(+p.lng))
+      ? { lat: +p.lat, lng: +p.lng }
+      : undefined;
+
+    return {
+      id: Number.isFinite(id) ? id : (Date.parse(createdAt) || 0),
+      type,
+      created_at: new Date(createdAt).toISOString(),
+      driver_user_id: Number.isFinite(+r?.driver_user_id) ? +r.driver_user_id : undefined,
+      meta: {
+        ...meta,
+        ...(point ? { point } : {}),
+        threshold_m: Number.isFinite(+meta?.threshold_m) ? +meta.threshold_m : undefined,
+        distance_m: Number.isFinite(+meta?.distance_m) ? +meta.distance_m : undefined,
+        tolerance_m: Number.isFinite(+meta?.tolerance_m) ? +meta.tolerance_m : undefined,
+      },
+    };
+  };
+  const [fromISO, setFromISO] = React.useState<string>(() => new Date(new Date().setHours(0, 0, 0, 0)).toISOString());
+  // حداقل تایپ‌های استفاده‌شده
+  type GpsPoint = { lat: number; lng: number };
+  type DriverMission = { id: number; gps_points?: GpsPoint[] };
+  // REPLACE loadDriverTrack
+  const loadDriverTrack = React.useCallback(
+    async (driverId: number, from = fromISO, to = toISO) => {
+      if (!driverId) { setDriverTrackPts([]); return; }
+      try {
+        const { data } = await api.get(`/driver-routes/by-driver/${driverId}`, {
+          params: { from, to, limit: 1000 },
+        });
+
+        // gps_points ها را از تمام آیتم‌ها فلت کن
+        const rawPts: any[] = (Array.isArray(data?.items) ? data.items : [])
+          .flatMap((it: any) => Array.isArray(it?.gps_points) ? it.gps_points : []);
+
+        // به [lat,lng] نرمال کن (با پشتیبانی از lat/lon و latitude/longitude)
+        const pts = rawPts.map((p: any, i: number) => {
+          const lat = Number(p?.lat ?? p?.latitude ?? p?.y ?? (Array.isArray(p) ? p[0] : undefined));
+          const lng = Number(p?.lng ?? p?.lon ?? p?.long ?? p?.longitude ?? p?.x ?? (Array.isArray(p) ? p[1] : undefined));
+          // زمان اختیاری برای مرتب‌سازی
+          const tRaw = p?.ts ?? p?.timestamp ?? p?.t ?? p?.time ?? p?.at ?? p?.created_at ?? p?.createdAt;
+          const t = Number.isFinite(+tRaw) ? +tRaw : Date.parse(String(tRaw)) || i;
+          return { lat, lng, t };
+        }).filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng))
+          .sort((a, b) => a.t - b.t)
+          .map(r => [r.lat, r.lng] as [number, number]);
+
+        setDriverTrackPts(pts);
+        if (pts.length) setFocusLatLng(pts[pts.length - 1]);
+      } catch {
+        setDriverTrackPts([]); // یا فالبکِ لایو خودت
+      }
+    },
+    [api, fromISO, toISO]
+  );
+
+
+  // REPLACE loadVehicleTrack
+  const loadVehicleTrack = React.useCallback(
+    async (vehicleId: number, from = fromISO, to = toISO) => {
+      if (!vehicleId) { setVehicleTrackPts([]); return; }
+      try {
+        const { data } = await api.get('/tracks', { params: { vehicle_id: vehicleId, from, to, limit: 5000 } });
+        const pts = normalizeTrackPoints(data);
+        setVehicleTrackPts(pts);
+        if (pts.length) setFocusLatLng(pts[pts.length - 1]);
+      } catch {
+        const buf = vehicleLiveRef.current[vehicleId] || [];
+        const fromT = +new Date(from); const toT = +new Date(to);
+        const pts = buf
+          .filter((p) => p[2] >= fromT && p[2] <= toT)
+          .map((p) => [p[0], p[1]] as [number, number]);
+        setVehicleTrackPts(pts);
+        if (pts.length) setFocusLatLng(pts[pts.length - 1]);
+      }
+    },
+    [api, fromISO, toISO]
+  );
+
+
+  // === ANIMATION: state + helpers ===
+  type AnimMode = 'driver' | 'vehicle' | null;
+  type AnimState = { mode: AnimMode; idx: number; playing: boolean; speed: number; follow: boolean };
+  const [animState, setAnimState] = React.useState<AnimState>({ mode: null, idx: 0, playing: false, speed: 1, follow: true });
+  const animRef = React.useRef(animState);
+  React.useEffect(() => { animRef.current = animState; }, [animState]);
+
+  const ANIM_BASE_MS = 120; // هر فریم پایه
+  const animTimerRef = React.useRef<number | null>(null);
+
+  const getActivePts = React.useCallback((mode: AnimMode) => {
+    if (mode === 'driver') return driverTrackPts;
+    if (mode === 'vehicle') return vehicleTrackPts;
+    return [];
+  }, [driverTrackPts, vehicleTrackPts]);
+
+  const clearAnimTimer = () => {
+    if (animTimerRef.current != null) {
+      window.clearInterval(animTimerRef.current);
+      animTimerRef.current = null;
+    }
+  };
+
+  const stopAnimation = React.useCallback(() => {
+    clearAnimTimer();
+    setAnimState(s => ({ ...s, playing: false }));
+  }, []);
+
+  const startAnimation = React.useCallback((mode: AnimMode) => {
+    if (!mode) return;
+    const pts = getActivePts(mode);
+    if (!pts || pts.length < 2) return;
+
+    // اگر روی مود دیگری بودیم، از صفر شروع کن
+    setAnimState({ mode, idx: 0, playing: true, speed: 1, follow: true });
+  }, [getActivePts]);
+
+  const togglePlayPause = React.useCallback(() => {
+    setAnimState(s => {
+      if (!s.mode) return s;
+      if (!s.playing) {
+        // اگر در انتها بود، دوباره از اول
+        const pts = getActivePts(s.mode);
+        const atEnd = s.idx >= Math.max(0, pts.length - 1);
+        return { ...s, idx: atEnd ? 0 : s.idx, playing: true };
+      }
+      return { ...s, playing: false };
+    });
+  }, [getActivePts]);
+
+  // رانِ فریم‌ها بر اساس سرعت
+  React.useEffect(() => {
+    clearAnimTimer();
+    if (!animState.playing || !animState.mode) return;
+
+    const interval = Math.max(20, ANIM_BASE_MS / (animState.speed || 1));
+    animTimerRef.current = window.setInterval(() => {
+      setAnimState(s => {
+        if (!s.mode) return s;
+        const pts = getActivePts(s.mode);
+        if (!pts || pts.length < 2) return { ...s, playing: false };
+
+        const nextIdx = Math.min(s.idx + 1, pts.length - 1);
+        if (nextIdx >= pts.length - 1) {
+          // رسید به آخر
+          clearAnimTimer();
+          return { ...s, idx: nextIdx, playing: false };
+        }
+        return { ...s, idx: nextIdx };
+      });
+    }, interval);
+
+    return () => clearAnimTimer();
+  }, [animState.playing, animState.mode, animState.speed, getActivePts]);
+
+  // وقتی ترک تغییر می‌کند، ایندکس را ریست کن تا با ترک جدید هم‌راستا شود
+  React.useEffect(() => {
+    if (animState.mode === 'driver') setAnimState(s => ({ ...s, idx: 0, playing: false }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [driverTrackPts]);
+  React.useEffect(() => {
+    if (animState.mode === 'vehicle') setAnimState(s => ({ ...s, idx: 0, playing: false }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vehicleTrackPts]);
+
+  // اگر تب عوض شد، پخش را متوقف کن تا اشتباهی نماند
+  React.useEffect(() => { stopAnimation(); setAnimState({ mode: null, idx: 0, playing: false, speed: 1, follow: true }); }, [tab, stopAnimation]);
+  // === ANIMATION: layer ===
+  function TrackAnimationLayer({ pts, idx, follow }: { pts: [number, number][], idx: number, follow: boolean }) {
+    const map = useMap();
+    const safeIdx = Math.min(Math.max(0, idx), Math.max(0, pts.length - 1));
+    const head = pts[safeIdx];
+
+    React.useEffect(() => {
+      if (follow && head) {
+        // پانِ نرم به نقطه‌ی فعلی
+        (map as any).panTo(head, { animate: true, duration: 0.25 });
+      }
+    }, [head?.[0], head?.[1], follow, map]);
+
+    if (!pts || pts.length < 2) return null;
+
+    return (
+      <>
+        <Polyline positions={pts.slice(0, safeIdx + 1)} pathOptions={{ color: '#ff9800', weight: 5, opacity: 0.9 }} />
+        <Marker position={pts[0]} icon={badgeIcon('شروع', '#43a047') as any} />
+        <Marker position={head} icon={badgeIcon('پخش', '#ff9800') as any} />
+        {/* انتهای مسیر برای مرجع */}
+        <Marker position={pts[pts.length - 1]} icon={badgeIcon('پایان', '#e53935') as any} />
+      </>
+    );
+  }
+
+  const loadDriverKPI = React.useCallback(
+    async (driverId: number, from = fromISO, to = toISO) => {
+      if (!driverId || !myDriverIds.has(driverId)) {
+        setKpiStatusByDid(p => ({ ...p, [driverId]: 'idle' }));
+        setKpiByDid(p => ({ ...p, [driverId]: undefined }));
+        return;
+      }
+
+      setKpiStatusByDid(p => ({ ...p, [driverId]: 'loading' }));
+
+      try {
+        // آمار رسمی (distance/duration + jobs) از Nest
+        let stats = statsMap[driverId];
+        if (!stats || (stats.totalDistanceKm == null && stats.totalDurationMin == null && stats.jobsCount == null)) {
+          stats = await getDriverStats(driverId, from, to);
+          setStatsMap(p => ({ ...p, [driverId]: stats }));
+        }
+
+        // تخلفات همان منطق فعلی
+        const raw = await fetchDriverViolations(api, driverId, { from, to, limit: 500 });
+        const vios = normalizeViolations(raw) || [];
+
+        const speeding = vios.filter(v => v.type === 'speeding' || v.type === 'overspeed').length;
+        const offRoute = vios.filter(v => v.type === 'off_route' || v.type === 'route_deviation').length;
+        const geofenceExit = vios.filter(v => v.type === 'geofence_exit' || v.type === 'geofence_out').length;
+        const idleOver = vios.filter(v => v.type === 'idle_over').length;
+        const severe = vios.filter(v => {
+          const s = String((v as any).severity || '').toLowerCase();
+          return s === 'severe' || s === 'high' || s === 'critical';
+        }).length;
+
+        const distKm = Number(stats.totalDistanceKm ?? 0);
+        const durMin = Number(stats.totalDurationMin ?? 0);
+        const jobsCnt = Number(stats.jobsCount ?? 0);
+        const avgSpeed = durMin > 0 ? +(distKm / (durMin / 60)).toFixed(1) : undefined;
+
+        const kpi: DriverKPI = {
+          distance_km: Number.isFinite(distKm) ? +distKm.toFixed(2) : undefined,
+          duration_min: Number.isFinite(durMin) ? Math.round(durMin) : undefined,
+          avg_speed_kmh: avgSpeed,
+          jobs_count: Number.isFinite(jobsCnt) ? jobsCnt : undefined,
+          violations: {
+            total: vios.length,
+            speeding,
+            off_route: offRoute,
+            geofence_exit: geofenceExit,
+            idle_over: idleOver,
+            severe,
+          },
+        };
+
+        setKpiByDid(p => ({ ...p, [driverId]: kpi }));
+        setKpiStatusByDid(p => ({ ...p, [driverId]: 'loaded' }));
+      } catch (e) {
+        setKpiByDid(p => ({ ...p, [driverId]: undefined }));
+        setKpiStatusByDid(p => ({ ...p, [driverId]: 'error' }));
+      }
+    },
+    [api, myDriverIds, fromISO, toISO, statsMap]
+  );
+
+
+  // --- 3) فچر جدید: همه‌ی تخلفاتِ راننده از URL رسمی Nest ---
+  // GET /drivers/:driverId/violations  (cursor یا offset؛ ما ساده با limit/from/to می‌گیریم)
+  const loadDriverViolations = React.useCallback(
+    async (driverId: number, from = fromISO, to = toISO) => {
+      if (!driverId || !myDriverIds.has(driverId)) {
+        setViolationsByDid(p => ({ ...p, [driverId]: [] }));
+        setVioStatusByDid(p => ({ ...p, [driverId]: 'idle' }));
+        setKpiStatusByDid(p => ({ ...p, [driverId]: 'idle' }));
+        return;
+      }
+
+      setVioStatusByDid(p => ({ ...p, [driverId]: 'loading' }));
+      setKpiStatusByDid(p => ({ ...p, [driverId]: 'loading' }));
+
+      try {
+        // ⬇️ همون URLهای کنترلر:
+        //   GET /drivers/:driverId/violations?limit=200&from=...&to=...
+        //   (در صورت نیاز می‌تونی page یا before/after هم بدی)
+        const { data } = await api.get(`/drivers/${driverId}/violations`, {
+          params: { limit: 200, from, to },
+        });
+
+        const rows: any[] = Array.isArray(data?.items)
+          ? data.items
+          : Array.isArray(data)
+            ? data
+            : [];
+
+        const list: SimpleViolation[] = rows
+          .map(normSimpleViolationFromService)
+          .filter(Boolean) as SimpleViolation[];
+
+        // مرتب‌سازی نزولی بر اساس زمان (اگر کوئری برنگردوند)
+        list.sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
+
+        setViolationsByDid(p => ({ ...p, [driverId]: list }));
+        setVioStatusByDid(p => ({ ...p, [driverId]: 'loaded' }));
+
+        // --- 4) KPI: از statsMap + همین تخلفات
+        const s = statsMap[driverId] || {};
+        const dist = Number(s.totalDistanceKm ?? 0);
+        const durMin = Number(s.totalDurationMin ?? 0);
+        const jobs = Number(s.jobsCount ?? 0);
+        const avg = durMin > 0 ? +(dist / (durMin / 60)).toFixed(1) : undefined;
+
+        const cnt = (t: string) => list.filter(v => v.type === t).length;
+        // اگر سطح شدت در متا/فیلد داری، اینجا جمع کن:
+        const severe = list.filter(v =>
+          String((v.meta as any)?.severity ?? (v.meta as any)?.level ?? '')
+            .toLowerCase() === 'severe'
+        ).length;
+
+        setKpiByDid(p => ({
+          ...p,
+          [driverId]: {
+            distance_km: Number.isFinite(dist) ? +dist.toFixed(2) : undefined,
+            duration_min: Number.isFinite(durMin) ? Math.round(durMin) : undefined,
+            avg_speed_kmh: avg,
+            jobs_count: Number.isFinite(jobs) ? jobs : undefined,
+            violations: {
+              total: list.length,
+              speeding: cnt('speeding') + cnt('overspeed'),
+              off_route: cnt('off_route') + cnt('route_deviation'),
+              geofence_exit: cnt('geofence_exit') + cnt('geofence_out'),
+              idle_over: cnt('idle_over'),
+              severe,
+            },
+          },
+        }));
+        setKpiStatusByDid(p => ({ ...p, [driverId]: 'loaded' }));
+      } catch (err) {
+        setViolationsByDid(p => ({ ...p, [driverId]: [] }));
+        setVioStatusByDid(p => ({ ...p, [driverId]: 'error' }));
+        setKpiStatusByDid(p => ({ ...p, [driverId]: 'error' }));
+      }
+    },
+    [api, fromISO, toISO, myDriverIds, statsMap]
+  );
+
+  // --- 5) افکت: روی انتخاب راننده/تاریخ، از URL Nest بگیر ---
+  React.useEffect(() => {
+    if (selectedDriverId && fromISO && toISO) {
+      loadDriverViolations(selectedDriverId, fromISO, toISO);
+    }
+  }, [selectedDriverId, fromISO, toISO, loadDriverViolations]); // ← درست
+
+
+
   type RouteMeta = { id: number; name?: string | null; threshold_m?: number | null };
   type RoutePoint = { lat: number; lng: number; name?: string | null; radius_m?: number | null };
   const [sheetMode, setSheetMode] = React.useState<'vehicle' | 'driver' | null>(null);
-  // state ها
+
   const [drawingRoute, setDrawingRoute] = React.useState(false);
   const [routePoints, setRoutePoints] = useState<{ lat: number; lng: number }[]>([]);
   const [routeName, setRouteName] = useState('');
   const [routeThreshold, setRouteThreshold] = useState<number>(100);
-  const [fromISO, setFromISO] = React.useState<string>(() => new Date(new Date().setHours(0, 0, 0, 0)).toISOString());
-  const [toISO, setToISO] = React.useState<string>(() => new Date().toISOString());
   // کلیک‌گیر روی نقشه
   function PickPointsForRoute({ enabled, onPick }: { enabled: boolean; onPick: (lat: number, lng: number) => void }) {
     useMapEvent('click', (e: { latlng: { lat: number; lng: number; }; }) => { if (enabled) onPick(e.latlng.lat, e.latlng.lng); });
@@ -16597,31 +17993,27 @@ function TechnicianRoleSection({ user }: { user: User }) {
   };
   async function trackByDriverId(driverId: number, from = fromISO, to = toISO) {
     if (!driverId) return;
-
-    try {
-      const params = {
-        driver_id: driverId,         // ⬅️ اجباری
-        from,                        // ISO string
-        to,                          // ISO string
-      };
-
-      // اگر می‌خواهید URL لاگ شود:
-      // const q = new URLSearchParams({ driver_id: String(driverId), from, to }).toString();
-      // console.log(`[GET] /tracks?${q}`);
-
-      const { data } = await api.get('/tracks', { params });
-      const pts: { lat: number; lng: number }[] = Array.isArray(data) ? data : (data?.items || []);
-      setPolyline(pts.map(p => [p.lat, p.lng] as [number, number]));
-      liveTrackOnRef.current = true;
-      selectedDriverRef.current = drivers.find(x => x.id === driverId) ?? null;
-    } catch (e) {
-      console.error('trackByDriverId error:', e);
-      setPolyline([]);
-      liveTrackOnRef.current = true;
-      selectedDriverRef.current = drivers.find(x => x.id === driverId) ?? null;
-    }
+    await loadDriverTrack(driverId, from, to);
+    liveTrackOnRef.current = true;
+    selectedDriverRef.current = drivers.find(x => x.id === driverId) ?? null;
   }
 
+
+
+
+  // وقتی تب «راننده‌ها» است و انتخاب/بازه عوض شد → ترک راننده
+  React.useEffect(() => {
+    if (tab === 'drivers' && selectedDriverId && fromISO && toISO) {
+      loadDriverTrack(selectedDriverId, fromISO, toISO);
+    }
+  }, [tab, selectedDriverId, fromISO, toISO, loadDriverTrack]);
+
+  // وقتی تب خودرویی است و انتخاب/بازه عوض شد → ترک خودرو
+  React.useEffect(() => {
+    if (tab !== 'drivers' && selectedVehicleId && fromISO && toISO) {
+      loadVehicleTrack(selectedVehicleId, fromISO, toISO);
+    }
+  }, [tab, selectedVehicleId, fromISO, toISO, loadVehicleTrack]);
 
 
   async function saveRouteAndFenceForVehicle(opts: {
@@ -16694,7 +18086,6 @@ function TechnicianRoleSection({ user }: { user: User }) {
     }
   }
   // انتخاب راننده
-  const [selectedDriverId, setSelectedDriverId] = React.useState<number | null>(null);
 
   // تخلفات راننده (بر اساس driverId و بازه زمانی)
   type SimpleViolation = {
@@ -16764,19 +18155,22 @@ function TechnicianRoleSection({ user }: { user: User }) {
   );
 
 
-  // ✅ فقط از /assignments/current/:driverId استفاده کن
-  async function fetchDriverViolationsViaAssignment(api: any, driverId: number, limit = 200) {
+  // جایگزین کاملِ fetchDriverViolationsViaAssignment
+  async function fetchDriverViolationsViaAssignment(
+    api: any,
+    driverId: number,
+    opts: { limit?: number; from?: string; to?: string; types?: string } = {}
+  ) {
     try {
       const { data: cur } = await api.get(`/assignments/current/${driverId}`);
-      const vid =
-        Number(cur?.vehicle_id ?? cur?.vehicleId) ||
-        Number(cur?.vehicle?.id) || null;
-
-      if (!vid) return []; // راننده الآن روی ماشینی نیست
-      const { data } = await api.get(`/vehicles/${vid}/violations`, { params: { limit } });
+      const vid = cur?.vehicle_id ?? cur?.vehicleId;
+      if (!vid) return { items: [] };
+      const { data } = await api.get(`/vehicles/${Number(vid)}/violations`, {
+        params: { limit: opts.limit ?? 50, from: opts.from, to: opts.to, types: opts.types }
+      });
       return data;
     } catch {
-      return [];
+      return { items: [] };
     }
   }
 
@@ -16801,65 +18195,17 @@ function TechnicianRoleSection({ user }: { user: User }) {
   };
 
 
-  const loadDriverViolations = React.useCallback(
-    async (driverId: number, from = fromISO, to = toISO) => {
-      if (!driverId) { setViolations([]); return; }
 
-      setViolationsLoading(true);
-      try {
-        const raw = await fetchDriverViolationsViaAssignment(api, driverId, 200);
-        const all: Violation[] = (normalizeViolations(raw) || []) as Violation[];
-
-        const fromT = Number.isFinite(+new Date(from)) ? +new Date(from) : -Infinity;
-        const toT = Number.isFinite(+new Date(to)) ? +new Date(to) : Infinity;
-
-        const list: SimpleViolation[] = all
-          .filter(v => {
-            const t = +new Date(v.created_at ?? (v as any).at ?? (v as any).time ?? (v as any).createdAt);
-            return Number.isFinite(t) && t >= fromT && t <= toT;
-          })
-          .map((v, idx) => {
-            const createdAtISO =
-              (v.created_at
-                ?? (v as any).at
-                ?? (v as any).time
-                ?? (v as any).createdAt
-                ?? new Date().toISOString());
-
-            const created_at = new Date(createdAtISO).toISOString(); // ⬅️ تضمین string
-
-            const stableId =
-              (typeof v.id === 'number' ? v.id : undefined) ??
-              Number(v.meta?.event_id) ??
-              Number((v.meta as any)?.id) ??
-              (Date.parse(created_at) || 0) + idx;
-
-            return {
-              id: stableId,
-              type: (v.type as any) || 'speeding',
-              created_at, // ⬅️ string
-              driver_user_id: (v as any).driver_id ?? (v as any).driver_user_id ?? driverId,
-              meta: v.meta ?? {},
-            };
-          });
-
-        setViolations(list);
-      } catch {
-        setViolations([]);
-      } finally {
-        setViolationsLoading(false);
-      }
-    },
-    [api, fromISO, toISO] // ⚠️ تابع fetchDriverViolationsViaAssignment را در deps نگذار تا فچ لوپ نشود
-  );
 
 
 
   useEffect(() => {
     if (selectedDriverId && fromISO && toISO) {
-      loadDriverViolations(selectedDriverId, fromISO, toISO);
+      loadDriverKPI(selectedDriverId, fromISO, toISO);        // ⬅️ جدید
     }
-  }, [selectedDriverId, fromISO, toISO, loadDriverViolations]);
+  }, [selectedDriverId, fromISO, toISO, loadDriverKPI]); // ← درست
+
+  const [extras, setExtras] = React.useState<Record<number, DriverExtra>>({});
 
 
 
@@ -16909,53 +18255,21 @@ function TechnicianRoleSection({ user }: { user: User }) {
   const [violations, setViolations] = React.useState<SimpleViolation[]>([]);
 
   const fetchVehicleCurrentRouteMeta = async (vid: number): Promise<RouteMeta | null> => {
-    const tries = [
-      () => api.get(`/vehicles/${vid}/routes/current`), // 👈 خواسته‌ی شما
-      () => api.get(`/vehicles/${vid}/current-route`),
-      () => api.get(`/vehicles/${vid}/route`),
-    ];
-    for (const t of tries) {
-      try {
-        const { data } = await t();
-        // برخی APIها خروجی را داخل route می‌گذارند
-        const r = data?.route || data;
-        if (r?.id) {
-          return {
-            id: Number(r.id),
-            name: r.name ?? null,
-            threshold_m: r.threshold_m ?? r.thresholdM ?? null,
-          };
-        }
-        // بعضی‌ها هم به‌صورت扮 route_id
-        if (data?.route_id) {
-          return {
-            id: Number(data.route_id),
-            name: data.name ?? null,
-            threshold_m: data.threshold_m ?? data.thresholdM ?? null,
-          };
-        }
-      } catch { /* try next */ }
-    }
+    try {
+      const { data } = await api.get(`/vehicles/${vid}/routes/current`);
+      const r = data?.route || data;
+      if (r?.id) {
+        return {
+          id: Number(r.id),
+          name: r.name ?? null,
+          threshold_m: r.threshold_m ?? r.thresholdM ?? null,
+        };
+      }
+    } catch { }
     return null;
   };
-  const loadDriverTrack = async (driverId: number) => {
-    if (!canTrackDrivers) return;
-    try {
-      // 👇 بک‌اند می‌خواهد vehicle_id
-      const vid = await getDriverCurrentVehicleId(driverId);
-      const params: any = { from: fromISO, to: toISO };
-      if (vid) params.vehicle_id = vid; else params.driver_id = driverId; // فالبک
 
-      const { data } = await api.get('/tracks', { params });
-      const pts: { lat: number; lng: number }[] = Array.isArray(data) ? data : data?.items || [];
-      setPolyline(pts.map(p => [p.lat, p.lng] as [number, number]));
-      liveTrackOnRef.current = true;
-      selectedDriverRef.current = drivers.find(x => x.id === driverId) ?? null;
-    } catch {
-      setPolyline([]); liveTrackOnRef.current = true;
-      selectedDriverRef.current = drivers.find(x => x.id === driverId) ?? null;
-    }
-  };
+
   // فقط شیت را باز کن، هیچ فچی اینجا نزن
   const onPickDriver = (d: any) => {
     setSelectedDriverId(d.id);
@@ -16988,39 +18302,22 @@ function TechnicianRoleSection({ user }: { user: User }) {
     return p;
   }
 
-  async function fetchDriverViolationsSmart(
+  // REPLACE
+  async function fetchDriverViolations(
     api: any,
     driverId: number,
-    { from, to, limit = 200 }: { from: string; to: string; limit?: number }
+    { from, to, limit = 200, types }: { from: string; to: string; limit?: number; types?: string }
   ) {
     const params: any = { from, to, limit };
-    const vid = await getCurrentVehicleIdSafe(api, driverId);
-
-    // 1) بر اساس vehicle اگر assignment وجود داشت
-    if (vid) {
-      try {
-        const { data } = await api.get(`/vehicles/${vid}/violations`, { params });
-        return data;
-      } catch { /* فالبک به درایور */ }
-    }
-
-    // 2) فالبک‌های بر پایهٔ راننده (حتی وقتی assignment خالی است)
-    try {
-      const { data } = await api.get('/violations', { params: { ...params, driver_id: String(driverId) } });
-      return data;
-    } catch { }
-
+    if (types) params.types = types;
     try {
       const { data } = await api.get(`/drivers/${driverId}/violations`, { params });
       return data;
-    } catch { }
-
-    try {
-      const { data } = await api.get('/events', { params: { ...params, category: 'violation', driver_id: String(driverId) } });
+    } catch {
+      // آخرین فالبک (در صورت یکی‌بودن دیتامدل)
+      const { data } = await api.get('/violations', { params: { ...params, driver_id: String(driverId) } });
       return data;
-    } catch { }
-
-    return [];
+    }
   }
 
 
@@ -17028,54 +18325,27 @@ function TechnicianRoleSection({ user }: { user: User }) {
 
 
 
-  // نقاط مسیر بر اساس routeId
-  // نقاط مسیر — اول /points بعد /stations (طبق خواسته‌ی شما)
+
+  // جایگزین کاملِ fetchRoutePoints
   const fetchRoutePoints = async (routeId: number): Promise<RoutePoint[]> => {
-    const tries = [
-      () => api.get(`/routes/${routeId}/points`),   // 👈 اول points
-      () => api.get(`/routes/${routeId}/stations`), //    بعد stations
-    ];
-    for (const t of tries) {
-      try {
-        const { data } = await t();
-        return normalizeRoutePoints(data);
-      } catch { /* try next */ }
+    try {
+      const { data } = await api.get(`/routes/${routeId}/points`);
+      return normalizeRoutePoints(data);
+    } catch {
+      return [];
     }
-    return [];
   };
 
 
   // ست/آپدیت مسیر فعلی ماشین (اختیاری threshold)
+  // جایگزین کاملِ setOrUpdateVehicleRoute
   const setOrUpdateVehicleRoute = async (vid: number, body: { route_id?: number; threshold_m?: number }) => {
-    // PATCH/PUT ها متنوع‌اند؛ همه را هندل می‌کنیم
-    const tries = [
-      () => api.patch(`/vehicles/${vid}/route`, body),
-      () => api.put(`/vehicles/${vid}/route`, body),
-      () => api.post(`/vehicles/${vid}/route`, body),
-    ];
-    for (const t of tries) {
-      try { return await t(); } catch { /* next */ }
-    }
+    return api.patch(`/vehicles/${vid}/route`, body);
   };
 
-  // لغو مسیر فعلی ماشین
-  // لغو/برداشتن مسیر فعلی ماشین — فقط DELETE
+  // جایگزین کاملِ clearVehicleRoute
   const clearVehicleRoute = async (vid: number) => {
-    const tries = [
-      // رایج‌ترین‌ها
-      () => api.delete(`/vehicles/${vid}/route`),
-      () => api.delete(`/vehicles/${vid}/route/unassign`),
-
-      // چند فالبک احتمالی
-      () => api.delete(`/vehicles/${vid}/routes/current`),
-      () => api.delete(`/vehicles/${vid}/current-route`),
-    ];
-
-    let lastErr: any;
-    for (const t of tries) {
-      try { return await t(); } catch (e) { lastErr = e; }
-    }
-    throw lastErr;
+    return api.delete(`/vehicles/${vid}/route`);
   };
 
 
@@ -17532,11 +18802,8 @@ function TechnicianRoleSection({ user }: { user: User }) {
   type Vehicle = { id: number; plate_no: string; vehicle_type_code: VehicleTypeCode; last_location?: { lat: number; lng: number } };
 
   // ===== State (راننده‌ها) =====
-  const [drivers, setDrivers] = React.useState<User[]>([]);
-  const [statsMap, setStatsMap] = React.useState<Record<number, DriverStats>>({});
-  const [extras, setExtras] = React.useState<Record<number, DriverExtra>>({});
-  const [loading, setLoading] = React.useState(true);
-
+  const [initLoading, setInitLoading] = React.useState(true);
+  const [statsLoading, setStatsLoading] = React.useState(false);
   // ✅ قابلیت‌های اعطاشده توسط SA به تفکیک نوع خودرو
   const [grantedPerType, setGrantedPerType] = React.useState<Record<VehicleTypeCode, MonitorKey[]>>({});
   const [parentSAName, setParentSAName] = React.useState<string | null>(null);
@@ -17565,26 +18832,16 @@ function TechnicianRoleSection({ user }: { user: User }) {
   const normalizeUsersToDrivers = (arr: any[]): User[] =>
     (arr || []).map((u: any) => ({ id: u.id, role_level: 6, full_name: u.full_name ?? u.name ?? '—', phone: u.phone ?? '', ...(u.last_location ? { last_location: u.last_location } : {}) }));
 
+  // جایگزین کاملِ fetchBranchDrivers
   const fetchBranchDrivers = async (): Promise<User[]> => {
     try {
       const { data } = await api.get('/users/my-subordinates-flat');
       return normalizeUsersToDrivers((data || []).filter((u: any) => (u?.role_level ?? 6) === 6));
-    } catch { }
-    const tries = [
-      () => api.get(`/users/branch-manager/${user.id}/subordinates`),
-      () => api.get('/users', { params: { branch_manager_user_id: user.id, role_level: 6, limit: 1000 } }),
-      () => api.get('/drivers', { params: { branch_manager_user_id: user.id, limit: 1000 } }),
-    ];
-    for (const fn of tries) {
-      try {
-        const { data } = await fn();
-        const items = data?.items ?? data ?? [];
-        const out = Array.isArray(items) ? normalizeUsersToDrivers(items) : normalizeUsersToDrivers([items]);
-        if (out.length) return out;
-      } catch { }
+    } catch {
+      return [];
     }
-    return [];
   };
+
 
   const toRad = (x: number) => x * Math.PI / 180, R = 6371;
   const hav = (a: [number, number], b: [number, number]) => {
@@ -17594,15 +18851,52 @@ function TechnicianRoleSection({ user }: { user: User }) {
   };
 
   const fetchStats = React.useCallback(async (ids: number[], from: string, to: string) => {
-    const settled = await Promise.allSettled(ids.map(id => api.get(`/driver-routes/stats/${id}`, { params: { from, to } })));
-    const entries: [number, DriverStats][] = []; const fallbackIds: number[] = [];
-    settled.forEach((r, i) => { const id = ids[i]; if (r.status === 'fulfilled') entries.push([id, r.value?.data ?? {}]); else fallbackIds.push(id); });
-    if (fallbackIds.length) {
-      const tr = await Promise.allSettled(fallbackIds.map(id => api.get('/tracks', { params: { driver_id: id, from, to } }).then(res => ({ id, data: res.data }))));
-      tr.forEach(fr => { if (fr.status === 'fulfilled') { const { id, data } = fr.value as any; const pts: { lat: number; lng: number }[] = Array.isArray(data) ? data : data?.items || []; let d = 0; for (let i = 1; i < pts.length; i++) d += hav([pts[i - 1].lat, pts[i - 1].lng], [pts[i].lat, pts[i].lng]); entries.push([id, { totalDistanceKm: +d.toFixed(2) }]); } });
+    const entries: [number, DriverStats][] = [];
+    const fails: number[] = [];
+
+    // سعی کن برای هر راننده آمار کامل را بگیری
+    const settled = await Promise.allSettled(ids.map(id => getDriverStats(id, from, to)));
+    settled.forEach((r, i) => {
+      const id = ids[i];
+      if (r.status === 'fulfilled') entries.push([id, r.value]);
+      else fails.push(id);
+    });
+
+    // فالبک: اگر برای بعضی‌ها آمار نگرفتیم، فقط مسافت را از /tracks تخمین بزن
+    if (fails.length) {
+      const toRad = (x: number) => (x * Math.PI) / 180, R = 6371;
+      const hav = (a: [number, number], b: [number, number]) => {
+        const dLat = toRad(b[0] - a[0]), dLon = toRad(b[1] - a[1]), lat1 = toRad(a[0]), lat2 = toRad(b[0]);
+        const h = Math.sin(dLat / 2) ** 2 + Math.sin(dLon / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
+        return 2 * R * Math.asin(Math.sqrt(h));
+      };
+
+      // inside fetchStats fallback (replace the fb Promise.allSettled(...) block)
+      const fb = await Promise.allSettled(
+        fails.map(async (id) => {
+          const vid = await getCurrentVehicleIdSafe(api, id);
+          if (!vid) return { id, data: [] };
+          const res = await api.get('/tracks', { params: { vehicle_id: vid, from, to, limit: 5000 } });
+          return { id, data: res.data };
+        })
+      );
+      fb.forEach(fr => {
+        if (fr.status === 'fulfilled') {
+          const { id, data } = fr.value as any;
+          const pts = normalizeTrackPoints(data).map(([lat, lng]) => ({ lat, lng }));
+          let d = 0;
+          for (let i = 1; i < pts.length; i++) {
+            d += hav([pts[i - 1].lat, pts[i - 1].lng], [pts[i].lat, pts[i].lng]);
+          }
+          entries.push([id, { totalDistanceKm: +d.toFixed(2), totalDurationMin: undefined, jobsCount: undefined, breakdownsCount: undefined }]);
+        }
+      });
+
     }
+
     setStatsMap(Object.fromEntries(entries));
   }, []);
+
   const [parentSAId, setParentSAId] = React.useState<number | null>(null);
 
   // ===== SA parent & granted policies =====
@@ -17622,10 +18916,11 @@ function TechnicianRoleSection({ user }: { user: User }) {
 
   // برای جلوگیری از race-condition در fetch ها (به ازای هر نوع خودرو)
   const lastFetchReq = React.useRef<Record<VehicleTypeCode, number>>({});
+  const [policyRows, setPolicyRows] = React.useState<any[]>([]);
 
+  // REPLACE: fetchVehiclesOfType
   const fetchVehiclesOfType = React.useCallback(
     async (vt: VehicleTypeCode) => {
-      if (!parentSAId) return;
       const rid = Date.now();
       lastFetchReq.current[vt] = rid;
 
@@ -17633,14 +18928,11 @@ function TechnicianRoleSection({ user }: { user: User }) {
         if (lastFetchReq.current[vt] !== rid) return;
 
         const list = (items || [])
+          .filter((v: any) => normType(v?.vehicle_type_code ?? v?.vehicleTypeCode) === normType(vt))
           .map((v: any) => {
-            const ll = v.last_location
-              ? {
-                lat: roundLL(Number(v.last_location.lat)),
-                lng: roundLL(Number(v.last_location.lng)),
-              }
+            const ll = v?.last_location
+              ? { lat: roundLL(Number(v.last_location.lat)), lng: roundLL(Number(v.last_location.lng)) }
               : undefined;
-
             return {
               id: Number(v.id),
               plate_no: String(v.plate_no ?? v.plateNo ?? ''),
@@ -17652,24 +18944,69 @@ function TechnicianRoleSection({ user }: { user: User }) {
           .sort((a, b) => a.plate_no.localeCompare(b.plate_no, 'fa', { numeric: true }));
 
         setVehiclesByType(prev => ({ ...prev, [vt]: list }));
-        console.log(`[BM] fetched ${list.length} vehicles for <${vt}> from SA=${parentSAId}`);
+        console.log(`[BM] fetched ${list.length} vehicles for <${vt}> (role=${user?.role_level})`);
       };
 
-
       try {
-        const { data } = await api.get('/vehicles', { params: { owner_user_id: String(parentSAId), limit: 1000 } });
-        const all = Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
-        const items = all.filter((v: any) => normType(v.vehicle_type_code ?? v.vehicleTypeCode) === normType(vt));
-        apply(items);
+        const role = Number(user?.role_level);
+
+        // === فقط ماشین‌های تحت مسئولیت کاربر برای نقش‌های ۳/۴/۵ ===
+        if ([3, 4, 5].includes(role)) {
+          // 1) ترجیح: /users/:id/vehicles
+          try {
+            const { data } = await api.get('/vehicles', {
+              params: { responsible_user_id: String(user.id), limit: 1000 },
+            });
+            apply(ensureArray(data));
+            return;
+          } catch { /* به fallback بعدی برو */ }
+          // 2) fallback: /vehicles?responsible_user_id=:id
+          try {
+            const { data } = await api.get('/vehicles', {
+              params: { responsible_user_id: String(user.id), limit: 1000 },
+            });
+            apply(ensureArray(data));
+            return;
+          } catch { /* fallback */ }
+
+          // 3) fallback نهایی: از policy‌ها vehicle_id ها را بیاور
+          const ids = (policyRows || [])
+            .filter((r: any) => normType(r?.vehicle_type_code ?? r?.vehicleTypeCode) === normType(vt))
+            .map((r: any) => Number(r?.vehicle_id ?? r?.vehicleId))
+            .filter(Number.isFinite);
+
+          if (ids.length) {
+            const settled = await Promise.allSettled(ids.map(id => api.get(`/vehicles/${id}`)));
+            const items = settled
+              .filter(s => s.status === 'fulfilled')
+              .map((s: any) => s.value?.data)
+              .filter(Boolean);
+            apply(items);
+            return;
+          }
+
+          apply([]); // هیچ چیز پیدا نشد
+          return;
+        }
+
+        // === SA و بقیه نقش‌ها: رفتار قبلی (همهٔ ماشین‌های مالک SA والد) ===
+        if (parentSAId) {
+          const { data } = await api.get('/vehicles', {
+            params: { owner_user_id: String(parentSAId), limit: 1000 },
+          });
+          apply(ensureArray(data));
+        } else {
+          apply([]);
+        }
       } catch (e) {
         console.warn('[fetchVehiclesOfType] failed:', e);
         apply([]);
       }
     },
-    [parentSAId]
+    [api, user?.id, user?.role_level, parentSAId, policyRows]
   );
 
-  const [policyRows, setPolicyRows] = React.useState<any[]>([]);
+
 
   const availableTypes: VehicleTypeCode[] = React.useMemo(() => {
     const set = new Set<VehicleTypeCode>();
@@ -17727,15 +19064,32 @@ function TechnicianRoleSection({ user }: { user: User }) {
     if (!user?.id) return;
     let alive = true;
     (async () => {
-      const sa = await resolveParentSA(user.id);
-      if (!alive) return;
-      setParentSA(sa);
-      setParentSAId(sa?.id ?? null);
-      setParentSAName(sa?.name ?? null);
-      console.log('[BM] parentSA resolved =>', sa);
+      try {
+        setInitLoading(true);
+        const ds = await fetchBranchDrivers();
+        if (!alive) return;
+        setDrivers(ds);
+      } catch (e) {
+        console.error('[branch-manager] init error:', e);
+      } finally {
+        if (alive) setInitLoading(false);
+      }
     })();
     return () => { alive = false; };
-  }, [user?.id, resolveParentSA]);
+  }, [user?.id]); // ⬅️ از fromISO/toISO اینجا حذف شد
+  React.useEffect(() => {
+    if (!drivers.length) return;
+    let alive = true;
+    setStatsLoading(true);
+    (async () => {
+      try {
+        await fetchStats(drivers.map(d => d.id), fromISO, toISO);
+      } finally {
+        if (alive) setStatsLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [drivers, fromISO, toISO, fetchStats]);
 
 
   const fetchGrantedPolicies = React.useCallback(async (uid: number) => {
@@ -17793,7 +19147,7 @@ function TechnicianRoleSection({ user }: { user: User }) {
 
   // ===== نقشه =====
   const [useMapTiler] = React.useState(Boolean(MT_KEY));
-  const tileUrl = useMapTiler && MT_KEY ? `https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=${MT_KEY}` : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+  const tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
   const [focusLatLng, setFocusLatLng] = React.useState<[number, number] | undefined>(undefined);
 
   // تا مجبور نشی useEffect سوکت رو به selectedVehicleId وابسته کنی:
@@ -17817,6 +19171,50 @@ function TechnicianRoleSection({ user }: { user: User }) {
   const [autoIndex, setAutoIndex] = React.useState(1);
   const [editingStation, setEditingStation] = React.useState<{ vid: number; st: Station } | null>(null);
   const [movingStationId, setMovingStationId] = React.useState<number | null>(null);
+  // === Violations types ===
+  const VIOLATION_TYPES = [
+    'overspeed',
+    'speeding',
+    'route_deviation',
+    'geofence_in',
+    'geofence_out',
+    'geofence',
+    'idle_over',
+    'harsh_brake',
+    'harsh_accel',
+    'harsh_turn',
+    'ignition_on_off_hours',
+  ] as const;
+  const VIO_LABEL: Record<ViolationType, string> = {
+    overspeed: 'سرعت غیرمجاز',
+    speeding: 'سرعت غیرمجاز',
+    route_deviation: 'انحراف از مسیر',
+    geofence_in: 'ورود ژئوفنس',
+    geofence_out: 'خروج ژئوفنس',
+    geofence: 'ژئوفنس',
+    idle_over: 'توقف طولانی',
+    harsh_brake: 'ترمز شدید',
+    harsh_accel: 'گاز شدید',
+    harsh_turn: 'پیچ تند',
+    ignition_on_off_hours: 'روشن/خاموش خارج از ساعات',
+  };
+
+  type ViolationType = typeof VIOLATION_TYPES[number];
+
+  type ViolationSeverity = 'low' | 'medium' | 'high' | 'severe' | 'critical';
+
+  interface Violation {
+    created_at: any;
+    id?: number;
+    vehicle_id: number;
+    driver_id: number | null;
+    at: string; // ISO
+    lat: number;
+    lng: number;
+    type: ViolationType;
+    severity?: ViolationSeverity | string;
+    meta?: Record<string, any>;
+  }
 
   // marker lists
   const driverMarkers = React.useMemo(() => {
@@ -17829,26 +19227,6 @@ function TechnicianRoleSection({ user }: { user: User }) {
     typeGrants.map(s => String(s).toLowerCase().replace(/[-_]/g, ''))
       .includes(k.toLowerCase().replace(/[-_]/g, ''));
   // ===== Violations (types + state) =====
-  type ViolationType =
-    | 'overspeed' | 'speeding'
-    | 'route_deviation'
-    | 'geofence_in' | 'geofence_out' | 'geofence'
-    | 'idle_over'
-    | 'harsh_brake' | 'harsh_accel' | 'harsh_turn'
-    | 'ignition_on_off_hours';
-
-  type Violation = {
-    created_at: string | number | Date;
-    id?: number;
-    vehicle_id: number;
-    driver_id?: number | null;
-    at: string;                   // ISO date
-    lat: number;
-    lng: number;
-    type: ViolationType;
-    severity?: 'low' | 'med' | 'high';
-    meta?: Record<string, any>;
-  };
 
   const [violationsByVid, setViolationsByVid] =
     React.useState<Record<number, Violation[]>>({});
@@ -17905,6 +19283,7 @@ function TechnicianRoleSection({ user }: { user: User }) {
 
   const vioReqRef = React.useRef<Record<number, number>>({});
 
+  // جایگزین کاملِ refreshViolations
   const refreshViolations = React.useCallback(
     async (vid: number, from: string, to: string) => {
       const stamp = Date.now();
@@ -17916,35 +19295,18 @@ function TechnicianRoleSection({ user }: { user: User }) {
       if (types.length) params.types = types.join(',');
 
       try {
-        // مسیر اصلی
         const { data } = await api.get(`/vehicles/${vid}/violations`, { params });
         if (vioReqRef.current[vid] !== stamp) return;
         const list = normalizeViolations(data, vid);
         setViolationsByVid(p => ({ ...p, [vid]: list }));
         setVioStatusByVid(p => ({ ...p, [vid]: 'loaded' }));
       } catch {
-        // فالبک‌های رایج
-        try {
-          const { data } = await api.get('/violations', { params: { ...params, vehicle_id: String(vid) } });
-          if (vioReqRef.current[vid] !== stamp) return;
-          const list = normalizeViolations(data, vid);
-          setViolationsByVid(p => ({ ...p, [vid]: list }));
-          setVioStatusByVid(p => ({ ...p, [vid]: 'loaded' }));
-        } catch {
-          try {
-            const { data } = await api.get('/events', { params: { ...params, category: 'violation', vehicle_id: String(vid) } });
-            if (vioReqRef.current[vid] !== stamp) return;
-            const list = normalizeViolations(data, vid);
-            setViolationsByVid(p => ({ ...p, [vid]: list }));
-            setVioStatusByVid(p => ({ ...p, [vid]: 'loaded' }));
-          } catch {
-            setVioStatusByVid(p => ({ ...p, [vid]: 'error' }));
-          }
-        }
+        setVioStatusByVid(p => ({ ...p, [vid]: 'error' }));
       }
     },
     [vioFilterTypes]
   );
+
   const lastVioVidRef = React.useRef<number | null>(null);
 
   const canTrackVehicles = !!(activeType && hasGrant('gps'));
@@ -18052,33 +19414,19 @@ function TechnicianRoleSection({ user }: { user: User }) {
     }
   }
 
+  // جایگزین کاملِ deleteGeofenceBM
   async function deleteGeofenceBM() {
     if (!selectedVehicleId) return;
     if (!confirm('ژئوفنس حذف شود؟')) return;
-
     try {
-      await api.delete(`/vehicles/${selectedVehicleId}/geofence`)  // اگر API شما فقط تکی پاک می‌کند
-        .catch(() => api.delete(`/geofences`, { params: { vehicle_id: String(selectedVehicleId) } })); // اگر جمعی دارید
-
+      await api.delete(`/vehicles/${selectedVehicleId}/geofence`);
       setGeofencesByVid(p => ({ ...p, [selectedVehicleId]: [] }));
-
       setGfDrawing(false); setGfCenter(null); setGfPoly([]);
     } catch (e) {
       console.error(e);
       alert('حذف ژئوفنس ناموفق بود');
     }
   }
-
-  // بالاتر از تابع، یه کمک‌تابع کوچک
-  /*  const ensureArray = (data: any) =>
-     Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
- */
-
-
-  // REPLACE: به جای نسخه‌ای که ownerId تکی می‌گرفت
-
-  // صدا زدنش
-
 
 
 
@@ -18150,13 +19498,32 @@ function TechnicianRoleSection({ user }: { user: User }) {
     const s = io(url + '/vehicles', { transports: ['websocket'] });
     socketRef.current = s;
 
-    // === هندلرها ===
-    const onDriverPos = (v: { driver_id: number; lat: number; lng: number }) => {
-      // اختیاری: هر کاری لازم داری
+    const onDriverPos = (v: { driver_id: number; lat: number; lng: number; ts?: number; at?: string; time?: string }) => {
+      const id = Number(v?.driver_id);
+      const lat = Number(v?.lat), lng = Number(v?.lng);
+      const ts = Number.isFinite(Number(v?.ts)) ? Number(v?.ts)
+        : Date.parse(String(v?.at ?? v?.time ?? new Date().toISOString()));
+      if (!Number.isFinite(id) || !Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(ts)) return;
+
+      const buf = driverLiveRef.current[id] || (driverLiveRef.current[id] = []);
+      buf.push([lat, lng, ts]);
+      if (buf.length > 500) buf.splice(0, buf.length - 500);
+
+      if (selectedDriverIdRef.current === id) setFocusLatLng([lat, lng]);
     };
 
-    const onVehiclePos = (v: { vehicle_id: number; lat: number; lng: number }) => {
-      // اختیاری: هر کاری لازم داری
+    const onVehiclePos = (v: { vehicle_id: number; lat: number; lng: number; ts?: number; at?: string; time?: string }) => {
+      const id = Number(v?.vehicle_id);
+      const lat = Number(v?.lat), lng = Number(v?.lng);
+      const ts = Number.isFinite(Number(v?.ts)) ? Number(v?.ts)
+        : Date.parse(String(v?.at ?? v?.time ?? new Date().toISOString()));
+      if (!Number.isFinite(id) || !Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(ts)) return;
+
+      const buf = vehicleLiveRef.current[id] || (vehicleLiveRef.current[id] = []);
+      buf.push([lat, lng, ts]);
+      if (buf.length > 500) buf.splice(0, buf.length - 500);
+
+      if (selectedVehicleIdRef.current === id) setFocusLatLng([lat, lng]);
     };
 
     const onStations = (msg: any) => {
@@ -18272,6 +19639,63 @@ function TechnicianRoleSection({ user }: { user: User }) {
   }, [activeType, parentSAId, vehiclesByType, fetchVehiclesOfType]);
 
 
+  const getVehicleStats = async (vid: number, from: string, to: string): Promise<VehicleKPI> => {
+    // تلاش اول: /vehicles/:vid/stats
+    try {
+      const { data } = await api.get(`/vehicles/${vid}/stats`, { params: { from, to } });
+      const pick = (o: any, ...keys: string[]) => keys.reduce((a, k) => (a ?? o?.[k]), undefined);
+
+      const dist = Number(
+        pick(data, 'total_distance_km', 'distance_km', 'distanceKm', 'totalDistanceKm', 'distance')
+      ) || 0;
+
+      const ignSec = Number(
+        pick(data, 'ignition_on_seconds', 'total_ignition_seconds', 'engine_on_seconds', 'engineOnSeconds')
+      ) || 0;
+
+      return { distance_km: +dist.toFixed(2), ignition_on_min: Math.round(ignSec / 60) };
+    } catch {
+      // فالبک: محاسبه مسافت از /tracks با هورساین
+      try {
+        const { data } = await api.get('/tracks', { params: { vehicle_id: vid, from, to } });
+        const pts: { lat: number; lng: number }[] = Array.isArray(data) ? data : (data?.items || []);
+        let d = 0;
+        const toRad = (x: number) => x * Math.PI / 180, R = 6371;
+        for (let i = 1; i < pts.length; i++) {
+          const a = pts[i - 1], b = pts[i];
+          const dLat = toRad(b.lat - a.lat), dLon = toRad(b.lng - a.lng);
+          const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
+          const h = Math.sin(dLat / 2) ** 2 + Math.sin(dLon / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
+          d += 2 * R * Math.asin(Math.sqrt(h));
+        }
+        return { distance_km: +d.toFixed(2) };
+      } catch {
+        return {};
+      }
+    }
+  };
+  // پایین‌تر از stateهای مشابه
+  type VehicleKPI = { distance_km?: number; ignition_on_min?: number };
+  const [kpiByVid, setKpiByVid] = React.useState<Record<number, VehicleKPI>>({});
+  const [kpiStatusByVid, setKpiStatusByVid] =
+    React.useState<Record<number, 'idle' | 'loading' | 'loaded' | 'error'>>({});
+  React.useEffect(() => {
+    if (!selectedVehicleId || !fromISO || !toISO) return;
+
+    const vid = selectedVehicleId;
+    setKpiStatusByVid(p => ({ ...p, [vid]: 'loading' }));
+
+    (async () => {
+      try {
+        const kpi = await getVehicleStats(vid, fromISO, toISO);
+        setKpiByVid(p => ({ ...p, [vid]: kpi }));
+        setKpiStatusByVid(p => ({ ...p, [vid]: 'loaded' }));
+      } catch {
+        setKpiByVid(p => ({ ...p, [vid]: {} }));
+        setKpiStatusByVid(p => ({ ...p, [vid]: 'error' }));
+      }
+    })();
+  }, [selectedVehicleId, fromISO, toISO]);
 
   // ===== ایستگاه‌ها =====
 
@@ -18435,6 +19859,7 @@ function TechnicianRoleSection({ user }: { user: User }) {
     // ژئوفنس (در صورت مجوز)
     setSelectedVehicleId(v.id);
     await loadVehicleGeofences(v.id); // همین یکی بماند
+    await loadVehicleTrack(v.id, fromISO, toISO);
 
 
 
@@ -18519,6 +19944,17 @@ function TechnicianRoleSection({ user }: { user: User }) {
       base_odometer_km: c.base_odometer_km ?? null,
     });
   };
+  // ADD
+  function FitToTrack({ pts }: { pts: [number, number][] }) {
+    const map = useMap();
+    React.useEffect(() => {
+      if (!pts || pts.length < 2) return;
+      const b = L.latLngBounds(pts.map(([lat, lng]) => [lat, lng] as [number, number]));
+      if (b.isValid()) map.fitBounds(b.pad(0.2));
+    }, [map, JSON.stringify(pts)]);
+    return null;
+  }
+
   const closeEditConsumable = () => setEditingCons(null);
   function normalizeGeofences(payload: any): Geofence[] {
     // به آرایه تبدیل کن
@@ -18747,7 +20183,7 @@ function TechnicianRoleSection({ user }: { user: User }) {
   }, [parentSAId, availableTypesKey, fetchVehiclesOfType]);
 
   // ===== Guards =====
-  if (permsLoading || loading) {
+  if (permsLoading || initLoading) {
     return <Box p={2} display="flex" alignItems="center" justifyContent="center">
       <CircularProgress size={24} />
     </Box>;
@@ -18756,19 +20192,6 @@ function TechnicianRoleSection({ user }: { user: User }) {
     return <Box p={2} color="text.secondary">دسترسی فعالی برای نمایش این صفحه برای شما تنظیم نشده است.</Box>;
   }
 
-  const VIO_LABEL: Record<ViolationType, string> = {
-    overspeed: 'سرعت غیرمجاز',
-    speeding: 'سرعت غیرمجاز',
-    route_deviation: 'انحراف از مسیر',
-    geofence_in: 'ورود ژئوفنس',
-    geofence_out: 'خروج ژئوفنس',
-    geofence: 'ژئوفنس',
-    idle_over: 'توقف طولانی',
-    harsh_brake: 'ترمز شدید',
-    harsh_accel: 'گاز شدید',
-    harsh_turn: 'پیچ تند',
-    ignition_on_off_hours: 'روشن/خاموش خارج از ساعات',
-  };
 
 
 
@@ -18863,6 +20286,38 @@ function TechnicianRoleSection({ user }: { user: User }) {
 
             {/* لایه راننده‌ها/ماشین‌ها با z-index بالاتر مثل بالا */}
             <Pane name="vehicles-layer" style={{ zIndex: 650 }}>
+              {/* === ANIMATION-aware track rendering === */}
+              {(() => {
+                const isAnimDriver = animState.mode === 'driver' && tab === 'drivers' && driverTrackPts.length > 1;
+                const isAnimVehicle = animState.mode === 'vehicle' && tab !== 'drivers' && vehicleTrackPts.length > 1;
+
+                // DRIVER
+                if (tab === 'drivers') {
+                  return isAnimDriver ? (
+                    <TrackAnimationLayer pts={driverTrackPts} idx={animState.idx} follow={animState.follow} />
+                  ) : (
+                    driverTrackPts.length > 1 && (
+                      <>
+                        <FitToTrack pts={driverTrackPts} />
+                        <Polyline positions={driverTrackPts} pathOptions={{ color: '#1976d2', weight: 4, opacity: 0.9 }} />
+                      </>
+                    )
+                  );
+                }
+
+                // VEHICLE
+                return isAnimVehicle ? (
+                  <TrackAnimationLayer pts={vehicleTrackPts} idx={animState.idx} follow={animState.follow} />
+                ) : (
+                  vehicleTrackPts.length > 1 && (
+                    <>
+                      <FitToTrack pts={vehicleTrackPts} />
+                      <Polyline positions={vehicleTrackPts} pathOptions={{ color: '#00796b', weight: 4, opacity: 0.9 }} />
+                    </>
+                  )
+                );
+              })()}
+
               {/* راننده‌ها + مسیر لحظه‌ای راننده (حفظ منطق) */}
               {tab === 'drivers' && canTrackDrivers && filteredDrivers.map(d => (d as any).last_location && (
                 <Marker
@@ -18874,7 +20329,22 @@ function TechnicianRoleSection({ user }: { user: User }) {
                   <Popup><strong>{d.full_name}</strong><br />{d.phone || '—'}</Popup>
                 </Marker>
               ))}
-              {tab === 'drivers' && canTrackDrivers && polyline.length > 1 && <Polyline positions={polyline} />}
+              {/* ترک راننده */}
+              {tab === 'drivers' && driverTrackPts.length > 1 && (
+                <>
+                  <FitToTrack pts={driverTrackPts} />
+                  <Polyline positions={driverTrackPts} pathOptions={{ color: '#1976d2', weight: 4, opacity: 0.9 }} />
+                </>
+              )}
+
+
+              {/* ترک خودرو */}
+              {tab !== 'drivers' && canTrackVehicles && vehicleTrackPts.length > 1 && (
+                <Polyline
+                  positions={vehicleTrackPts}
+                  pathOptions={{ color: '#00796b', weight: 4, opacity: 0.9 }}
+                />
+              )}
 
               {/* ماشین‌ها */}
               {activeType && canTrackVehicles && filteredVehicles.map(v => v.last_location && (
@@ -18897,7 +20367,8 @@ function TechnicianRoleSection({ user }: { user: User }) {
             {/* ایستگاه‌های در حالت افزودن/ویرایش */}
             {!!addingStationsForVid && canStations && (vehicleStationsMap[addingStationsForVid] || []).map(st => (
               <React.Fragment key={`add-${st.id}`}>
-                <Circle center={[st.lat, st.lng]} radius={st.radius_m ?? stationRadius} />
+                <Circle center={[st.lat, st.lng]} radius={st.radius_m ?? stationRadius}
+                  pathOptions={{ color: MAP_COLORS.station, weight: 2, fillColor: MAP_COLORS.stationFill, fillOpacity: 0.2 }} />
                 <Marker position={[st.lat, st.lng]} />
               </React.Fragment>
             ))}
@@ -19040,6 +20511,108 @@ function TechnicianRoleSection({ user }: { user: User }) {
                     </Button>
                   </Stack>
                 </Paper>
+                {/* === ANIMATION: controls === */}
+                {(tab === 'drivers' ? driverTrackPts.length > 1 : vehicleTrackPts.length > 1) && (
+
+                  <Paper
+                    sx={(t) => ({
+                      mt: 55,
+                      p: 0.5,
+                      borderRadius: 1.5,
+                      border: `1px solid ${t.palette.divider}`,
+                      bgcolor: `${t.palette.background.paper}C6`,
+                      backdropFilter: 'blur(6px)',
+                      boxShadow: '0 6px 16px rgba(0,0,0,.18)',
+                      minWidth: 280,
+                    })}
+                  >
+                    <Stack direction="row" alignItems="center" spacing={0.75}>
+                      <Chip
+                        size="small"
+                        icon={<span>🎞️</span> as any}
+                        label="پخش مسیر"
+                        sx={{ '& .MuiChip-label': { px: 0.75, py: 0.25, fontSize: 10 }, fontWeight: 700 }}
+                      />
+
+                      {/* دکمه‌های اصلی */}
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={() => startAnimation(tab === 'drivers' ? 'driver' : 'vehicle')}
+                        disabled={(tab === 'drivers' ? driverTrackPts.length < 2 : vehicleTrackPts.length < 2)}
+                      >
+                        شروع
+                      </Button>
+                      <Button
+                        size="small"
+                        variant={animState.playing ? 'contained' : 'outlined'}
+                        onClick={togglePlayPause}
+                        disabled={!animState.mode}
+                      >
+                        {animState.playing ? 'توقف موقّت' : 'ادامه'}
+                      </Button>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        color="error"
+                        onClick={() => { stopAnimation(); setAnimState({ mode: animState.mode, idx: 0, playing: false, speed: 1, follow: animState.follow }); }}
+                        disabled={!animState.mode}
+                      >
+                        پایان
+                      </Button>
+
+                      {/* سرعت */}
+                      <TextField
+                        size="small"
+                        select
+                        label="سرعت"
+                        value={String(animState.speed)}
+                        onChange={(e) => setAnimState(s => ({ ...s, speed: Number(e.target.value) || 1 }))}
+                        sx={{ width: 90 }}
+                      >
+                        <MenuItem value="0.5">۰٫۵×</MenuItem>
+                        <MenuItem value="1">۱×</MenuItem>
+                        <MenuItem value="2">۲×</MenuItem>
+                        <MenuItem value="4">۴×</MenuItem>
+                      </TextField>
+
+                      {/* follow */}
+                      <FormControlLabel
+                        sx={{ ml: 0.5 }}
+                        control={
+                          <Checkbox
+                            size="small"
+                            checked={animState.follow}
+                            onChange={(_, v) => setAnimState(s => ({ ...s, follow: v }))}
+                          />
+                        }
+                        label={<span style={{ fontSize: 12, opacity: .9 }}>دنبال کردن</span>}
+                      />
+                    </Stack>
+
+                    {/* اسلایدر پیشرفت */}
+                    {(() => {
+                      const pts = getActivePts(animState.mode);
+                      const max = Math.max(0, pts.length - 1);
+                      return (
+                        <Box sx={{ px: 1, mt: 0.5 }}>
+                          <Slider
+                            size="small"
+                            value={Math.min(animState.idx, max)}
+                            min={0}
+                            max={max || 1}
+                            onChange={(_, v) => {
+                              const idx = Array.isArray(v) ? v[0] : v;
+                              setAnimState(s => ({ ...s, idx: Number(idx), playing: false }));
+                            }}
+                            valueLabelDisplay="auto"
+                          />
+                        </Box>
+                      );
+                    })()}
+                  </Paper>
+                )}
+
               </Box>
             </Box>
 
@@ -19110,6 +20683,21 @@ function TechnicianRoleSection({ user }: { user: User }) {
                 </Alert>
               </Snackbar>
             )}
+            {/* ترک راننده */}
+            {tab === 'drivers' && canTrackDrivers && driverTrackPts.length > 1 && (
+              <>
+                <FitToTrack pts={driverTrackPts} />
+                <Polyline positions={driverTrackPts} pathOptions={{ color: '#1976d2', weight: 4, opacity: 0.9 }} />
+              </>
+            )}
+
+            {/* ترک خودرو */}
+            {tab !== 'drivers' && canTrackVehicles && vehicleTrackPts.length > 1 && (
+              <>
+                <FitToTrack pts={vehicleTrackPts} />
+                <Polyline positions={vehicleTrackPts} pathOptions={{ color: '#00796b', weight: 4, opacity: 0.9 }} />
+              </>
+            )}
 
           </MapContainer>
         </Paper>
@@ -19132,38 +20720,50 @@ function TechnicianRoleSection({ user }: { user: User }) {
           dir="rtl"
         >
           {/* بازه زمانی */}
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
-            <FormControl size="small" sx={{ minWidth: 120 }}>
-              <InputLabel id="preset-lbl">بازه</InputLabel>
-              <Select labelId="preset-lbl" value={preset} label="بازه" onChange={(e) => setPreset(e.target.value as any)}>
-                <MenuItem value="today">امروز</MenuItem>
-                <MenuItem value="yesterday">دیروز</MenuItem>
-                <MenuItem value="7d">۷ روز اخیر</MenuItem>
-                <MenuItem value="custom">دلخواه</MenuItem>
-              </Select>
-            </FormControl>
-            {preset === 'custom' && (
-              <LocalizationProvider dateAdapter={AdapterDateFnsJalali} adapterLocale={faIR}>
-                <DateTimePicker
-                  label="از"
-                  value={new Date(fromISO)}
-                  onChange={(v) => v && setFromISO(new Date(v).toISOString())}
-                  slotProps={{ textField: { size: 'small' } }}
-                />
-                <DateTimePicker
-                  label="تا"
-                  value={new Date(toISO)}
-                  onChange={(v) => v && setToISO(new Date(v).toISOString())}
-                  slotProps={{ textField: { size: 'small' } }}
-                />
-              </LocalizationProvider>
-            )}
-          </Stack>
+          <Paper sx={{ p: 1, mb: 1.25 }} variant="outlined">
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+              <FormControl size="small" sx={{ minWidth: 120 }}>
+                <InputLabel id="preset-lbl">بازه</InputLabel>
+                <Select
+                  labelId="preset-lbl"
+                  value={preset}
+                  label="بازه"
+                  onChange={(e) => setPreset(e.target.value as any)}
+                >
+                  <MenuItem value="today">امروز</MenuItem>
+                  <MenuItem value="yesterday">دیروز</MenuItem>
+                  <MenuItem value="7d">۷ روز اخیر</MenuItem>
+                  <MenuItem value="custom">دلخواه</MenuItem>
+                </Select>
+              </FormControl>
+            </Stack>
+
+            <JalaliRange
+              fromISO={fromISO}
+              toISO={toISO}
+              setFromISO={setFromISO}
+              setToISO={setToISO}
+              setPreset={setPreset}
+              apply={() => {
+
+              }}
+            />
+          </Paper>
+
 
           {/* تب‌ها با استایل مشابه */}
           <Tabs
             value={tab}
-            onChange={(_, v) => { setTab(v); setQ(''); setPolyline([]); setAddingStationsForVid(null); setTempStation(null); setEditingStation(null); setMovingStationId(null); }}
+            onChange={(_, v) => {
+              setTab(v);
+              setQ('');
+              setDriverTrackPts([]);
+              setVehicleTrackPts([]);
+              setAddingStationsForVid(null);
+              setTempStation(null);
+              setEditingStation(null);
+              setMovingStationId(null);
+            }}
             sx={{
               mb: 1,
               minHeight: 36,
@@ -19254,6 +20854,8 @@ function TechnicianRoleSection({ user }: { user: User }) {
                                 ev.stopPropagation();
                                 onPickDriver(d);                 // بازشدن شیت + انتخاب راننده
                                 await trackByDriverId(d.id, fromISO, toISO);   // ⬅️ این خط مهم است
+                                startAnimation('driver');
+
                                 // اگر دوست دارید ماشین فعلی راننده هم در سایدبار انتخاب شود (اختیاری):
                                 const vid = await getDriverCurrentVehicleId(d.id).catch(() => null);
                                 if (vid) setSelectedVehicleId(vid);
@@ -19784,25 +21386,8 @@ function TechnicianRoleSection({ user }: { user: User }) {
                   {activeType && (canIgnition || canIdleTime || canOdometer) && (
                     <Grid2 xs={12} md={6} lg={4}>
                       <Stack spacing={1} sx={{ mb: 1.5 }}>
-                        {canIgnition && (
-                          <Paper sx={{ p: 1.25, border: (t) => `1px solid ${t.palette.divider}` }}>
-                            <Typography variant="body2" color="text.secondary">وضعیت سوئیچ</Typography>
-                            <Typography variant="h6">
-                              {vehicleTlm.ignition === true ? 'موتور روشن است'
-                                : vehicleTlm.ignition === false ? 'موتور خاموش است' : 'نامشخص'}
-                            </Typography>
-                          </Paper>
-                        )}
-                        {canIdleTime && (
-                          <Paper sx={{ p: 1.25, border: (t) => `1px solid ${t.palette.divider}` }}>
-                            <Typography variant="body2" color="text.secondary">مدت توقف/سکون</Typography>
-                            <Typography variant="h6">
-                              {vehicleTlm.idle_time != null
-                                ? `${vehicleTlm.idle_time.toLocaleString('fa-IR')} ثانیه`
-                                : '—'}
-                            </Typography>
-                          </Paper>
-                        )}
+
+
                         {canOdometer && (
                           <Paper sx={{ p: 1.25, border: (t) => `1px solid ${t.palette.divider}` }}>
                             <Typography variant="body2" color="text.secondary">کیلومترشمار</Typography>
@@ -19941,34 +21526,9 @@ function TechnicianRoleSection({ user }: { user: User }) {
 
                       return (
                         <Stack spacing={1.25} sx={{ mb: 1.5 }}>
-                          <Paper sx={{ p: 1.25, border: (t) => `1px solid ${t.palette.divider}` }}>
-                            <Stack direction="row" alignItems="center" justifyContent="space-between">
-                              <Box>
-                                <Typography variant="body2" color="text.secondary">موقعیت فعلی</Typography>
-                                <Typography variant="h6">
-                                  {ll ? `${ll.lat.toFixed(5)}, ${ll.lng.toFixed(5)}` : 'نامشخص'}
-                                </Typography>
-                              </Box>
-                              <Button
-                                size="small"
-                                disabled={!ll}
-                                onClick={() => ll && setFocusLatLng([ll.lat, ll.lng])}
-                                startIcon={<span>🎯</span>}
-                              >
-                                مرکز
-                              </Button>
-                            </Stack>
-                          </Paper>
 
-                          <Paper sx={{ p: 1.25, border: (t) => `1px solid ${t.palette.divider}` }}>
-                            <Typography variant="body2" color="text.secondary">وضعیت سوئیچ</Typography>
-                            <Typography variant="h6">{ignition}</Typography>
-                          </Paper>
 
-                          <Paper sx={{ p: 1.25, border: (t) => `1px solid ${t.palette.divider}` }}>
-                            <Typography variant="body2" color="text.secondary">مدت توقف/سکون</Typography>
-                            <Typography variant="h6">{idleTime}</Typography>
-                          </Paper>
+
 
                           <Paper sx={{ p: 1.25, border: (t) => `1px solid ${t.palette.divider}` }}>
                             <Typography variant="body2" color="text.secondary">مسافت پیموده‌شده (بازه)</Typography>
@@ -19999,9 +21559,33 @@ function TechnicianRoleSection({ user }: { user: User }) {
                     })()}
                   </Grid2>
 
-                  {/* تخلفات راننده در بازه انتخابی */}
+                  {/* تخلفات راننده در بازه انتخابی + KPI */}
                   <Grid2 xs={12} md={12} lg={4}>
-                    <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 800 }}>تخلفات راننده در بازه انتخابی</Typography>
+                    <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 800 }}>
+                      تخلفات راننده در بازه انتخابی
+                    </Typography>
+
+                    {/* خلاصه KPI راننده */}
+                    {(() => {
+                      const kpi = kpiByDid[selectedDriverId];
+                      const status = kpiStatusByDid[selectedDriverId];
+
+                      if (status === 'loading') {
+                        return (
+                          <Box display="flex" alignItems="center" gap={1} color="text.secondary" sx={{ mt: .5 }}>
+                            <CircularProgress size={16} /> در حال محاسبه KPI…
+                          </Box>
+                        );
+                      }
+                      if (status === 'error') {
+                        return <Typography color="warning.main" sx={{ mb: 1 }}>خطا در دریافت KPI راننده.</Typography>;
+                      }
+                      if (!kpi) return null;
+
+
+                    })()}
+
+
                     {vioStatusByDid[selectedDriverId] === 'loading' && (
                       <Box display="flex" alignItems="center" gap={1} color="text.secondary" sx={{ mt: .5 }}>
                         <CircularProgress size={16} /> در حال دریافت…
@@ -21026,7 +22610,7 @@ function DriverRoleSection({ user }: { user: User }) {
 
   // ===== نقشه =====
   const [useMapTiler] = React.useState(Boolean(MT_KEY));
-  const tileUrl = useMapTiler && MT_KEY ? `https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=${MT_KEY}` : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+  const tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
   const [focusLatLng, setFocusLatLng] = React.useState<[number, number] | undefined>(undefined);
 
   // تا مجبور نشی useEffect سوکت رو به selectedVehicleId وابسته کنی:
