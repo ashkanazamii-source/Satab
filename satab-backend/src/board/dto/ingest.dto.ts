@@ -1,31 +1,24 @@
 // src/ingest/dto/ingest.dto.ts
-import { IsNumber, IsOptional, IsString, IsObject, ValidateNested, IsBoolean, Min, Max, ValidateIf } from 'class-validator';
+import { IsNumber, IsOptional, IsString, IsObject, ValidateNested, IsBoolean, Min, Max, ValidateIf, IsDefined } from 'class-validator';
 import { Type } from 'class-transformer';
 
+// ingest.dto.ts
 class IngestDataDto {
-  @IsOptional() @IsNumber() vehicle_id?: number;
-
-  @ValidateIf(o => o.lat !== undefined)
-  @IsNumber() @Min(-90) @Max(90)
-  lat?: number;
-
-  @ValidateIf(o => o.lng !== undefined)
-  @IsNumber() @Min(-180) @Max(180)
-  lng?: number;
-
-  @IsOptional() @IsNumber() speed?: number;
-  @IsOptional() @IsNumber() heading?: number;
-  @IsOptional() @IsBoolean() ignition?: boolean;
-  @IsOptional() @IsNumber() odometer?: number;
-  @IsOptional() @IsNumber() idle_time?: number;
+  @Type(() => Number) @IsNumber() vehicle_id!: number
+  @IsOptional() @Type(() => Number) @IsNumber() lat?: number
+  @IsOptional() @Type(() => Number) @IsNumber() lng?: number
+  @IsOptional() @Type(() => Number) @IsNumber() speed?: number
+  @IsOptional() @Type(() => Number) @IsNumber() heading?: number
+  @IsOptional() @IsBoolean() ignition?: boolean
+  @IsOptional() @Type(() => Number) @IsNumber() odometer?: number
+  @IsOptional() @Type(() => Number) @IsNumber() idle_time?: number
+  engine_temp: number | undefined;
 }
 
 export class IngestDto {
-  @IsString() device_id!: string;   // public_id یا device_id
-  @IsNumber() ts!: number;          // epoch milliseconds یا seconds
-
-  @IsOptional() @IsObject() meta?: Record<string, any>;
-
-  @IsOptional() @ValidateNested() @Type(() => IngestDataDto)
-  data?: IngestDataDto;
+  @IsOptional() @IsString() device_id?: string
+  @IsOptional() @Type(() => Number) @IsNumber() ts!: number
+  @IsOptional() @IsObject() meta?: Record<string, any>
+  @IsDefined() @ValidateNested() @Type(() => IngestDataDto) data!: IngestDataDto
 }
+

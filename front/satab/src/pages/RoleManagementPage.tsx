@@ -37,10 +37,6 @@ import ListAltIcon from '@mui/icons-material/ListAlt';
 import ChatRoundedIcon from '@mui/icons-material/ChatRounded';
 import AltRouteOutlined from '@mui/icons-material/AltRouteOutlined';
 
-
-
-
-
 type SAType = 'fleet' | 'device' | 'universal';
 const SA_TYPE_OPTS: { value: SAType; label: string }[] = [
   { value: 'fleet', label: 'ناوگانی' },
@@ -48,14 +44,9 @@ const SA_TYPE_OPTS: { value: SAType; label: string }[] = [
   { value: 'universal', label: 'جامع' },
 ];
 
-
-
 export const NODE_W = 200;   // عرض ثابت کارت
 export const NODE_H = 76;    // ارتفاع ثابت کارت
 // ==== Hover Summary Bus ====
-
-
-
 
 const SUMMARY_CACHE = new Map<string, any>();
 
@@ -2816,8 +2807,13 @@ export function AddVehicleDialog({
         timeout: 65000,
       });
       // data = { paired:true, owner_user_id, device_id, device_name? }
-      setPairedDeviceId(data?.device_id || null);
-      setRedeemMsg('✅ پیام برد رسید و در بک‌اند ثبت شد.');
+      const vid = Number(data?.vehicle_id);
+      if (Number.isFinite(vid)) {
+        setRedeemMsg('✅ جفت شد (vehicle_id دریافت شد).');
+        setPairedDeviceId(String(vid)); // نام متغیر گمراه‌کننده است ولی فعلاً نگه‌دار
+      } else {
+        setRedeemMsg('پاسخ نامعتبر: vehicle_id نیامد.');
+      }
       try { onCreated(); } catch { }
     } catch (e: any) {
       setRedeemMsg(e?.response?.data?.message || e?.message || 'هیچ پیامی از برد دریافت نشد.');
@@ -2858,7 +2854,7 @@ export function AddVehicleDialog({
               remaining,
             };
           })
-          .filter(x => x.remaining > 0);
+          .filter((x: { remaining: number; }) => x.remaining > 0);
 
         setAllowedTypes(types);
 
@@ -2926,17 +2922,14 @@ export function AddVehicleDialog({
       }
 
       // ⬅️ نکته‌ی اصلی: device_id را هم بفرست تا «همان ماشین» با همان شناسه ۹۶ بیتی ذخیره شود
-      await api.post('/vehicles', {
-        owner_user_id: ownerId,
+      await api.put(`/vehicles/${pairedDeviceId}`, {
         name: form.name.trim(),
         country_code: form.country_code,
         plate_no: plateNo,
         vehicle_type_code: form.vehicle_type_code,
-        tank_capacity_liters:
-          form.vehicle_type_code === 'tanker' && form.tank_capacity_liters !== ''
-            ? Number(form.tank_capacity_liters)
-            : undefined,
-        device_id: pairedDeviceId, // 👈 حتماً بفرست
+        tank_capacity_liters: form.vehicle_type_code === 'tanker' && form.tank_capacity_liters !== ''
+          ? Number(form.tank_capacity_liters)
+          : undefined,
       });
 
       onClose();
@@ -3210,26 +3203,23 @@ export function AddVehicleDialog({
   );
 }
 
-function normalize8ByteCode(input: string): { ok: boolean; hex16?: string; msg?: string } {
-  const v = (input || '').trim();
-  if (!v) return { ok: false, msg: 'کد کارت الزامی است' };
-
-  const hex = v.replace(/^0x/i, '').toUpperCase();
-  // دقیقاً 16 رقم هگز = 8 بایت
-  if (/^[0-9A-F]{16}$/.test(hex)) return { ok: true, hex16: hex };
-
-  // اگر ده‌دهی وارد شد، به هگز 16 رقمی تبدیلش کن (با BigInt تا overflow نداشته باشیم)
-  if (/^\d+$/.test(v)) {
-    try {
-      const n = BigInt(v);
-      if (n < 0n || n > 0xFFFFFFFFFFFFFFFFn) {
-        return { ok: false, msg: 'عدد باید بین 0 تا 18446744073709551615 باشد' };
-      }
-      return { ok: true, hex16: n.toString(16).toUpperCase().padStart(16, '0') };
-    } catch { }
+function normalize8ByteCode(input: string): NormOk | NormErr {
+  const v = String(input || '').trim();
+  if (!v) return { ok: false, msg: 'empty' };
+  const isHex = /^[0-9a-fA-F]{8}$/.test(v);
+  const isDec = /^[0-9]{1,20}$/.test(v);
+  if (!isHex && !isDec) return { ok: false, msg: 'فرمت اشتباه است.' };
+  if (isHex) return { ok: true, hex16: v.toUpperCase() };
+  try {
+    const n = BigInt(v);
+    if (n < 0n || n > 0xFFFFFFFFFFFFFFFFn) return { ok: false, msg: 'out of 64-bit' };
+    return { ok: true, hex16: n.toString(16).padStart(16, '0').toUpperCase() };
+  } catch {
+    return { ok: false, msg: 'invalid number' };
   }
-  return { ok: false, msg: 'کد نامعتبر است؛ ۱۶ رقم هگز (مثل 1A2B3C4D5E6F7788) یا عدد ده‌دهی' };
 }
+type NormOk = { ok: true; hex16: string };
+type NormErr = { ok: false; msg: string };
 
 
 function AddUserDialog({
@@ -3296,6 +3286,106 @@ function AddUserDialog({
       setOtpSending(false);
     }
   };
+  // وضعیت جفت‌سازی با برد
+  const [pairing, setPairing] = useState(false);
+  const [pairMsg, setPairMsg] = useState('');
+  const [pairErr, setPairErr] = useState('');
+  const [pairSeconds, setPairSeconds] = useState(0); // شمارش معکوس تايم‌اوت نمایش به کاربر
+  const [pendingId, setPendingId] = useState<string | null>(null);
+
+  // شمارش معکوس UI برای Pairing
+  useEffect(() => {
+    let iv: any = null;
+    if (pairing && pairSeconds > 0) {
+      iv = setInterval(() => setPairSeconds(s => Math.max(0, s - 1)), 1000);
+    }
+    return () => iv && clearInterval(iv);
+  }, [pairing, pairSeconds]);
+
+  // Helper: انتظار رویداد از بک‌اند با SSE (و فال‌بک Polling)
+  async function waitForBoardMatch(pending_id: string, { timeoutSec = 60 }: { timeoutSec?: number } = {}) {
+    setPairMsg('منتظر نزدیک‌کردن کارت به برد...');
+    setPairErr('');
+    setPairSeconds(timeoutSec);
+
+    const sseUrl = `/pairing-codes/pending/${pending_id}/events`;
+    const supportsSSE = typeof window !== 'undefined' && 'EventSource' in window;
+
+    // --- SSE ---
+    if (supportsSSE) {
+      console.debug('[PAIR] opening SSE', sseUrl);
+      const es = new EventSource(sseUrl, { withCredentials: true } as any);
+      return await new Promise<{ status: 'matched'; user_id: number; full_name: string }>((resolve, reject) => {
+        const tm = setTimeout(() => {
+          console.warn('[PAIR] SSE timeout');
+          es.close();
+          reject(new Error('timeout'));
+        }, timeoutSec * 1000);
+
+        es.addEventListener('open', () => {
+          console.debug('[PAIR] SSE open');
+          setPairMsg('در انتظار UID از برد...');
+        });
+
+        es.addEventListener('error', (e) => {
+          console.warn('[PAIR] SSE error -> fallback to polling', e);
+          // عمداً reject نمی‌کنیم؛ اجازه می‌دیم catch بره روی polling
+        });
+
+        es.addEventListener('matched', (ev: MessageEvent) => {
+          clearTimeout(tm);
+          es.close();
+          try {
+            const data = JSON.parse(ev.data || '{}');
+            console.debug('[PAIR] SSE matched', data);
+            resolve({ status: 'matched', user_id: data.user_id, full_name: data.full_name });
+          } catch (err) {
+            console.error('[PAIR] SSE matched parse error', err, ev.data);
+            reject(new Error('bad matched payload'));
+          }
+        });
+
+        es.addEventListener('mismatch', (ev: MessageEvent) => {
+          clearTimeout(tm);
+          es.close();
+          const data = (() => { try { return JSON.parse(ev.data || '{}'); } catch { return {}; } })();
+          console.warn('[PAIR] SSE mismatch', data);
+          reject(new Error(data?.message || 'UID کارت با مقدار واردشده یکی نیست'));
+        });
+
+        es.addEventListener('failed', (ev: MessageEvent) => {
+          clearTimeout(tm);
+          es.close();
+          const data = (() => { try { return JSON.parse(ev.data || '{}'); } catch { return {}; } })();
+          console.error('[PAIR] SSE failed', data);
+          reject(new Error(data?.message || 'فرآیند ناموفق بود'));
+        });
+      }).catch(() => {
+        // --- Fallback: Polling ---
+        return pollStatus(pending_id, timeoutSec);
+      });
+    }
+
+    // --- Polling (اگر SSE نبود) ---
+    return pollStatus(pending_id, timeoutSec);
+
+    async function pollStatus(pid: string, timeout: number) {
+      console.debug('[PAIR] start polling', pid, 'timeout', timeout);
+      const started = Date.now();
+      while (Date.now() - started < timeout * 1000) {
+        const { data } = await api.get(`/pairing-codes/pending/${pid}/status`, { validateStatus: () => true });
+        console.debug('[PAIR] poll =>', data);
+        if (data?.status === 'matched' && data?.user_id) {
+          return { status: 'matched', user_id: data.user_id, full_name: data.full_name };
+        }
+        if (data?.status === 'mismatch') throw new Error(data?.message || 'UID کارت با مقدار واردشده یکی نیست');
+        if (data?.status === 'failed') throw new Error(data?.message || 'فرآیند ناموفق بود');
+        await new Promise(r => setTimeout(r, 1200));
+      }
+      throw new Error('timeout');
+    }
+  }
+
 
   const verifyOtp = async () => {
     setOtpMsg('');
@@ -3404,49 +3494,79 @@ function AddUserDialog({
   // ثبت کاربر
   const handleSubmit = async () => {
     try {
-      // 1) ساخت کاربر
+      setSaving(true);
+      setPairErr('');
+      setPairMsg('');
+      setPendingId(null);
+
+      // 0) ولیدیشن
       const { parent_user_id, role_level, ...rest } = form;
       if (!rest.full_name?.trim() || !rest.phone?.trim() || !rest.password?.trim()) {
         throw new Error('نام، موبایل و رمز الزامی است');
       }
-      if (form.role_level === 6 && !phoneVerified) {
-        throw new Error('برای راننده، ابتدا باید شماره موبایل تایید شود.');
+
+      // فقط سناریوی راننده: باید UID وارد شده با UID واقعی کارت که از برد می‌آید چک شود
+      if (role_level !== 6) {
+        // غیر راننده مثل قبل
+        const payload: any = { ...rest, role_level, parent_id: parent_user_id };
+        const { data: created } = await api.post('/users', payload);
+        if (!created?.id) throw new Error('ساخت کاربر موفق بود ولی id برنگشت.');
+        // (اختیاری) اعمال مانیتورینگ مثل قبل...
+        onClose(); onCreated();
+        return;
       }
 
-      const payload: any = { ...rest, role_level, parent_id: parent_user_id };
-      if (role_level === 6) {
-        const r = normalize8ByteCode(driverCard);
-        if (!r.ok) throw new Error(r.msg || 'کد کارت راننده نامعتبر است');
-        payload.driver_card_hex = r.hex16; // 👈 نام فیلد سمت سرور (در صورت تفاوت، این را مطابق API خودت تغییر بده)
-      }
-      const { data: created } = await api.post('/users', payload);
-      const newUserId = created?.id;
-      if (!newUserId) throw new Error('ساخت کاربر موفق بود ولی id برنگشت.');
+      // 1) Normalize UID واردشده
+      const r = normalize8ByteCode(driverCard);
+      if (!r.ok) throw new Error(r.msg || 'کد کارت راننده نامعتبر است');
+      const expectedHex16 = r.hex16.toUpperCase();
 
-      // 2) در صورت نیاز، واگذاری دسترسی‌های مانیتورینگ (اختیاری)
-      if (canGrant && Object.keys(grantableMap).length) {
-        const policies = (Object.keys(grantableMap) as VehicleTypeCode[]).map(vt => ({
-          vehicle_type_code: vt,
-          monitor_params: Array.from(perType[vt] || []),
-        }));
-        // فقط اگر حداقل یک مانیتور انتخاب شده بود
-        const hasAny = policies.some(p => p.monitor_params.length > 0);
-        if (hasAny) {
-          api.put(`/vehicle-policies/user/${newUserId}/bounded`, { policies })
-            .catch(err => {
-              console.warn('bounded failed but user created:', err?.response?.data || err?.message);
-              // این خطا نباید فرآیند ساخت را خراب کند
-            });
-        }
-      }
+      // 2) ساخت «سشن Pending» برای سناریوی تو (بدون ساخت کاربر)
+      // بک‌اند باید این کار را انجام دهد: ذخیره expected_uid + پروفایل، انتظار پیام برد،
+      // در تطابق موفق: ایجاد user و پاسخ به برد با {user_id, full_name} و سپس push رویداد matched برای فرانت.
+      const pendingPayload = {
+        expected_uid_hex: expectedHex16,
+        profile: { ...rest, role_level, parent_id: parent_user_id }, // داده‌های لازم برای ساخت کاربر در بک
+      };
+      const { data: pending } = await api.post('/pairing-codes/pending', pendingPayload);
+      const pid = pending?.pending_id;
+      const ttl = Number(pending?.expires_in || 60);
+      if (!pid) throw new Error('شناسه‌ی سشن دریافت نشد');
+      setPendingId(pid);
 
-      // 3) بستن و رفرش
+      // 3) ورود به وضعیت «در انتظار کارت»
+      setPairing(true);
+      setPairMsg('منتظر نزدیک‌کردن کارت به برد...');
+      await waitForBoardMatch(pid, { timeoutSec: ttl });
+
+      // 4) موفقیت: بک‌اند کاربر را ساخته و به برد id+name را داده؛ فقط UI را ببند و رفرش کن
+      setPairMsg('کارت تأیید شد و راننده ثبت گردید');
       onClose();
       onCreated();
-    } catch (e) {
+
+    } catch (e: any) {
       console.error(e);
+      if (e?.message === 'timeout') {
+        setPairErr('مهلت تمام شد؛ کارت به برد نزدیک نشد یا برد پیام نداد.');
+      } else {
+        setPairErr(e?.message || 'خطا در سناریوی جفت‌سازی راننده');
+      }
+      alert(pairErr || e?.message || 'خطا');
+    } finally {
+      setPairing(false);
+      setSaving(false);
     }
   };
+  useEffect(() => {
+    if (form.role_level !== 6) {
+      setPairing(false);
+      setPairMsg('');
+      setPairErr('');
+      setPendingId(null);
+      setPairSeconds(0);
+    }
+  }, [form.role_level]);
+
   return (
     <Dialog open={open} onClose={onClose} fullWidth>
       <DialogTitle>افزودن کاربر جدید</DialogTitle>
@@ -3500,20 +3620,24 @@ function AddUserDialog({
                     sx={{ width: 180 }}
                     disabled={phoneVerified}
                   />
-                  <Button
-                    variant="outlined"
-                    onClick={sendOtp}
-                    disabled={otpSending || otpSeconds > 0 || phoneVerified || !form.phone.trim()}
-                  >
-                    {otpSeconds > 0 ? `ارسال مجدد (${otpSeconds})` : 'ارسال کد'}
-                  </Button>
-                  <Button
-                    variant="contained"
-                    onClick={verifyOtp}
-                    disabled={otpVerifying || phoneVerified || otpCode.length !== 6}
-                  >
-                    تأیید
-                  </Button>
+                  <Magnetic>
+                    <Button
+                      variant="outlined"
+                      onClick={sendOtp}
+                      disabled={otpSending || otpSeconds > 0 || phoneVerified || !form.phone.trim()}
+                    >
+                      {otpSeconds > 0 ? `ارسال مجدد (${otpSeconds})` : 'ارسال کد'}
+                    </Button>
+                  </Magnetic>
+                  <Magnetic>
+                    <Button
+                      variant="contained"
+                      onClick={verifyOtp}
+                      disabled={otpVerifying || phoneVerified || otpCode.length !== 6}
+                    >
+                      تأیید
+                    </Button>
+                  </Magnetic>
                   {phoneVerified && <Chip color="success" label="تأیید شد" />}
                 </Stack>
 
@@ -3542,17 +3666,21 @@ function AddUserDialog({
                       setDriverCardErr(r.ok ? '' : (r.msg || 'کد نامعتبر است'));
                     }}
                     error={!!driverCardErr}
-                    helperText={driverCardErr || 'مثال Hex: 1A2B3C4D5E6F7788 — مثال Decimal: 1234567890123456'}
+                    helperText={driverCardErr || 'مثال Hex: 1A2B3C4D5 — مثال Decimal: 12345678'}
                     fullWidth
                     size="small"
                   />
 
                   {/* پیش‌نمایش هگز نرمال‌شده (اختیاری) */}
-                  {driverCard && !driverCardErr && (
-                    <Typography variant="caption" color="text.secondary">
-                      هگز نهایی: {normalize8ByteCode(driverCard).hex16}
-                    </Typography>
-                  )}
+                  {driverCard && !driverCardErr && (() => {
+                    const r = normalize8ByteCode(driverCard);
+                    return r.ok ? (
+                      <Typography variant="caption" color="text.secondary">
+                        هگز نهایی: {r.hex16}
+                      </Typography>
+                    ) : null;
+                  })()}
+
                 </Stack>
               </Paper>
             </Grid>
@@ -3598,17 +3726,40 @@ function AddUserDialog({
 
       <DialogActions>
         <Magnetic>
-
-          <Button onClick={onClose} disabled={saving}>انصراف</Button></Magnetic>
-
-        <Magnetic>
-
-          <Button onClick={handleSubmit} variant="contained" disabled={saving}>
-            ثبت
+          <Button
+            onClick={onClose}
+            disabled={saving || (form.role_level === 6 && pairing)}
+          >
+            انصراف
           </Button>
         </Magnetic>
 
+        {form.role_level === 6 && (
+          <Stack direction="row" spacing={2} alignItems="center" sx={{ mr: 'auto' }}>
+            {pairing && (
+              <Typography variant="body2" color="info.main">
+                {pairMsg}{pairSeconds ? ` — ${pairSeconds}s` : ''}
+              </Typography>
+            )}
+            {pairErr && (
+              <Typography variant="body2" color="error.main">
+                {pairErr}
+              </Typography>
+            )}
+          </Stack>
+        )}
+
+        <Magnetic>
+          <Button
+            onClick={handleSubmit}
+            variant="contained"
+            disabled={saving || (form.role_level === 6 && pairing)}
+          >
+            {form.role_level === 6 && pairing ? 'در انتظار کارت...' : 'ثبت'}
+          </Button>
+        </Magnetic>
       </DialogActions>
+
     </Dialog>
   );
 }

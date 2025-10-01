@@ -32,6 +32,8 @@ import Grid2 from '@mui/material/Unstable_Grid2';
 import localizedFormat from 'dayjs/plugin/localizedFormat';
 import customParseFormat from 'dayjs/plugin/customParseFormat';
 import utc from 'dayjs/plugin/utc';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import PauseIcon from '@mui/icons-material/Pause';
 import timezone from 'dayjs/plugin/timezone';
 import { AdapterDateFnsJalali } from '@mui/x-date-pickers/AdapterDateFnsJalali';
 import faIR from 'date-fns-jalali/locale/fa-IR';
@@ -1865,6 +1867,7 @@ function ManagerRoleSection({ user }: { user: User }) {
                 reportOffRouteViolation(id, dist, th, v.lat, v.lng);
                 lastViolationAtRef.current[id] = now;
               }
+              setToast({ open: true, msg: 'خروج از مسیر شناسایی شد' });
               offRouteCountsRef.current[id] = 0; // ریست بعد از ثبت/چک
             }
           } else {
@@ -4625,7 +4628,28 @@ type VehicleTrackResponse = {
   points: GpsPoint[];
 };
 function SuperAdminRoleSection({ user }: { user: User }) {
-  // -------- انواع کمکی داخل همین فایل --------
+  const LIVE_KEEP_MS = 24 * 3600 * 1000; // 24h
+  const LIVE_MAX_POINTS = 200000000;
+  // === Timelines (ساخت تایم‌لاین برای راننده و خودرو) ===
+  const TIMELINE_STEP_MS = 1000; // هر فریم = 1s داده (قابل تغییر)
+
+  const driverIcon = L.icon({
+    iconUrl:
+      'data:image/svg+xml;utf8,' +
+      encodeURIComponent(`
+      <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="-20 -20 40 40">
+        <circle cx="0" cy="0" r="17" fill="#1e88e5" opacity="0.15"/>
+        <g transform="scale(0.8)">
+          <path d="M-8,-2 L0,-12 L8,-2 L0,14 Z" fill="#1e88e5"/>
+          <circle cx="-5" cy="8" r="2" fill="white"/>
+          <circle cx="5" cy="8" r="2" fill="white"/>
+        </g>
+      </svg>
+    `),
+    iconSize: [36, 36],
+    iconAnchor: [18, 18], // مرکز آیکون
+    tooltipAnchor: [0, -18],
+  });
   type VehicleTypeCode =
     | 'bus' | 'minibus' | 'van' | 'tanker' | 'truck' | 'khavar' | 'sedan' | 'pickup';
   type RoutePoint = { lat: number; lng: number; order_no: number };
@@ -4642,6 +4666,212 @@ function SuperAdminRoleSection({ user }: { user: User }) {
     page?: number;
     pageCount?: number;
   };
+  // === Time-based playback ===
+  type TP = { lat: number; lng: number; ts: number }; // ts = ms epoch
+  type Timeline = {
+    stepMs: number;
+    startSec: number;
+    endSec: number;
+    firstSec: number;
+    lastSec: number;
+    firstIdx: number;
+    lastIdx: number;
+    map: Map<number, TP>;
+    secs: number[];           // ← اضافه
+    T: number;
+  };
+
+  type TimeLike = number | string | Date | null | undefined;
+  // قبلی: در انتها 0 برمی‌گردوند → بد
+  const coerceTs = (v: TimeLike): number => {
+    if (v == null) return NaN;
+    if (v instanceof Date) return +v;
+
+    if (typeof v === 'number') {
+      const n = v;
+      if (!Number.isFinite(n)) return NaN;
+      return n < 1e12 ? n * 1000 : n; // sec→ms
+    }
+
+    const s = String(v).trim();
+    if (/^\d+$/.test(s)) {
+      const n = Number(s);
+      return n < 1e12 ? n * 1000 : n; // sec→ms
+    }
+
+    const n = +new Date(s);
+    return Number.isFinite(n) ? n : NaN;  // 👈 مهم: NaN نه 0
+  };
+
+
+  function buildTimeline(
+    points: Array<{ lat: number; lng: number; ts?: number | string }>,
+    fromISO: string,
+    toISO: string,
+    stepMs = 1000
+  ): Timeline {
+    // 👇 تبدیل زمان محلی، بدون وابستگی بیرونی
+    const coerce = (v: number | string | Date | null | undefined): number => {
+      if (v == null) return NaN;
+      if (v instanceof Date) return +v;
+      if (typeof v === 'number') return v < 1e12 ? v * 1000 : v;
+      const s = String(v).trim();
+      if (/^\d+$/.test(s)) { const n = Number(s); return n < 1e12 ? n * 1000 : n; }
+      const n = +new Date(s);
+      return Number.isFinite(n) ? n : NaN;
+    };
+
+    const from = +new Date(fromISO);
+    const toRaw = +new Date(toISO);
+    const span = Math.max(stepMs, toRaw - from);
+    const frames = Math.floor(span / stepMs) + 1;
+    const T = Math.max(1, frames - 1);
+
+    const startSec = Math.floor(from / 1000);
+    const endSec = Math.floor((from + span) / 1000);
+
+    const map = new Map<number, TP>();
+    let firstSec = Number.POSITIVE_INFINITY;
+    let lastSec = Number.NEGATIVE_INFINITY;
+
+    for (const p of points || []) {
+      const t = p?.ts != null ? coerce(p.ts) : NaN;
+      if (!Number.isFinite(t) || t < from || t > from + span) continue;
+      const sec = Math.floor(t / 1000);
+      map.set(sec, { lat: +p.lat, lng: +p.lng, ts: t });
+      if (sec < firstSec) firstSec = sec;
+      if (sec > lastSec) lastSec = sec;
+    }
+
+    if (!map.size) { firstSec = startSec; lastSec = endSec; }
+
+    const secs = Array.from(map.keys()).sort((a, b) => a - b);
+    const clamp = (x: number) => Math.max(0, Math.min(T, x));
+    const firstIdx = clamp(Math.floor((firstSec * 1000 - from) / stepMs));
+    const lastIdx = clamp(Math.floor((lastSec * 1000 - from) / stepMs));
+
+    return { stepMs, startSec, endSec, firstSec, lastSec, firstIdx, lastIdx, map, secs, T };
+  }
+
+
+
+  const upperBound = (arr: number[], x: number) => {
+    let lo = 0, hi = arr.length; // اولین اندیسی که arr[idx] > x
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (arr[mid] <= x) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+  };
+
+
+  // اگر تایپ فعلی‌ات چیزی مثل اینه:
+  type GpsPoint = {
+    lat: number | string;
+    lng: number | string;
+    ts?: number | string | Date;
+    // بک‌اندهای مختلف ممکنه چیزای دیگه برگردونن؛ ولی در تایپ رسمی نیست
+  };
+
+  // کمکی: هر چی شباهت به زمان داره رو به number (ms since epoch) تبدیل کن
+
+
+
+  // کمکی: از بین aliasهای رایج، زمان رو بردار (بدون any در بدنه‌ی اصلی)
+  const getPointTs = (p: GpsPoint | Record<string, unknown>): number => {
+    const r = p as Record<string, unknown>;
+    const raw =
+      r['ts'] ??
+      r['time'] ??
+      r['at'] ??
+      r['created_at'] ??
+      r['createdAt'] ??
+      r['timestamp'] ??            // 👈 افزوده
+      r['t'] ??                    // 👈 افزوده
+      r['gps_time'] ??             // 👈 افزوده
+      r['gps_at'] ??               // 👈 افزوده
+      r['recorded_at'] ??          // 👈 افزوده
+      r['datetime'];               // 👈 افزوده
+    return coerceTs(raw as TimeLike);
+  };
+
+
+
+
+
+
+  function useTimeAnimator(
+    T: number,
+    stepMs: number,
+    opts?: { shouldAdvance?: (nextIdx: number) => boolean }
+  ) {
+    const { shouldAdvance } = opts || {};
+    const maxIdx = Math.max(1, T); // حداقل 1
+
+    const [idx, setIdx] = React.useState(0);
+    const [playing, setPlaying] = React.useState(false);
+    const [speed, setSpeed] = React.useState<0.5 | 1 | 2 | 4 | 8 | 10>(1);
+    const accRef = React.useRef(0);
+    const lastTickRef = React.useRef<number | null>(null);
+    const rafRef = React.useRef<number | null>(null);
+
+    const stopRaf = () => {
+      if (rafRef.current != null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+    };
+
+    const loop = React.useCallback((now: number) => {
+      if (!playing) { lastTickRef.current = now; rafRef.current = requestAnimationFrame(loop); return; }
+      if (lastTickRef.current == null) lastTickRef.current = now;
+
+      const dt = Math.max(0, now - lastTickRef.current);
+      lastTickRef.current = now;
+      accRef.current += dt * (speed as number);
+
+      let steps = Math.floor(accRef.current / stepMs);
+      while (steps > 0) {
+        let blocked = false;
+        setIdx(prev => {
+          const next = Math.min(prev + 1, maxIdx);
+          if (shouldAdvance && !shouldAdvance(next)) {
+            blocked = true;
+            return prev;
+          }
+          const n = Math.min(prev + 1, maxIdx);
+          if (n >= maxIdx) { setPlaying(false); accRef.current = 0; }
+          return n;
+        });
+        if (blocked) { accRef.current = Math.min(accRef.current, stepMs - 1); break; }
+        accRef.current -= stepMs;
+        steps--;
+      }
+      rafRef.current = requestAnimationFrame(loop);
+    }, [playing, speed, stepMs, maxIdx, shouldAdvance]);
+
+    React.useEffect(() => { stopRaf(); rafRef.current = requestAnimationFrame(loop); return stopRaf; }, [loop]);
+
+    const play = () => setPlaying(true);
+    const pause = () => setPlaying(false);
+    const toggle = () => setPlaying(p => !p);
+    const stop = () => { setPlaying(false); setIdx(0); accRef.current = 0; };
+
+    React.useEffect(() => { setIdx(i => Math.min(i, maxIdx)); }, [maxIdx]);
+
+    return { idx, setIdx, playing, play, pause, toggle, stop, speed, setSpeed };
+  }
+
+
+  // نقاط زمان‌دار (خامِ با ts)
+  const [driverTPts, setDriverTPts] = useState<TP[]>([]);
+  const [vehicleTPts, setVehicleTPts] = useState<TP[]>([]);
+  const [toISO, setToISO] = useState<string>(() => new Date().toISOString());
+  const [fromISO, setFromISO] = useState<string>(() =>
+    new Date(new Date().setHours(0, 0, 0, 0)).toISOString()
+  );
+  // تایم‌لاین‌ها
+
+
+  // هوک‌های انیمیشن (برای هر مود جدا)
+
   const [selectedDriver, setSelectedDriver] = useState<User | null>(null);
   type ViolationType =
     | 'overspeed' | 'speeding'
@@ -4650,7 +4880,15 @@ function SuperAdminRoleSection({ user }: { user: User }) {
     | 'idle'
     | 'harsh_brake' | 'harsh_accel' | 'harsh_turn'
     | 'ignition_on_off_hours';
-
+  function pruneLive(arr: [number, number, number][]) {
+    const cutoff = Date.now() - LIVE_KEEP_MS;
+    // prune by time window (قدیمی‌تر از 24h)
+    let i = 0;
+    while (i < arr.length && arr[i][2] < cutoff) i++;
+    if (i > 0) arr.splice(0, i);
+    // prune by count (اگر هنوز خیلی بزرگ بود)
+    if (arr.length > LIVE_MAX_POINTS) arr.splice(0, arr.length - LIVE_MAX_POINTS);
+  }
 
   const [vehViolCursors, setVehViolCursors] = useState<{ next: ViolationsCursor | null; prev: ViolationsCursor | null }>({ next: null, prev: null });
   const [drvViolCursors, setDrvViolCursors] = useState<{ next: ViolationsCursor | null; prev: ViolationsCursor | null }>({ next: null, prev: null });
@@ -4696,7 +4934,6 @@ function SuperAdminRoleSection({ user }: { user: User }) {
     meta?: any;
     created_at: string;           // ISO
   };
-  const [toISO, setToISO] = useState<string>(() => new Date().toISOString());
   const handlePlayFromStart = () => {
     if (tab === 'drivers') { setShowDriverAnim(true); resetDriverAnim(); startDriverAnim(); }
     else { setShowVehAnim(true); resetVehAnim(); startVehAnim(); }
@@ -4745,9 +4982,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
   };
   const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(null);
 
-  const [fromISO, setFromISO] = useState<string>(() =>
-    new Date(new Date().setHours(0, 0, 0, 0)).toISOString()
-  );
+
   const loadViolations = useCallback(async (vehicleId: number, from = fromISO, to = toISO) => {
     setViolationsLoading(true);
     try {
@@ -5522,7 +5757,15 @@ function SuperAdminRoleSection({ user }: { user: User }) {
       setGeofence(null);
     }
   }
+  const driverTimeline: Timeline = React.useMemo(
+    () => buildTimeline(driverTPts, fromISO, toISO, TIMELINE_STEP_MS),
+    [driverTPts, fromISO, toISO]
+  );
 
+  const vehicleTimeline: Timeline = React.useMemo(
+    () => buildTimeline(vehicleTPts, fromISO, toISO, TIMELINE_STEP_MS),
+    [vehicleTPts, fromISO, toISO]
+  );
 
   async function saveGeofence() {
     if (!selectedVehicle) return;
@@ -5938,6 +6181,15 @@ function SuperAdminRoleSection({ user }: { user: User }) {
     return null;
   }
 
+  const drvAnim = useTimeAnimator(
+    driverTimeline.T,
+    driverTimeline.stepMs,
+  );
+  const vehAnim = useTimeAnimator(
+    vehicleTimeline.T,
+    vehicleTimeline.stepMs,
+  );
+
 
 
   // لوازم مصرفی
@@ -6053,7 +6305,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
       loadDriverTrack(selectedDriver.id);
       fetchDriverStats(selectedDriver.id);
     }
-  }, [tab, selectedDriver?.id, fromISO, toISO]);
+  }, [tab, selectedDriver?.id, fromISO, toISO, loadViolations]);
 
   // ۲) وقتی بازه یا انتخاب ماشین عوض شد، مسیر و تخلفات ماشین دوباره لود شوند
   useEffect(() => {
@@ -6106,6 +6358,18 @@ function SuperAdminRoleSection({ user }: { user: User }) {
     })();
   }, [user?.id]);
 
+  function ensureTsSeries<T extends { lat: number; lng: number; ts?: number }>(
+    pts: T[],
+    fromISO: string,
+    stepMs = 1000
+  ): T[] {
+    // اگر حتی یک ts معتبر داشتیم، همونا رو نگه می‌داریم
+    const hasAny = pts.some(p => Number.isFinite(p.ts));
+    if (hasAny) return pts;
+
+    let base = +new Date(fromISO);
+    return pts.map((p, i) => ({ ...p, ts: base + i * stepMs }));
+  }
 
   const canTrack = useMemo(() => can('track_driver'), [permsLoading, allowed, user?.role_level]);
   useEffect(() => {
@@ -6182,9 +6446,11 @@ function SuperAdminRoleSection({ user }: { user: User }) {
       });
 
       setDriverLive(prev => {
+        const id = v.driver_id;
+        const ts = v.ts ? +new Date(v.ts) : Date.now();
         const arr = prev[id] ? [...prev[id]] : [];
         arr.push([v.lat, v.lng, ts]);
-        if (arr.length > 500) arr.shift();
+        pruneLive(arr);
         return { ...prev, [id]: arr };
       });
 
@@ -6219,9 +6485,11 @@ function SuperAdminRoleSection({ user }: { user: User }) {
 
       // --- 2) بافر لایو مسیر برای همین ماشین
       setVehicleLive(prev => {
+        const id = Number(v.vehicle_id);
+        const ts = v.ts ? +new Date(v.ts) : Date.now();
         const arr = prev[id] ? [...prev[id]] : [];
         arr.push([lat, lng, ts]);
-        if (arr.length > 500) arr.shift();
+        pruneLive(arr);
         return { ...prev, [id]: arr };
       });
 
@@ -6231,7 +6499,6 @@ function SuperAdminRoleSection({ user }: { user: User }) {
       }
 
       // --- 4) اگر راننده روی این ماشین ست است، لوکیشن راننده را هم sync کن
-      setToast({ open: true, msg: 'خروج از مسیر شناسایی شد' });
 
 
 
@@ -6270,6 +6537,9 @@ function SuperAdminRoleSection({ user }: { user: User }) {
         }
       }
     };
+
+
+
 
     // --- stations events (پیام‌های CRUD ایستگاه) ---
     const onStations = (msg: any) => {
@@ -6332,9 +6602,28 @@ function SuperAdminRoleSection({ user }: { user: User }) {
       socketRef.current = null;
     };
   }, [canTrack]);
+  function sampleEveryN<T>(pts: T[], N: number) {
+    if (N <= 1) return pts;
+    const out: T[] = [];
+    for (let i = 0; i < pts.length; i += N) out.push(pts[i]);
+    if (pts.length) out.push(pts[pts.length - 1]); // اطمینان از آخر مسیر
+    return out;
+  }
 
+  const VEH_RENDER_MAX = 40000;
+  const drvRenderPts = useMemo(() => {
+    const n = Math.ceil(driverTrackPts.length / VEH_RENDER_MAX);
+    return sampleEveryN(driverTrackPts, Math.max(1, n));
+  }, [driverTrackPts]);
 
-
+  const vehRenderPts = useMemo(() => {
+    const n = Math.ceil(vehicleTrackPts.length / VEH_RENDER_MAX);
+    return sampleEveryN(vehicleTrackPts, Math.max(1, n));
+  }, [vehicleTrackPts]);
+  const getLat = (p: Record<string, unknown>): number =>
+    num(p.lat ?? p.latitude);
+  const getLng = (p: Record<string, unknown>): number =>
+    num(p.lng ?? p.lon ?? p.longitude);
 
   // مسیر از دیتابیس
   const [polyline, setPolyline] = useState<[number, number][]>([]);
@@ -6347,13 +6636,38 @@ function SuperAdminRoleSection({ user }: { user: User }) {
       );
       const allPoints = (data.items || []).flatMap(m => m.gps_points || []);
       if (allPoints.length > 0) {
-        const pts = allPoints
-          // اگر ts/time داری، مرتب‌سازی بهتره:
-          // .sort((a,b)=> (+new Date(a.ts||a.time||a.at||0))-(+new Date(b.ts||b.time||b.at||0)))
-          .map(p => [p.lat, p.lng] as [number, number]);
-        setDriverTrackPts(pts);
-        setFocusLatLng([pts[0][0], pts[0][1]]);
+        const tps0: TP[] = allPoints
+          .map((raw) => {
+            const p = raw as unknown as Record<string, unknown>;
+            const lat = getLat(p);
+            const lng = getLng(p);
+            const ts = getTs(p);
+            if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(ts)) {
+              return null; // حذف آیتم‌های بدفرمت
+            }
+            return { lat, lng, ts };
+          })
+          .filter((x): x is TP => x !== null);
+        const tps = ensureTsSeries(tps0, fromISO, TIMELINE_STEP_MS);
+        /*setVehicleTPts(tps);
+        setVehicleTrackPts(tps.map(p => [p.lat, p.lng] as [number, number]));*/
+        if (tps.length > 0) {
+          setDriverTPts(tps);
+          setDriverTrackPts(tps.map((p) => [p.lat, p.lng] as [number, number]));
+          setFocusLatLng([tps[0].lat, tps[0].lng]);
+        } else {
+          setDriverTPts([]);
+          setDriverTrackPts([]);
+        }
+      } else {
+        // fallback از live
+        const live = (driverLive[driverId] || [])
+          .filter(p => p[2] >= +new Date(fromISO) && p[2] <= +new Date(toISO))
+          .map(p => ({ lat: p[0], lng: p[1], ts: p[2] as number }));
+        setDriverTPts(live);
+        setDriverTrackPts(live.map(p => [p.lat, p.lng]));
       }
+
     } catch (e) {
       const liveTrack = (driverLive[driverId] || [])
         .filter(p => p[2] >= +new Date(fromISO) && p[2] <= +new Date(toISO))
@@ -6361,35 +6675,122 @@ function SuperAdminRoleSection({ user }: { user: User }) {
       setDriverTrackPts(liveTrack);
     }
   };
+  useEffect(() => {
+    drvAnim.stop();
+    vehAnim.stop();
+    // سرعت پیش‌فرض
+    drvAnim.setSpeed(1);
+    vehAnim.setSpeed(1);
+  }, [tab, selectedDriver?.id, selectedVehicle?.id, fromISO, toISO]);
 
 
   // مسیر کامل خودرو از دیتابیس
+  // Drop-in replacement
   const loadVehicleTrack = async (vehicleId: number) => {
     setVehicleTrackPts([]); // پاک قبلی
+
+    // بازه‌ی کاربر
+    const from = +new Date(fromISO);
+    const to = +new Date(toISO);
+    if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) {
+      setVehicleTPts([]); setVehicleTrackPts([]); return;
+    }
+
+    // تبدیل «سخت‌گیرانه»؛ اگر نفهمد => NaN (نه صفر!)
+    const coerceTsStrict = (v: unknown): number => {
+      if (v == null) return NaN;
+      if (v instanceof Date) return +v;
+      if (typeof v === 'number') return Number.isFinite(v) ? (v < 1e12 ? v * 1000 : v) : NaN;
+      const s = String(v).trim();
+      if (/^\d+$/.test(s)) { const n = Number(s); return n < 1e12 ? n * 1000 : n; }
+      const n = +new Date(s);
+      return Number.isFinite(n) ? n : NaN;
+    };
+
+    // آلیاس‌های رایجِ زمان در پاسخ‌های مختلف
+    const tsOf = (p: Record<string, unknown>): number =>
+      coerceTsStrict(
+        p['ts'] ??
+        p['time'] ??
+        p['at'] ??
+        p['created_at'] ??
+        p['createdAt'] ??
+        p['timestamp'] ??
+        p['t'] ??
+        p['gps_time'] ??
+        p['gps_at'] ??
+        p['recorded_at'] ??
+        p['datetime']
+      );
+
     try {
       const { data } = await api.get<VehicleTrackResponse>(
         `/vehicles/${vehicleId}/track`,
         { params: { from: fromISO, to: toISO } }
       );
-      const allPoints = data.points || [];
-      if (allPoints.length > 0) {
-        const pts = allPoints.map(p => [p.lat, p.lng] as [number, number]);
-        setVehicleTrackPts(pts);
-        setFocusLatLng([pts[0][0], pts[0][1]]);
+
+      const raw = Array.isArray(data?.points) ? data.points : [];
+      const tps: TP[] = raw
+        .map((r) => {
+          const p = r as Record<string, unknown>;
+          const lat = getLat(p);
+          const lng = getLng(p);
+          const ts = tsOf(p);
+          if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(ts)) return null;
+          if (ts < from || ts > to) return null; // فقط داخل بازه‌ی کاربر
+          return { lat, lng, ts };
+        })
+        .filter((x): x is TP => x !== null)
+        .sort((a, b) => a.ts - b.ts); // مرتب‌سازی زمانی مطمئن
+
+      if (tps.length) {
+        setVehicleTPts(tps);
+        setVehicleTrackPts(tps.map(p => [p.lat, p.lng] as [number, number]));
+        setFocusLatLng([tps[0].lat, tps[0].lng]);
+        return;
       }
-    } catch (e) {
-      const liveTrack = (vehicleLive[vehicleId] || [])
-        .filter(p => p[2] >= +new Date(fromISO) && p[2] <= +new Date(toISO))
-        .map(p => [p[0], p[1]] as [number, number]);
-      setVehicleTrackPts(liveTrack);
+    } catch {
+      // می‌ریم سراغ لایو
+    }
+
+    // فالبک: داده‌ی زنده فقط در همان بازه
+    const live = (vehicleLive[vehicleId] || []).filter(p => p[2] >= from && p[2] <= to);
+    if (live.length) {
+      const tpsLive: TP[] = live
+        .map(p => ({ lat: p[0], lng: p[1], ts: p[2] as number }))
+        .sort((a, b) => a.ts - b.ts);
+      setVehicleTPts(tpsLive);
+      setVehicleTrackPts(tpsLive.map(p => [p.lat, p.lng] as [number, number]));
+      setFocusLatLng([tpsLive[0].lat, tpsLive[0].lng]);
+    } else {
+      setVehicleTPts([]);
+      setVehicleTrackPts([]);
     }
   };
+
+  const num = (v: unknown): number => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : NaN;
+  };
+
+  // اگر می‌خوای همون الیاس قبلی باشه:
+  const getTs = (p: Record<string, unknown>): number => getPointTs(p as any);
+
   const [showDriverAnim, setShowDriverAnim] = useState(false);
   const [showVehAnim, setShowVehAnim] = useState(false);
+  const drvAnimBase = useMemo(
+    () => Math.max(1, Math.ceil(driverTrackPts.length / 3000)),
+    [driverTrackPts.length]
+  );
+  const vehAnimBase = useMemo(
+    () => Math.max(1, Math.ceil(vehicleTrackPts.length / 3000)),
+    [vehicleTrackPts.length]
+  );
+
   const { visible: animatedDriver, start: startDriverAnim, pause: pauseDriverAnim, reset: resetDriverAnim } =
     useAnimatedPath(driverTrackPts, {
       stepMs: 50,
-      stepInc: driverSpeed,
+      stepInc: drvAnimBase * driverSpeed, // قبلاً فقط driverSpeed بود
       autoStart: false,
       key: `${selectedDriver?.id || ''}-${fromISO}-${toISO}`,
     });
@@ -6397,10 +6798,11 @@ function SuperAdminRoleSection({ user }: { user: User }) {
   const { visible: animatedVehicle, start: startVehAnim, pause: pauseVehAnim, reset: resetVehAnim } =
     useAnimatedPath(vehicleTrackPts, {
       stepMs: 50,
-      stepInc: vehSpeed,
+      stepInc: vehAnimBase * vehSpeed, // قبلاً فقط vehSpeed بود
       autoStart: false,
       key: `${selectedVehicle?.id || ''}-${fromISO}-${toISO}`,
     });
+
   useEffect(() => {
     // راننده
     setShowDriverAnim(false);
@@ -6538,6 +6940,21 @@ function SuperAdminRoleSection({ user }: { user: User }) {
     };
   }, [selectedVehicle?.id]);
 
+  // راننده
+  useEffect(() => {
+    if (tab === 'drivers' && driverTPts.length > 1) {
+      drvAnim.stop();            // به ابتدای بازه
+      drvAnim.play();            // خودکار پخش
+    }
+  }, [tab, driverTPts.length]);
+
+  // ماشین
+  useEffect(() => {
+    if (tab === 'vehicles' && vehicleTPts.length > 1) {
+      vehAnim.stop();            // به ابتدای بازه
+      vehAnim.play();            // خودکار پخش
+    }
+  }, [tab, vehicleTPts.length]);
 
   const markersLatLngs = useMemo(() => {
     if (!can('track_driver')) return [];
@@ -6572,10 +6989,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
         return prev;
       });
     };
-    s.on('vehicle:stations', onStations);
-    return () => {
-      s.off('vehicle:stations', onStations);
-    };
+
   }, []);
   const [stationRadius, setStationRadius] = useState<number>(60);
 
@@ -6787,13 +7201,13 @@ function SuperAdminRoleSection({ user }: { user: User }) {
     const pts: RoutePoint[] = (vehicleRoute?.points ?? vehicleRoute?.stations ?? []);
     routePolylineRef.current = pts
       .slice()
-      .sort((a: RoutePoint, b: RoutePoint) => (a.order_no ?? 0) - (b.order_no ?? 0))
-      .map((p: RoutePoint) => [p.lat, p.lng] as [number, number]);
+      .sort((a, b) => (a.order_no ?? 0) - (b.order_no ?? 0))
+      .map(p => [p.lat, p.lng] as [number, number]);
   }, [
     vehicleRoute?.id,
-    vehicleRoute?.points?.length,
-    vehicleRoute?.stations?.length,
+    JSON.stringify(vehicleRoute?.points ?? vehicleRoute?.stations ?? []), // ← به‌جای فقط length
   ]);
+
   // هر بار کیلومتر یا لیست عوض شد، چک کن
   useEffect(() => {
     checkConsumableDue();
@@ -6866,10 +7280,6 @@ function SuperAdminRoleSection({ user }: { user: User }) {
     }
 
     // بعد از setSelectedVehicle(v) و وقتی socketRef.current موجود است:
-    if (sock) {
-      sock.emit('subscribe', { topic: `vehicle/${v.id}/violations/${user.id}` });
-      lastViolSubRef.current = { vid: v.id, uid: user.id };
-    }
 
     // 1) انتخاب ماشین + ریست UI
     setSelectedVehicle(v);
@@ -7389,6 +7799,121 @@ function SuperAdminRoleSection({ user }: { user: User }) {
 
 
 
+  function AnimatedTrackImperative({
+    points,          // [ [lat,lng], ... ]  مسیر کامل
+    playing,         // boolean
+    speed = 1,       // 0.5,1,2,4,...
+    stepMs = 50,     // گام زمانی مجازی
+    onProgress,      // اختیاری: برای اسلایدر UI
+  }: {
+    points: [number, number][];
+    playing: boolean;
+    speed?: number;
+    stepMs?: number;
+    onProgress?: (idx: number) => void;
+  }) {
+    const map = useMap();
+    const layerRef = React.useRef<L.Polyline | null>(null);
+    const markerRef = React.useRef<L.Marker | null>(null);
+    const idxRef = React.useRef(0);
+    const accRef = React.useRef(0);
+    const lastRef = React.useRef<number | null>(null);
+    const rafRef = React.useRef<number | null>(null);
+
+    // ایجاد لایه‌ها فقط یک‌بار
+    React.useEffect(() => {
+      if (!map || !points?.length) return;
+      // مسیر پایه (فول مسیر) – اختیاری اگر می‌خواهید
+      const track = L.polyline(points, { weight: 2, opacity: 0.35 });
+      track.addTo(map);
+
+      // مسیر انیمیشنی خالی
+      const anim = L.polyline([], { weight: 4, opacity: 0.9, dashArray: '8 6' });
+      anim.addTo(map);
+      layerRef.current = anim;
+
+      // مارکر
+      const m = L.marker(points[0] as any, { draggable: false });
+      m.addTo(map);
+      markerRef.current = m;
+
+      // فوکوس اولیه
+      if (points.length) map.panTo(points[0] as any, { animate: false });
+
+      return () => {
+        anim.remove();
+        m.remove();
+        track.remove();
+        layerRef.current = null;
+        markerRef.current = null;
+      };
+    }, [map, points]);
+
+    const stopRaf = React.useCallback(() => {
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    }, []);
+
+    const frame = React.useCallback((now: number) => {
+      if (!layerRef.current || !markerRef.current) { rafRef.current = requestAnimationFrame(frame); return; }
+      if (!playing) { lastRef.current = now; rafRef.current = requestAnimationFrame(frame); return; }
+      if (lastRef.current == null) lastRef.current = now;
+
+      const dt = now - lastRef.current;
+      lastRef.current = now;
+
+      accRef.current += dt * (speed || 1);
+
+      // پیشروی به اندازه‌ی stepMs
+      while (accRef.current >= stepMs) {
+        accRef.current -= stepMs;
+        idxRef.current = Math.min(idxRef.current + 1, points.length - 1);
+
+        // 🔸 به‌جای setState: مستقیم لایه را آپدیت کن
+        const i = idxRef.current;
+        // فقط یک نقطه جدید اضافه کن (بدون ساخت آرایه جدید)
+        layerRef.current!.addLatLng(points[i] as any);
+        markerRef.current!.setLatLng(points[i] as any);
+
+        // (اختیاری) دنبال کردن مارکر
+        // map.panTo(points[i] as any, { animate: false });
+
+        onProgress?.(i);
+
+        if (i >= points.length - 1) {
+          // پایان
+          lastRef.current = null;
+          accRef.current = 0;
+          // پخش را بیرون از این کامپوننت متوقف کنید (با prop) یا همین‌جا:
+          // playingRef.current = false;
+        }
+      }
+
+      rafRef.current = requestAnimationFrame(frame);
+    }, [playing, speed, stepMs, points, onProgress]);
+
+    // مدیریت lifecycle حلقه
+    React.useEffect(() => {
+      stopRaf();
+      rafRef.current = requestAnimationFrame(frame);
+      return stopRaf;
+    }, [frame, stopRaf]);
+
+    // وقتی points عوض شد: ریست لایه‌ی انیمیشنی بدون رندر React
+    React.useEffect(() => {
+      idxRef.current = 0;
+      accRef.current = 0;
+      lastRef.current = null;
+      if (layerRef.current && markerRef.current && points?.length) {
+        layerRef.current.setLatLngs([points[0] as any]);
+        markerRef.current.setLatLng(points[0] as any);
+      }
+    }, [points]);
+
+    return null; // لایه‌ها را خودمان مدیریت می‌کنیم
+  }
 
 
 
@@ -7400,6 +7925,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
         <Grid2 xs={12} md={8}>
           <Paper sx={{ height: '75vh', overflow: 'hidden' }} dir="rtl">
             <MapContainer
+              preferCanvas
               zoom={INITIAL_ZOOM}
               minZoom={MIN_ZOOM}
               //maxZoom={MAX_ZOOM}
@@ -7469,30 +7995,37 @@ function SuperAdminRoleSection({ user }: { user: User }) {
               )}
               {/* مسیر جاری (از سرور) */}
               {(() => {
-                const pts = (vehicleRoute?.points ?? vehicleRoute?.stations ?? [])
-                  .slice()
-                  .sort((a, b) => (a.order_no ?? 0) - (b.order_no ?? 0))
-                  .map(p => ({ lat: p.lat, lng: p.lng }));
+                const isDrv = tab === 'drivers';
+                const anim = isDrv ? drvAnim : vehAnim;
+                const TL = isDrv ? driverTimeline : vehicleTimeline;
 
-                if (pts.length < 2) return null;
+                if (!TL || TL.T <= 0 || TL.map.size === 0) return null;
 
-                const threshold = vehicleRoute?.threshold_m ?? routeThreshold ?? 60;
+                const absMs = +new Date(fromISO) + anim.idx * TL.stepMs;
+                const curSec = Math.floor(absMs / 1000);
+
+                // فقط ثانیه‌هایی که داده داریم تا curSec
+                const ub = upperBound(TL.secs, curSec); // اولین اندیس > curSec
+                const history: [number, number][] = [];
+                for (let i = 0; i < ub; i++) {
+                  const p = TL.map.get(TL.secs[i])!;
+                  history.push([p.lat, p.lng]);
+                }
+
+                const cur = ub > 0 ? TL.map.get(TL.secs[ub - 1]) : null; // نزدیک‌ترین ≤ curSec
 
                 return (
                   <>
-                    {/* خود خط مسیر */}
-                    <Polyline positions={pts.map(p => [p.lat, p.lng] as [number, number])} />
-                    {/* کریدورِ پیوسته دور مسیر */}
-                    <Polygon
-                      positions={buildRouteBufferPolygon(pts, Math.max(1, threshold))
-                        .map(p => [p.lat, p.lng] as [number, number])}
-                      pathOptions={{ weight: 1, fillOpacity: 0.15 }}
-                    />
+                    {!!history.length && (
+                      <Polyline
+                        positions={history}
+                        pathOptions={{ color: MAP_COLORS.track, weight: 4, dashArray: '8 6', lineCap: 'round', lineJoin: 'round', opacity: 0.9 }}
+                      />
+                    )}
+                    {cur && <Marker position={[cur.lat, cur.lng]} />}
                   </>
                 );
               })()}
-
-
 
 
               {/* کلیک روی نقشه برای افزودن ایستگاه (فقط تب vehicles + ماشین انتخاب شده + تیک stations + مجوز) */}
@@ -7565,51 +8098,134 @@ function SuperAdminRoleSection({ user }: { user: User }) {
                   </Marker>
                 </>
               )}
-              {/* مسیر کامل راننده – همیشه */}
-              {tab === 'drivers' && driverTrackPts.length > 1 && (
-                <Polyline
-                  positions={driverTrackPts}
-                  pathOptions={{ weight: 3, opacity: 0.75 }}
-                />
-              )}
+              {/* راننده: مسیر/انیمیشن */}
+              {/* راننده: مسیر/انیمیشن با آیکون سفارشی */}
+              {tab === 'drivers' && (() => {
+                const t = driverTimeline;
 
-              {/* مسیر تب راننده با انیمیشن */}
-              {tab === 'drivers' && animatedDriver.length > 1 && (
-                <>
-                  <Polyline
-                    positions={animatedDriver}
-                    pathOptions={{
-                      color: MAP_COLORS.track,
-                      weight: 4,
-                      dashArray: '8 6',
-                      lineCap: 'round', lineJoin: 'round',
-                    }}
-                  />
-                  {/* سرِ مسیر (هد) */}
-                </>
-              )}
-              {/* مسیر کامل ماشین – همیشه */}
-              {tab === 'vehicles' && vehicleTrackPts.length > 1 && (
-                <Polyline
-                  positions={vehicleTrackPts}
-                  pathOptions={{ weight: 3, opacity: 0.75 }}
-                />
-              )}
+                // فالبک: اگه تایم‌لاین نداری، کل مسیر رو یک‌جا نشون بده
+                if (!t || t.T <= 0 || t.map.size === 0) {
+                  return driverTrackPts.length > 1 ? (
+                    <Polyline positions={driverTrackPts} pathOptions={{ weight: 3, opacity: 0.75 }} />
+                  ) : null;
+                }
 
-              {/* مسیر تب ماشین با انیمیشن */}
-              {tab === 'vehicles' && animatedVehicle.length > 1 && (
-                <>
-                  <Polyline
-                    positions={animatedVehicle}
-                    pathOptions={{
-                      color: MAP_COLORS.track,
-                      weight: 4,
-                      dashArray: '8 6',
-                      lineCap: 'round', lineJoin: 'round',
-                    }}
-                  />
-                </>
-              )}
+                // زمان مطلق فریم فعلی
+                const absMs = +new Date(fromISO) + drvAnim.idx * t.stepMs;
+                const curSec = Math.floor(absMs / 1000);
+
+                // ub = اولین ایندکس که t.secs[idx] > curSec
+                const ub = upperBound(t.secs, curSec);
+
+                // نقاط مرزی
+                const first = t.map.get(t.secs[0])!;
+                const last = t.map.get(t.secs[t.secs.length - 1])!;
+
+                // تاریخچه‌ی واقعی تا الان (فقط همان نمونه‌های دیتابیس)
+                const history: [number, number][] = ub > 0
+                  ? t.secs.slice(0, ub).map((s) => {
+                    const p = t.map.get(s)!;
+                    return [p.lat, p.lng] as [number, number];
+                  })
+                  : [];
+
+                // نقطه‌ی فعلی (با اینترپولیشن/کلمپ)
+                let curLat = first.lat, curLng = first.lng;
+
+                if (ub <= 0) {
+                  // قبل از اولین نمونه
+                  curLat = first.lat; curLng = first.lng;
+                } else if (ub >= t.secs.length) {
+                  // بعد یا برابر آخرین نمونه
+                  curLat = last.lat; curLng = last.lng;
+                } else {
+                  // داخل بازه: اینترپول بین k و k+1
+                  const k = ub - 1;
+                  const p0 = t.map.get(t.secs[k])!;
+                  const p1 = t.map.get(t.secs[k + 1])!;
+                  const segStartMs = t.secs[k] * 1000;
+                  const segEndMs = t.secs[k + 1] * 1000;
+                  const denom = Math.max(1, segEndMs - segStartMs);
+                  const alpha = Math.max(0, Math.min(1, (absMs - segStartMs) / denom));
+                  curLat = p0.lat + (p1.lat - p0.lat) * alpha;
+                  curLng = p0.lng + (p1.lng - p0.lng) * alpha;
+                }
+
+                // مسیر تا همین لحظه = تاریخچه + نقطه‌ی فعلی (تا مارکر و خط به هم بچسبند)
+                const pathUpToNow: [number, number][] =
+                  ub <= 0
+                    ? [[first.lat, first.lng]]
+                    : ub >= t.secs.length
+                      ? t.secs.map((s) => {
+                        const p = t.map.get(s)!;
+                        return [p.lat, p.lng] as [number, number];
+                      })
+                      : [...history, [curLat, curLng]];
+
+                return (
+                  <>
+                    {pathUpToNow.length > 1 && (
+                      <Polyline
+                        positions={pathUpToNow}
+                        pathOptions={{
+                          color: MAP_COLORS.track,
+                          weight: 5,
+                          dashArray: '10 7',
+                          lineCap: 'round',
+                          lineJoin: 'round',
+                          opacity: 0.95,
+                        }}
+                      />
+                    )}
+                    <Marker position={[curLat, curLng]} icon={driverIcon} />
+                  </>
+                );
+              })()}
+
+
+
+
+              {/* انیمیشن زمان‌محور ماشین (بازنویسی تمیز و مقاوم) */}
+              {tab === 'vehicles' && (() => {
+                const t = vehicleTimeline;
+                if (!t || t.map.size === 0 || !Array.isArray(t.secs) || t.secs.length === 0) return null;
+
+                // زمان مطلق قاب فعلی برحسب ms
+                const absMs = +new Date(fromISO) + vehAnim.idx * t.stepMs;
+                const curSec = Math.floor(absMs / 1000);
+
+                // ub = اولین ایندکس که t.secs[idx] > curSec
+                const ub = upperBound(t.secs, curSec);
+
+                // تا قبل از اولین نمونه: هیچ مسیری نکش (می‌تونی مارکر اول را هم نذاری)
+                if (ub <= 0) return null;
+
+                // تاریخچه دقیقاً تا همین لحظه (فقط همان نمونه‌های دیتابیس)
+                const history: [number, number][] = t.secs.slice(0, ub).map((s) => {
+                  const p = t.map.get(s)!;
+                  return [p.lat, p.lng] as [number, number];
+                });
+
+                // مارکر روی آخرین نقطه واقعی ≤ curSec
+                const last = t.map.get(t.secs[ub - 1])!;
+
+                return (
+                  <>
+                    <Polyline
+                      positions={history}
+                      pathOptions={{
+                        color: MAP_COLORS.track,
+                        weight: 4,
+                        dashArray: '8 6',
+                        lineCap: 'round',
+                        lineJoin: 'round',
+                        opacity: 0.9
+                      }}
+                    />
+                    <Marker position={[last.lat, last.lng]} />
+                  </>
+                );
+              })()}
 
 
               {/* --- ویرایش ایستگاه: نمایش مارکر قابل‌جابجایی --- */}
@@ -7708,54 +8324,115 @@ function SuperAdminRoleSection({ user }: { user: User }) {
 
             </MapContainer>
 
-            {/* 🎯 کنترل‌های شناور کنار پایین نقشه */}
-            {(tab === 'drivers' ? driverTrackPts.length > 1 : vehicleTrackPts.length > 1) && (
+            {/* 🎯 کنترل‌های شناور کنار پایین نقشه (نسخه‌ی زمان‌محور) */}
+            {(tab === 'drivers' ? driverTPts.length > 0 : vehicleTPts.length > 0) && (
               <Box
                 sx={{
                   position: 'absolute',
                   bottom: 12,
-                  left: 12,         // اگر می‌خوای راست باشه بذار right: 12
+                  left: 12, // اگر می‌خوای راست باشه بذار right: 12
                   display: 'flex',
+                  alignItems: 'center',
                   gap: 1,
                   zIndex: 1000,
                   bgcolor: 'background.paper',
-                  p: 0.5,
+                  p: 1,
                   borderRadius: 3,
                   boxShadow: 3,
-                  border: theme => `1px solid ${theme.palette.divider}`
+                  border: theme => `1px solid ${theme.palette.divider}`,
+                  minWidth: 360
                 }}
               >
-                <Tooltip title="پخش از ابتدا">
-                  <IconButton size="small" onClick={handlePlayFromStart}>
-                    <ReplayIcon fontSize="small" />
-                  </IconButton>
-                </Tooltip>
+                {(() => {
+                  const isDrv = tab === 'drivers';
+                  const anim = isDrv ? drvAnim : vehAnim;
+                  const TL = isDrv ? driverTimeline : vehicleTimeline;
 
-                <Tooltip title="توقف">
-                  <IconButton size="small" onClick={handleStop}>
-                    <StopIcon fontSize="small" />
-                  </IconButton>
-                </Tooltip>
-                {/* Speed */}
-                <Divider flexItem orientation="vertical" />
-                <ButtonGroup size="small" variant="outlined">
-                  {([1, 2, 3] as const).map(sp => (
-                    <Button
-                      key={sp}
-                      variant={(tab === 'drivers' ? driverSpeed : vehSpeed) === sp ? 'contained' : 'outlined'}
-                      onClick={() => {
-                        if (tab === 'drivers') setDriverSpeed(sp);
-                        else setVehSpeed(sp);
-                      }}
-                    >
-                      {sp}×
-                    </Button>
-                  ))}
-                </ButtonGroup>
+                  // اگر تایم‌لاین معتبر نیست، چیزی نشون نده
+                  if (TL.T < 0) return null;
 
+                  const prettyTime = () => {
+                    const t = +new Date(fromISO) + anim.idx * TL.stepMs;
+                    return new Date(t).toLocaleString('fa-IR', { hour12: false });
+                  };
 
+                  return (
+                    <>
+                      {/* پخش/توقف و ریست */}
+                      <Tooltip title={anim.playing ? 'مکث' : 'پخش'}>
+                        <IconButton size="small" onClick={anim.toggle}>
+                          {anim.playing ? <PauseIcon fontSize="small" /> : <PlayArrowIcon fontSize="small" />}
+                        </IconButton>
+                      </Tooltip>
+
+                      <Tooltip title="از ابتدا">
+                        <IconButton size="small" onClick={anim.stop}>
+                          <ReplayIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+
+                      <Tooltip title="توقف کامل (ایست)">
+                        <IconButton
+                          size="small"
+                          onClick={() => {
+                            anim.stop();
+                          }}
+                        >
+                          <StopIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+
+                      <Divider flexItem orientation="vertical" sx={{ mx: 0.5 }} />
+
+                      {/* اسلایدر زمان (0..T) */}
+                      <Box sx={{ px: 1, flex: 1, minWidth: 160 }}>
+                        <input
+                          type="range"
+                          min={0}
+                          max={TL.T}
+                          value={anim.idx}
+                          onChange={(e) => {
+                            anim.pause();
+                            anim.setIdx(Number(e.target.value) || 0);
+                          }}
+                          style={{ width: '100%' }}
+                          title={prettyTime()}
+                        />
+                        <Typography variant="caption" color="text.secondary" sx={{ userSelect: 'none' }}>
+                          {prettyTime()}
+                        </Typography>
+                      </Box>
+
+                      <Divider flexItem orientation="vertical" sx={{ mx: 0.5 }} />
+
+                      {/* سرعت: 0.5×, 1×, 2×, 4×, 8×, 10× */}
+                      <ButtonGroup size="small" variant="outlined" sx={{ direction: 'ltr' }}>
+                        {[0.5, 1, 2, 4, 8, 10].map((s) => (
+                          <Button
+                            key={s}
+                            variant={anim.speed === s ? 'contained' : 'outlined'}
+                            onClick={() => anim.setSpeed(s as any)}
+                          >
+                            {s}×
+                          </Button>
+                        ))}
+                      </ButtonGroup>
+
+                      {/* (اختیاری) Follow: اگر state دارید این سوییچ را نمایش دهید */}
+                      {/* 
+          <Divider flexItem orientation="vertical" sx={{ mx: 0.5 }} />
+          <FormControlLabel
+            sx={{ mx: 0.5 }}
+            control={<Switch size="small" checked={follow} onChange={(e) => setFollow(e.target.checked)} />}
+            label={<Typography variant="caption">Follow</Typography>}
+          />
+          */}
+                    </>
+                  );
+                })()}
               </Box>
             )}
+
           </Paper>
         </Grid2>
       )}
@@ -8999,6 +9676,7 @@ function SuperAdminRoleSection({ user }: { user: User }) {
 
   );
 }
+
 function JalaliRange({
   fromISO, toISO, setFromISO, setToISO, setPreset,
   apply,
@@ -9086,6 +9764,102 @@ function BranchManagerRoleSection({ user }: { user: User }) {
   const selectedDriverIdRef = React.useRef<number | null>(null);
   React.useEffect(() => { selectedDriverIdRef.current = selectedDriverId; }, [selectedDriverId]);
   // (selectedVehicleIdRef قبلاً داری؛ همون کافیه)
+  // === ANIMATION: timeline model (time-based) ===
+  type TLPoint = { lat: number; lng: number; ts: number }; // ms
+  type Timeline = {
+    stepMs: number;          // 1000
+    startMs: number;         // از from
+    endMs: number;           // تا to
+    startSec: number;
+    endSec: number;
+    T: number;               // تعداد گام‌های اسلایدر (ثانیه)
+    arr: TLPoint[];          // نقاط مرتب بر اساس زمان
+    secIdx: Map<number, number>; // sec -> index در arr (آخرینِ آن ثانیه)
+  };
+  function lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
+
+  function interpAtMs(tl: Timeline, tMs: number): { lat: number; lng: number } | null {
+    const a = tl.arr;
+    if (!a.length) return null;
+    if (tMs <= a[0].ts) return { lat: a[0].lat, lng: a[0].lng };
+    if (tMs >= a[a.length - 1].ts) return { lat: a[a.length - 1].lat, lng: a[a.length - 1].lng };
+
+    // باینری سرچ
+    let lo = 0, hi = a.length - 1;
+    while (lo + 1 < hi) {
+      const mid = (lo + hi) >> 1;
+      if (a[mid].ts <= tMs) lo = mid; else hi = mid;
+    }
+    const p = a[lo], n = a[hi];
+    const span = (n.ts - p.ts) || 1;
+    const tt = Math.min(1, Math.max(0, (tMs - p.ts) / span));
+    return { lat: lerp(p.lat, n.lat, tt), lng: lerp(p.lng, n.lng, tt) };
+  }
+
+  const STEP_MS = 1000;
+  const [driverTimeline, setDriverTimeline] = React.useState<Timeline | null>(null);
+  const [vehicleTimeline, setVehicleTimeline] = React.useState<Timeline | null>(null);
+  function buildTimeline(points: Array<{ lat: number; lng: number; ts: number }>, fromISO: string, toISO: string): Timeline | null {
+    const from = +new Date(fromISO), to = +new Date(toISO);
+    if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return null;
+
+    const rows = points
+      .filter(p => p.ts >= from && p.ts <= to)
+      .map(p => ({ lat: +p.lat, lng: +p.lng, ts: +p.ts }))
+      .filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lng) && Number.isFinite(p.ts))
+      .sort((a, b) => a.ts - b.ts);
+
+    if (rows.length === 0) return null; // ⬅️ مهم
+
+    const startSec = Math.floor(from / 1000);
+    const endSec = Math.floor(to / 1000);
+    const T = Math.max(0, endSec - startSec);
+
+    const secIdx = new Map<number, number>();
+    rows.forEach((p, i) => {
+      const s = Math.floor(p.ts / 1000);
+      const prev = secIdx.get(s);
+      if (prev == null || rows[i].ts >= rows[prev].ts) secIdx.set(s, i);
+    });
+
+    return { stepMs: 1000, startMs: from, endMs: to, startSec, endSec, T, arr: rows, secIdx };
+  }
+
+  // نقاط را با ts فلت می‌کند (gps_points/points/track_points/... را پوشش می‌دهد)
+  const normalizeTrackRowsWithTs = (payload: any): Array<{ lat: number; lng: number; ts: number }> => {
+    // همان منطق normalizeTrackPoints اما با ts
+    let arr: any[] =
+      Array.isArray(payload) ? payload :
+        Array.isArray(payload?.items) ? payload.items :
+          Array.isArray(payload?.data?.items) ? payload.data.items :
+            Array.isArray(payload?.data) ? payload.data :
+              Array.isArray(payload?.rows) ? payload.rows :
+                Array.isArray(payload?.points) ? payload.points :
+                  Array.isArray(payload?.track_points) ? payload.track_points :
+                    [];
+
+    // اگر آرایهٔ بلاک‌هاست، gps_points/points/... را فلت کن
+    const out: any[] = [];
+    arr.forEach((r: any) => {
+      if (Array.isArray(r?.gps_points)) out.push(...r.gps_points);
+      else if (Array.isArray(r?.track_points)) out.push(...r.track_points);
+      else if (Array.isArray(r?.trackPoints)) out.push(...r.trackPoints);
+      else if (Array.isArray(r?.points)) out.push(...r.points);
+      else out.push(r); // شاید خودِ آیتم همین نقطه باشد
+    });
+
+    const rows = out.map((p: any, i: number) => {
+      const lat = Number(p?.lat ?? p?.latitude ?? p?.y ?? (Array.isArray(p) ? p[0] : undefined));
+      const lng = Number(p?.lng ?? p?.lon ?? p?.long ?? p?.longitude ?? p?.x ?? (Array.isArray(p) ? p[1] : undefined));
+      const tRaw = p?.ts ?? p?.timestamp ?? p?.t ?? p?.time ?? p?.at ?? p?.created_at ?? p?.createdAt;
+      const ts = Number.isFinite(+tRaw) ? +tRaw : Date.parse(String(tRaw)) || NaN;
+      return { lat, lng, ts };
+    })
+      .filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng) && Number.isFinite(r.ts))
+      .sort((a, b) => a.ts - b.ts);
+
+    return rows;
+  };
 
   const myDriverIds = React.useMemo(() => new Set(drivers.map(d => d.id)), [drivers]);
   const DEFAULT_PERMS: string[] = ['view_report'];
@@ -9253,7 +10027,17 @@ function BranchManagerRoleSection({ user }: { user: User }) {
         // gps_points ها را از تمام آیتم‌ها فلت کن
         const rawPts: any[] = (Array.isArray(data?.items) ? data.items : [])
           .flatMap((it: any) => Array.isArray(it?.gps_points) ? it.gps_points : []);
-
+        const rows = rawPts.map((p: any, i: number) => {
+          const lat = Number(p?.lat ?? p?.latitude ?? p?.y ?? (Array.isArray(p) ? p[0] : undefined));
+          const lng = Number(p?.lng ?? p?.lon ?? p?.long ?? p?.longitude ?? p?.x ?? (Array.isArray(p) ? p[1] : undefined));
+          const tRaw = p?.ts ?? p?.timestamp ?? p?.t ?? p?.time ?? p?.at ?? p?.created_at ?? p?.createdAt;
+          const ts = Number.isFinite(+tRaw) ? +tRaw : Date.parse(String(tRaw)) || NaN;
+          return { lat, lng, ts };
+        }).filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng) && Number.isFinite(r.ts))
+          .sort((a, b) => a.ts - b.ts);
+        setDriverTrackPts(rows.map(r => [r.lat, r.lng] as [number, number])); // برای رندر استاتیک
+        setDriverTimeline(buildTimeline(rows, from, to));                      // ⬅️ جدید
+        if (rows.length) setFocusLatLng([rows[rows.length - 1].lat, rows[rows.length - 1].lng]);
         // به [lat,lng] نرمال کن (با پشتیبانی از lat/lon و latitude/longitude)
         const pts = rawPts.map((p: any, i: number) => {
           const lat = Number(p?.lat ?? p?.latitude ?? p?.y ?? (Array.isArray(p) ? p[0] : undefined));
@@ -9279,19 +10063,26 @@ function BranchManagerRoleSection({ user }: { user: User }) {
   // REPLACE loadVehicleTrack
   const loadVehicleTrack = React.useCallback(
     async (vehicleId: number, from = fromISO, to = toISO) => {
-      if (!vehicleId) { setVehicleTrackPts([]); return; }
+      if (!vehicleId) { setVehicleTrackPts([]); setVehicleTimeline(null); return; }
       try {
         const { data } = await api.get('/tracks', { params: { vehicle_id: vehicleId, from, to, limit: 5000 } });
+
+        // استاتیک: فقط برای نمایش کل مسیر
         const pts = normalizeTrackPoints(data);
         setVehicleTrackPts(pts);
         if (pts.length) setFocusLatLng(pts[pts.length - 1]);
+
+        // تایم‌لاین: از نسخهٔ «با ts» استفاده کن
+        const rows = normalizeTrackRowsWithTs(data);
+        setVehicleTimeline(buildTimeline(rows, from, to));  // ممکن است null شود (اوکی است)
+
       } catch {
+        // fallback لایو
         const buf = vehicleLiveRef.current[vehicleId] || [];
         const fromT = +new Date(from); const toT = +new Date(to);
-        const pts = buf
-          .filter((p) => p[2] >= fromT && p[2] <= toT)
-          .map((p) => [p[0], p[1]] as [number, number]);
+        const pts = buf.filter(p => p[2] >= fromT && p[2] <= toT).map(p => [p[0], p[1]] as [number, number]);
         setVehicleTrackPts(pts);
+        setVehicleTimeline(null); // ⬅️ مطمئن شو با دیتاى فالبک پخش فعال نشه
         if (pts.length) setFocusLatLng(pts[pts.length - 1]);
       }
     },
@@ -9299,10 +10090,15 @@ function BranchManagerRoleSection({ user }: { user: User }) {
   );
 
 
+
+
   // === ANIMATION: state + helpers ===
   type AnimMode = 'driver' | 'vehicle' | null;
-  type AnimState = { mode: AnimMode; idx: number; playing: boolean; speed: number; follow: boolean };
-  const [animState, setAnimState] = React.useState<AnimState>({ mode: null, idx: 0, playing: false, speed: 1, follow: true });
+  type AnimState = { mode: AnimMode; idx: number; playing: boolean; speed: number; follow: boolean; accMs: number };
+  const [animState, setAnimState] = React.useState<AnimState>({
+    mode: null, idx: 0, playing: false, speed: 1, follow: true, accMs: 0
+  });
+
   const animRef = React.useRef(animState);
   React.useEffect(() => { animRef.current = animState; }, [animState]);
 
@@ -9329,50 +10125,65 @@ function BranchManagerRoleSection({ user }: { user: User }) {
 
   const startAnimation = React.useCallback((mode: AnimMode) => {
     if (!mode) return;
-    const pts = getActivePts(mode);
-    if (!pts || pts.length < 2) return;
-
-    // اگر روی مود دیگری بودیم، از صفر شروع کن
-    setAnimState({ mode, idx: 0, playing: true, speed: 1, follow: true });
-  }, [getActivePts]);
+    const tl = mode === 'driver' ? driverTimeline : mode === 'vehicle' ? vehicleTimeline : null;
+    if (!tl) return;
+    setAnimState({ mode, idx: 0, playing: true, speed: 1, follow: true, accMs: 0 });
+  }, [driverTimeline, vehicleTimeline]);
 
   const togglePlayPause = React.useCallback(() => {
     setAnimState(s => {
       if (!s.mode) return s;
+      const tl = s.mode === 'driver' ? driverTimeline : vehicleTimeline;
+      if (!tl) return s;
+
       if (!s.playing) {
-        // اگر در انتها بود، دوباره از اول
-        const pts = getActivePts(s.mode);
-        const atEnd = s.idx >= Math.max(0, pts.length - 1);
+        const atEnd = s.idx >= tl.T;
         return { ...s, idx: atEnd ? 0 : s.idx, playing: true };
       }
       return { ...s, playing: false };
     });
-  }, [getActivePts]);
+  }, [driverTimeline, vehicleTimeline]);
+
 
   // رانِ فریم‌ها بر اساس سرعت
   React.useEffect(() => {
     clearAnimTimer();
     if (!animState.playing || !animState.mode) return;
 
-    const interval = Math.max(20, ANIM_BASE_MS / (animState.speed || 1));
+    const tl = animState.mode === 'driver' ? driverTimeline : vehicleTimeline;
+    if (!tl) return;
+
+    const interval = Math.max(20, ANIM_BASE_MS); // فریم پایه ثابت، سرعت را با delta اعمال می‌کنیم
     animTimerRef.current = window.setInterval(() => {
       setAnimState(s => {
         if (!s.mode) return s;
-        const pts = getActivePts(s.mode);
-        if (!pts || pts.length < 2) return { ...s, playing: false };
+        const TL = s.mode === 'driver' ? driverTimeline : vehicleTimeline;
+        if (!TL) return { ...s, playing: false };
 
-        const nextIdx = Math.min(s.idx + 1, pts.length - 1);
-        if (nextIdx >= pts.length - 1) {
-          // رسید به آخر
-          clearAnimTimer();
-          return { ...s, idx: nextIdx, playing: false };
+        // delta = interval * speed
+        const delta = interval * (s.speed || 1);
+        let acc = (s.accMs || 0) + delta;
+
+        if (acc < TL.stepMs) {
+          return { ...s, accMs: acc };
         }
-        return { ...s, idx: nextIdx };
+
+        const advance = Math.floor(acc / TL.stepMs);
+        const nextIdx = Math.min(s.idx + advance, TL.T);
+        acc = acc % TL.stepMs;
+
+        const atEnd = nextIdx >= TL.T;
+        return {
+          ...s,
+          idx: nextIdx,
+          accMs: acc,
+          playing: atEnd ? false : s.playing
+        };
       });
     }, interval);
 
     return () => clearAnimTimer();
-  }, [animState.playing, animState.mode, animState.speed, getActivePts]);
+  }, [animState.playing, animState.mode, animState.speed, driverTimeline, vehicleTimeline]);
 
   // وقتی ترک تغییر می‌کند، ایندکس را ریست کن تا با ترک جدید هم‌راستا شود
   React.useEffect(() => {
@@ -9385,32 +10196,53 @@ function BranchManagerRoleSection({ user }: { user: User }) {
   }, [vehicleTrackPts]);
 
   // اگر تب عوض شد، پخش را متوقف کن تا اشتباهی نماند
-  React.useEffect(() => { stopAnimation(); setAnimState({ mode: null, idx: 0, playing: false, speed: 1, follow: true }); }, [tab, stopAnimation]);
+  React.useEffect(() => {
+    setAnimState(s => ({ ...s, idx: 0, accMs: 0, playing: false }));
+  }, [fromISO, toISO]);
   // === ANIMATION: layer ===
-  function TrackAnimationLayer({ pts, idx, follow }: { pts: [number, number][], idx: number, follow: boolean }) {
+  function TrackAnimationLayer({
+    timeline, idx, accMs, follow,
+  }: { timeline: Timeline; idx: number; accMs: number; follow: boolean }) {
     const map = useMap();
-    const safeIdx = Math.min(Math.max(0, idx), Math.max(0, pts.length - 1));
-    const head = pts[safeIdx];
+    const clampedIdx = Math.min(Math.max(0, idx), timeline.T);
+    const nowMs = timeline.startMs + clampedIdx * timeline.stepMs + (accMs || 0);
+    if (!timeline?.arr?.length) return null;
+
+    const pos = React.useMemo(() => interpAtMs(timeline, nowMs), [timeline, nowMs]);
+    const traversed = React.useMemo(() => {
+      // همهٔ نقاطی که زمانشان <= nowMs
+      const arr = timeline.arr;
+      if (!arr.length) return [] as [number, number][];
+      let i = arr.findIndex(p => p.ts > nowMs);
+      if (i < 0) i = arr.length;
+      const base = arr.slice(0, Math.max(1, i)).map(p => [p.lat, p.lng] as [number, number]);
+      // آخرین قطعه را با نقطهٔ اینتِرپوله اضافه کن
+      if (pos && base.length && (base[base.length - 1][0] !== pos.lat || base[base.length - 1][1] !== pos.lng)) {
+        base.push([pos.lat, pos.lng]);
+      }
+      return base;
+    }, [timeline, nowMs, pos?.lat, pos?.lng]);
 
     React.useEffect(() => {
-      if (follow && head) {
-        // پانِ نرم به نقطه‌ی فعلی
-        (map as any).panTo(head, { animate: true, duration: 0.25 });
-      }
-    }, [head?.[0], head?.[1], follow, map]);
+      if (follow && pos) (map as any).panTo([pos.lat, pos.lng], { animate: true, duration: 0.25 });
+    }, [follow, pos?.lat, pos?.lng, map]);
 
-    if (!pts || pts.length < 2) return null;
+    if (!pos) return null;
 
     return (
       <>
-        <Polyline positions={pts.slice(0, safeIdx + 1)} pathOptions={{ color: '#ff9800', weight: 5, opacity: 0.9 }} />
-        <Marker position={pts[0]} icon={badgeIcon('شروع', '#43a047') as any} />
-        <Marker position={head} icon={badgeIcon('پخش', '#ff9800') as any} />
-        {/* انتهای مسیر برای مرجع */}
-        <Marker position={pts[pts.length - 1]} icon={badgeIcon('پایان', '#e53935') as any} />
+        {/* مسیر طی‌شده تا این لحظه */}
+        {traversed.length > 1 && (
+          <Polyline positions={traversed} pathOptions={{ weight: 3, opacity: 0.85 }} />
+        )}
+        {/* مارکرِ در حال پخش */}
+        <Marker position={[pos.lat, pos.lng]} icon={badgeIcon('پخش', '#ff9800') as any} />
       </>
     );
   }
+
+
+
 
   const loadDriverKPI = React.useCallback(
     async (driverId: number, from = fromISO, to = toISO) => {
@@ -9567,7 +10399,7 @@ function BranchManagerRoleSection({ user }: { user: User }) {
   const [sheetMode, setSheetMode] = React.useState<'vehicle' | 'driver' | null>(null);
 
   const [drawingRoute, setDrawingRoute] = React.useState(false);
-  const [routePoints, setRoutePoints] = useState<{ lat: number; lng: number }[]>([]);
+  const [routePoints, setRoutePoints] = React.useState<{ lat: number; lng: number }[]>([]);
   const [routeName, setRouteName] = useState('');
   const [routeThreshold, setRouteThreshold] = useState<number>(100);
   // کلیک‌گیر روی نقشه
@@ -9905,7 +10737,6 @@ function BranchManagerRoleSection({ user }: { user: User }) {
     return p;
   }
 
-  // REPLACE
   async function fetchDriverViolations(
     api: any,
     driverId: number,
@@ -9917,13 +10748,10 @@ function BranchManagerRoleSection({ user }: { user: User }) {
       const { data } = await api.get(`/drivers/${driverId}/violations`, { params });
       return data;
     } catch {
-      // آخرین فالبک (در صورت یکی‌بودن دیتامدل)
       const { data } = await api.get('/violations', { params: { ...params, driver_id: String(driverId) } });
       return data;
     }
   }
-
-
 
 
 
@@ -10672,14 +11500,22 @@ function BranchManagerRoleSection({ user }: { user: User }) {
         const ds = await fetchBranchDrivers();
         if (!alive) return;
         setDrivers(ds);
+
+        setStatsLoading(true);
+        await fetchStats(ds.map(d => d.id), fromISO, toISO);
       } catch (e) {
         console.error('[branch-manager] init error:', e);
       } finally {
-        if (alive) setInitLoading(false);
+        if (alive) {
+          setStatsLoading(false);
+          setInitLoading(false);
+        }
       }
     })();
     return () => { alive = false; };
-  }, [user?.id]); // ⬅️ از fromISO/toISO اینجا حذف شد
+  }, [user?.id, fromISO, toISO, fetchStats]);
+
+
   React.useEffect(() => {
     if (!drivers.length) return;
     let alive = true;
@@ -10728,17 +11564,6 @@ function BranchManagerRoleSection({ user }: { user: User }) {
     return Array.from(all);
   }, [availableTypes, grantedPerType]);
 
-  React.useEffect(() => {
-    (async () => {
-      try {
-        setLoading(true);
-        const ds = await fetchBranchDrivers();
-        setDrivers(ds);
-        await fetchStats(ds.map(d => d.id), fromISO, toISO);
-      } catch (e) { console.error('[branch-manager] init error:', e); }
-      finally { setLoading(false); }
-    })();
-  }, [user?.id, fromISO, toISO, fetchStats]);
 
   // ✅ فقط گرانت‌ها
   React.useEffect(() => {
@@ -11032,34 +11857,6 @@ function BranchManagerRoleSection({ user }: { user: User }) {
   }
 
 
-
-
-  // این نسخه را بگذار جای fetchVehiclesOfType فعلی‌ت
-
-
-
-
-
-  // REPLACE: قبلاً parentSA?.id تکی بود؛ الان از parentSAIds استفاده کن
-  // ✅ فقط همین
-  React.useEffect(() => {
-    if (!activeType) return;
-    fetchVehiclesOfType(activeType);
-  }, [activeType, parentSAId, fetchVehiclesOfType]);
-
-
-
-
-  // --- جایگزین این تابع کن ---
-
-
-
-
-
-  // وقتی تب نوع فعال شد، ماشین‌های همان نوع را بگیر و سابسکرایب pos
-
-
-
   React.useEffect(() => {
     const s = socketRef.current;
     if (!s || !activeType || !canTrackVehicles) return;
@@ -11156,74 +11953,53 @@ function BranchManagerRoleSection({ user }: { user: User }) {
       });
     };
 
-    // --- NEW: هندلر کیلومترشمار ---
-    const onOdo = (data: { vehicle_id: number; odometer: number }) => {
-      // فقط اگر همین ماشینی‌ست که الان انتخاب شده
-      if (selectedVehicleIdRef.current === data.vehicle_id) {
-        setVehicleTlm(prev => ({ ...prev, odometer: data.odometer }));
+    const onOdo = (d: { vehicle_id: number; odometer: number }) => {
+      if (selectedVehicleIdRef.current === d.vehicle_id) {
+        setVehicleTlm(prev => ({ ...prev, odometer: d.odometer }));
       }
     };
-    s.on('vehicle:ignition', (d: { vehicle_id: number; ignition: boolean }) =>
-      selectedVehicleIdRef.current === d.vehicle_id && setVehicleTlm(p => ({ ...p, ignition: d.ignition })));
 
-    s.on('vehicle:idle_time', (d: { vehicle_id: number; idle_time: number }) =>
-      selectedVehicleIdRef.current === d.vehicle_id && setVehicleTlm(p => ({ ...p, idle_time: d.idle_time })));
-
-    s.on('vehicle:odometer', (d: { vehicle_id: number; odometer: number }) =>
-      selectedVehicleIdRef.current === d.vehicle_id && setVehicleTlm(p => ({ ...p, odometer: d.odometer })));
-
-    // === ثبت لیسنرها ===
-    s.on('driver:pos', onDriverPos);
-    s.on('vehicle:pos', onVehiclePos);
-    s.on('vehicle:stations', onStations);
-    s.on('vehicle:odometer', onOdo);   // ⬅️ این خط جدید
-    // --- VIOLATIONS: handler ---
     const onViolation = (msg: any) => {
       const v = normalizeViolations(msg?.violation ?? msg, msg?.vehicle_id ?? msg?.vehicleId)[0];
       if (!v) return;
       setViolationsByVid(prev => {
         const cur = prev[v.vehicle_id] || [];
-        // اگر فیلتر severe فعال است، اینجا رد نکن—در UI فیلتر کن که تاریخچه حفظ بماند
-        // از تکرار جلوگیری
         const exists = v.id && cur.some(x => x.id === v.id);
-        const next = exists ? cur : [v, ...cur];
-        return { ...prev, [v.vehicle_id]: next };
+        return { ...prev, [v.vehicle_id]: exists ? cur : [v, ...cur] };
       });
     };
 
-    // ثبت لیسنر
+    s.on('driver:pos', onDriverPos);
+    s.on('vehicle:pos', onVehiclePos);
+    s.on('vehicle:stations', onStations);
+    s.on('vehicle:odometer', onOdo);
     s.on('vehicle:violation', onViolation);
 
-    // پاکسازی
-    // ...
-
-    // === پاکسازی ===
     return () => {
-      // آن‌سابسکرایب pos ها
-      subscribedVehiclesRef.current.forEach((id) => {
-        s.emit('unsubscribe', { topic: `vehicle/${id}/pos` });
-      });
-      subscribedVehiclesRef.current = new Set();
-
-      // آن‌سابسکرایب stations
+      // آزادسازی همه‌ی سابسکرایب‌های pos
+      if (subscribedVehiclesRef.current.size) {
+        subscribedVehiclesRef.current.forEach(id => s.emit('unsubscribe', { topic: `vehicle/${id}/pos` }));
+        subscribedVehiclesRef.current.clear();
+      }
+      // stations
       if (lastStationsSubRef.current) {
         const { vid, uid } = lastStationsSubRef.current;
         s.emit('unsubscribe', { topic: `vehicle/${vid}/stations/${uid}` });
+        s.emit('unsubscribe', { topic: `vehicle/${vid}/stations` });
         lastStationsSubRef.current = null;
       }
-      s.off('vehicle:violation', onViolation);
+      // telemetry topics
+      if (lastIgnVidRef.current) { s.emit('unsubscribe', { topic: `vehicle/${lastIgnVidRef.current}/ignition` }); lastIgnVidRef.current = null; }
+      if (lastIdleVidRef.current) { s.emit('unsubscribe', { topic: `vehicle/${lastIdleVidRef.current}/idle_time` }); lastIdleVidRef.current = null; }
+      if (lastTelemOdoVidRef.current) { s.emit('unsubscribe', { topic: `vehicle/${lastTelemOdoVidRef.current}/odometer` }); lastTelemOdoVidRef.current = null; }
+      if (lastVioVidRef.current) { s.emit('unsubscribe', { topic: `vehicle/${lastVioVidRef.current}/violations` }); lastVioVidRef.current = null; }
 
-      // --- NEW: آن‌سابسکرایب از تاپیک odometer اگر فعال بود
-      if (lastTelemOdoVidRef.current) {
-        s.emit('unsubscribe', { topic: `vehicle/${lastTelemOdoVidRef.current}/odometer` });
-        lastTelemOdoVidRef.current = null;
-      }
-
-      // off هندلرها
+      // off هندلرها (همه نام‌دارند تا واقعا off شوند)
       s.off('driver:pos', onDriverPos);
       s.off('vehicle:pos', onVehiclePos);
       s.off('vehicle:stations', onStations);
       s.off('vehicle:odometer', onOdo);
+      s.off('vehicle:violation', onViolation);
 
       s.disconnect();
       socketRef.current = null;
@@ -11370,129 +12146,86 @@ function BranchManagerRoleSection({ user }: { user: User }) {
 
   const lastTelemOdoVidRef = React.useRef<number | null>(null);
 
-  // ===== Map click helper =====
-  // بیرون از BranchManagerRoleSection.tsx (یا بالا، خارج از بدنه‌ی تابع)
+  const loadVehicleGeofences = React.useCallback(async (vid: number) => {
+    try {
+      const { data } = await api.get(`/vehicles/${vid}/geofence`, {
+        params: { _: Date.now() }, headers: { 'Cache-Control': 'no-store' },
+      });
+      const list = normalizeGeofences(data);
+      setGeofencesByVid(p => ({ ...p, [vid]: list }));
+      return list;
+    } catch {
+      setGeofencesByVid(p => ({ ...p, [vid]: [] }));
+      return [];
+    }
+  }, [api]);
 
   const onPickVehicleBM = React.useCallback(async (v: Vehicle) => {
     setSelectedVehicleId(v.id);
-    await loadVehicleGeofences(v.id);
-    setSheetOpen(true);        // ⬅️ این خط را اضافه کن
+    setSheetOpen(true);
     setSheetMode('vehicle');
-    await loadViolations(v.id);
 
-    // ریست حالت‌های افزودن/ادیت ایستگاه
+    // تمرکز نقشه
+    if (v.last_location) setFocusLatLng([v.last_location.lat, v.last_location.lng]);
+
+    // مسیر و ترک
+    await loadVehicleRoute(v.id);
+    await loadVehicleTrack(v.id, fromISO, toISO);
+
+    // ژئوفنس
+    await loadVehicleGeofences(v.id);
+
+    // ایستگاه‌ها
     setAddingStationsForVid(null);
     setEditingStation(null);
     setMovingStationId(null);
     setTempStation(null);
-    await loadVehicleRoute(v.id);
+    if (canStations) await ensureStationsLive(v.id);
+    else await fetchStations(v.id);
 
-    if (v.last_location) setFocusLatLng([v.last_location.lat, v.last_location.lng]);
-
-    // ایستگاه‌ها (در صورت مجوز)
-    if (canStations) {
-      await ensureStationsLive(v.id);   // subscribe + fetch
-    } else {
-      await fetchStations(v.id);        // فقط fetch برای نمایش روی نقشه
-    }
-    const s = socketRef.current;
-    if (s && canViolations) {
-      if (lastVioVidRef.current && lastVioVidRef.current !== v.id) {
-        s.emit('unsubscribe', { topic: `vehicle/${lastVioVidRef.current}/violations` });
-        lastVioVidRef.current = null;
+    // تخلفات (فچ اولیه + سابسکرایب لایو)
+    if (canViolations) {
+      const s = socketRef.current;
+      if (s) {
+        if (lastVioVidRef.current && lastVioVidRef.current !== v.id) {
+          s.emit('unsubscribe', { topic: `vehicle/${lastVioVidRef.current}/violations` });
+        }
+        s.emit('subscribe', { topic: `vehicle/${v.id}/violations` });
+        lastVioVidRef.current = v.id;
       }
-      s.emit('subscribe', { topic: `vehicle/${v.id}/violations` });
-      lastVioVidRef.current = v.id;
-
-      // فچ اولیه در بازه انتخابی
       await refreshViolations(v.id, fromISO, toISO);
     }
 
-    // --- آزاد کردن سابسکرایب‌های قبلی تله‌متری (هر کدام جدا) ---
-    if (s && lastIgnVidRef.current && lastIgnVidRef.current !== v.id) {
-      s.emit('unsubscribe', { topic: `vehicle/${lastIgnVidRef.current}/ignition` });
-      lastIgnVidRef.current = null;
-    }
-    if (s && lastIdleVidRef.current && lastIdleVidRef.current !== v.id) {
-      s.emit('unsubscribe', { topic: `vehicle/${lastIdleVidRef.current}/idle_time` });
-      lastIdleVidRef.current = null;
-    }
-
-
-    // مقادیر قبلی تله‌متری را پاک کن (تا UI وضعیت نامشخص نشان دهد)
+    // تله‌متری (کلیدهای مجاز)
     setVehicleTlm({});
-
-    // ===== فچ اولیه تله‌متری (صرفاً برای کلیدهای مجاز) =====
-    try {
-      const keysWanted: ('ignition' | 'idle_time' | 'odometer')[] = [];
-      if (canIgnition) keysWanted.push('ignition');
-      if (canIdleTime) keysWanted.push('idle_time');
-      if (canOdometer) keysWanted.push('odometer');
-
-      if (keysWanted.length) {
-        const { data } = await api.get(`/vehicles/${v.id}/telemetry`, { params: { keys: keysWanted } });
-
-        const next: { ignition?: boolean; idle_time?: number; odometer?: number } = {};
-        if (typeof data?.ignition === 'boolean') next.ignition = data.ignition;
-        if (typeof data?.idle_time === 'number') next.idle_time = data.idle_time;
-        if (typeof data?.odometer === 'number') next.odometer = data.odometer;
-
-        setVehicleTlm(next);
-      }
-    } catch {
-      // مشکلی نبود؛ بعداً از سوکت آپدیت می‌گیریم
-    }
-
-    // ===== سابسکرایب تله‌متری برای ماشین انتخاب‌شده (هر کدام که مجاز است) =====
+    const s = socketRef.current;
     if (s) {
-      if (canIgnition) {
-        s.emit('subscribe', { topic: `vehicle/${v.id}/ignition` });
-        lastIgnVidRef.current = v.id;
-      }
-      if (canIdleTime) {
-        s.emit('subscribe', { topic: `vehicle/${v.id}/idle_time` });
-        lastIdleVidRef.current = v.id;  // ✅ درست
-      }
-
-      if (canOdometer) {
-        s.emit('subscribe', { topic: `vehicle/${v.id}/odometer` });
-        lastTelemOdoVidRef.current = v.id;
-      }
+      if (canIgnition) { s.emit('subscribe', { topic: `vehicle/${v.id}/ignition` }); lastIgnVidRef.current = v.id; }
+      if (canIdleTime) { s.emit('subscribe', { topic: `vehicle/${v.id}/idle_time` }); lastIdleVidRef.current = v.id; }
+      if (canOdometer) { s.emit('subscribe', { topic: `vehicle/${v.id}/odometer` }); lastTelemOdoVidRef.current = v.id; }
     }
-    // ژئوفنس (در صورت مجوز)
-    setSelectedVehicleId(v.id);
-    await loadVehicleGeofences(v.id); // همین یکی بماند
-    await loadVehicleTrack(v.id, fromISO, toISO);
-
-
-
-
-    // ===== لوازم مصرفی (کاملاً مستقل از تله‌متری) =====
-    if (canConsumables) {
-      // اسنپ‌شات لوکال
-      const snap = loadConsLocal(v.id);
-      if (snap.length) {
-        setConsumablesByVid(p => ({ ...p, [v.id]: snap }));
-        setConsStatusByVid(p => ({ ...p, [v.id]: 'loaded' }));
-      } else {
-        setConsumablesByVid(p => ({ ...p, [v.id]: [] }));
-        setConsStatusByVid(p => ({ ...p, [v.id]: 'loading' }));
+    try {
+      const keys: ('ignition' | 'idle_time' | 'odometer')[] = [];
+      if (canIgnition) keys.push('ignition');
+      if (canIdleTime) keys.push('idle_time');
+      if (canOdometer) keys.push('odometer');
+      if (keys.length) {
+        const { data } = await api.get(`/vehicles/${v.id}/telemetry`, { params: { keys } });
+        setVehicleTlm({
+          ignition: typeof data?.ignition === 'boolean' ? data.ignition : undefined,
+          idle_time: typeof data?.idle_time === 'number' ? data.idle_time : undefined,
+          odometer: typeof data?.odometer === 'number' ? data.odometer : undefined,
+        });
       }
-      // همسان‌سازی از سرور
-      refreshConsumables(v.id);
-    } else {
-      setConsumablesByVid(p => ({ ...p, [v.id]: [] }));
-      setConsStatusByVid(p => ({ ...p, [v.id]: 'idle' }));
-    }
+    } catch { /* نادیده بگیر؛ لایو می‌آید */ }
   }, [
-    canStations,
-    ensureStationsLive,
-    canConsumables,
-    refreshConsumables,
-    canIgnition,
-    canIdleTime,
-    canOdometer,
+    canStations, ensureStationsLive, fetchStations,
+    canViolations, refreshViolations,
+    canIgnition, canIdleTime, canOdometer,
+    loadVehicleRoute, loadVehicleTrack, loadVehicleGeofences,
+    fromISO, toISO
   ]);
+
 
 
 
@@ -11659,19 +12392,7 @@ function BranchManagerRoleSection({ user }: { user: User }) {
     return null;
   }
 
-  async function loadVehicleGeofences(vid: number) {
-    try {
-      const { data } = await api.get(`/vehicles/${vid}/geofence`, {
-        params: { _: Date.now() }, headers: { 'Cache-Control': 'no-store' }
-      });
-      const list = normalizeGeofences(data); // تک آبجکت را هم آرایه می‌کند
-      setGeofencesByVid(p => ({ ...p, [vid]: list }));
-      return list;
-    } catch {
-      setGeofencesByVid(p => ({ ...p, [vid]: [] }));
-      return [];
-    }
-  }
+
   React.useEffect(() => {
     if (selectedVehicleId && canViolations) {
       refreshViolations(selectedVehicleId, fromISO, toISO);
@@ -11679,17 +12400,17 @@ function BranchManagerRoleSection({ user }: { user: User }) {
   }, [selectedVehicleId, canViolations, fromISO, toISO, refreshViolations]);
 
 
-  const saveEditConsumable = async () => {
+  const saveEditConsumable = React.useCallback(async () => {
     if (!selectedVehicleId || !editingCons?.id) return;
     setSavingCons(true);
     try {
       const payload: any = { mode: editingCons.mode, note: (editingCons.note ?? '').trim() };
       if (editingCons.mode === 'time') {
-        if (!editingCons.start_at) { alert('start_at لازم است'); setSavingCons(false); return; }
+        if (!editingCons.start_at) { alert('start_at لازم است'); return; }
         payload.start_at = new Date(editingCons.start_at).toISOString();
       } else {
         const n = Number(editingCons.base_odometer_km);
-        if (!Number.isFinite(n)) { alert('base_odometer_km معتبر نیست'); setSavingCons(false); return; }
+        if (!Number.isFinite(n)) { alert('base_odometer_km معتبر نیست'); return; }
         payload.base_odometer_km = n;
       }
       await updateConsumable(selectedVehicleId, editingCons.id, payload);
@@ -11698,8 +12419,11 @@ function BranchManagerRoleSection({ user }: { user: User }) {
     } catch (e: any) {
       console.error('PATCH /consumables failed:', e?.response?.data || e);
       alert(e?.response?.data?.message || 'خطا در ویرایش آیتم روی سرور');
-    } finally { setSavingCons(false); }
-  };
+    } finally {
+      setSavingCons(false);
+    }
+  }, [selectedVehicleId, editingCons, updateConsumable, refreshConsumables]);
+
 
   const deleteConsumable = async (c: any) => {
     if (!selectedVehicleId || !c?.id) return;
@@ -11891,35 +12615,88 @@ function BranchManagerRoleSection({ user }: { user: User }) {
             <Pane name="vehicles-layer" style={{ zIndex: 650 }}>
               {/* === ANIMATION-aware track rendering === */}
               {(() => {
-                const isAnimDriver = animState.mode === 'driver' && tab === 'drivers' && driverTrackPts.length > 1;
-                const isAnimVehicle = animState.mode === 'vehicle' && tab !== 'drivers' && vehicleTrackPts.length > 1;
+                const modeIsDriver = tab === 'drivers';
 
-                // DRIVER
-                if (tab === 'drivers') {
-                  return isAnimDriver ? (
-                    <TrackAnimationLayer pts={driverTrackPts} idx={animState.idx} follow={animState.follow} />
-                  ) : (
+                // آیا در حالت پخش هستیم و تایم‌لاین آماده است؟
+                const animDriverOn = animState.mode === 'driver' && modeIsDriver && !!driverTimeline && (driverTimeline!.arr.length > 0);
+                const animVehicleOn = animState.mode === 'vehicle' && !modeIsDriver && !!vehicleTimeline && (vehicleTimeline!.arr.length > 0);
+
+
+                // === DRIVER ===
+                if (modeIsDriver) {
+                  if (animDriverOn) {
+                    return (
+                      <>
+                        {/* مسیر کامل، کم‌رنگ زیر مارکرِ در حال پخش */}
+                        {driverTrackPts.length > 1 && (
+                          <Polyline
+                            positions={driverTrackPts}
+                            pathOptions={{ color: '#1976d2', weight: 3, opacity: 0.25 }}
+                          />
+                        )}
+
+                        {/* لایه‌ی انیمیشن با اینتِرپولیشنِ زمانی */}
+                        <TrackAnimationLayer
+                          timeline={driverTimeline!}
+                          idx={animState.idx}
+                          accMs={animState.accMs}
+                          follow={animState.follow}
+                        />
+                      </>
+                    );
+                  }
+
+                  // حالت استاتیک (بدون پخش): فیت روی ترک + رسم پررنگ
+                  return (
                     driverTrackPts.length > 1 && (
                       <>
                         <FitToTrack pts={driverTrackPts} />
-                        <Polyline positions={driverTrackPts} pathOptions={{ color: '#1976d2', weight: 4, opacity: 0.9 }} />
+                        <Polyline
+                          positions={driverTrackPts}
+                          pathOptions={{ color: '#1976d2', weight: 4, opacity: 0.9 }}
+                        />
                       </>
                     )
                   );
                 }
 
-                // VEHICLE
-                return isAnimVehicle ? (
-                  <TrackAnimationLayer pts={vehicleTrackPts} idx={animState.idx} follow={animState.follow} />
-                ) : (
+                // === VEHICLE ===
+                if (animVehicleOn) {
+                  return (
+                    <>
+                      {/* مسیر کامل، کم‌رنگ زیر مارکرِ در حال پخش */}
+                      {vehicleTrackPts.length > 1 && (
+                        <Polyline
+                          positions={vehicleTrackPts}
+                          pathOptions={{ color: '#00796b', weight: 3, opacity: 0.25 }}
+                        />
+                      )}
+
+                      {/* لایه‌ی انیمیشن با اینتِرپولیشنِ زمانی */}
+                      <TrackAnimationLayer
+                        timeline={vehicleTimeline!}
+                        idx={animState.idx}
+                        accMs={animState.accMs}
+                        follow={animState.follow}
+                      />
+                    </>
+                  );
+                }
+
+                // حالت استاتیک خودرو
+                return (
                   vehicleTrackPts.length > 1 && (
                     <>
                       <FitToTrack pts={vehicleTrackPts} />
-                      <Polyline positions={vehicleTrackPts} pathOptions={{ color: '#00796b', weight: 4, opacity: 0.9 }} />
+                      <Polyline
+                        positions={vehicleTrackPts}
+                        pathOptions={{ color: '#00796b', weight: 4, opacity: 0.9 }}
+                      />
                     </>
                   )
                 );
               })()}
+
 
               {/* راننده‌ها + مسیر لحظه‌ای راننده (حفظ منطق) */}
               {tab === 'drivers' && canTrackDrivers && filteredDrivers.map(d => (d as any).last_location && (
@@ -12158,7 +12935,7 @@ function BranchManagerRoleSection({ user }: { user: User }) {
                         size="small"
                         variant="outlined"
                         color="error"
-                        onClick={() => { stopAnimation(); setAnimState({ mode: animState.mode, idx: 0, playing: false, speed: 1, follow: animState.follow }); }}
+                        onClick={() => { stopAnimation(); setAnimState(s => ({ ...s, idx: 0, playing: false, speed: 1, accMs: 0 })); }}
                         disabled={!animState.mode}
                       >
                         پایان
@@ -12177,6 +12954,8 @@ function BranchManagerRoleSection({ user }: { user: User }) {
                         <MenuItem value="1">۱×</MenuItem>
                         <MenuItem value="2">۲×</MenuItem>
                         <MenuItem value="4">۴×</MenuItem>
+                        <MenuItem value="8">۸×</MenuItem>
+                        <MenuItem value="10">۱۰×</MenuItem>
                       </TextField>
 
                       {/* follow */}
@@ -12195,24 +12974,34 @@ function BranchManagerRoleSection({ user }: { user: User }) {
 
                     {/* اسلایدر پیشرفت */}
                     {(() => {
-                      const pts = getActivePts(animState.mode);
-                      const max = Math.max(0, pts.length - 1);
+                      const tl = animState.mode === 'driver' ? driverTimeline
+                        : animState.mode === 'vehicle' ? vehicleTimeline
+                          : null;
+
+                      const max = tl ? tl.T : 0;
+
                       return (
                         <Box sx={{ px: 1, mt: 0.5 }}>
                           <Slider
                             size="small"
                             value={Math.min(animState.idx, max)}
                             min={0}
-                            max={max || 1}
+                            max={Math.max(1, max)}
                             onChange={(_, v) => {
                               const idx = Array.isArray(v) ? v[0] : v;
-                              setAnimState(s => ({ ...s, idx: Number(idx), playing: false }));
+                              setAnimState(s => ({ ...s, idx: Number(idx), playing: false, accMs: 0 }));
                             }}
                             valueLabelDisplay="auto"
+                            valueLabelFormat={(v) => {
+                              if (!tl) return `${v}`;
+                              const sec = tl.startSec + v;
+                              return new Date(sec * 1000).toLocaleTimeString('fa-IR');
+                            }}
                           />
                         </Box>
                       );
                     })()}
+
                   </Paper>
                 )}
 
@@ -12460,7 +13249,7 @@ function BranchManagerRoleSection({ user }: { user: User }) {
                                 startAnimation('driver');
 
                                 // اگر دوست دارید ماشین فعلی راننده هم در سایدبار انتخاب شود (اختیاری):
-                                const vid = await getDriverCurrentVehicleId(d.id).catch(() => null);
+                                const vid = await getCurrentVehicleIdSafe(api, d.id).catch(() => null);
                                 if (vid) setSelectedVehicleId(vid);
                               }}
                             >
@@ -13284,6 +14073,102 @@ function OwnerRoleSection({ user }: { user: User }) {
   const selectedDriverIdRef = React.useRef<number | null>(null);
   React.useEffect(() => { selectedDriverIdRef.current = selectedDriverId; }, [selectedDriverId]);
   // (selectedVehicleIdRef قبلاً داری؛ همون کافیه)
+  // === ANIMATION: timeline model (time-based) ===
+  type TLPoint = { lat: number; lng: number; ts: number }; // ms
+  type Timeline = {
+    stepMs: number;          // 1000
+    startMs: number;         // از from
+    endMs: number;           // تا to
+    startSec: number;
+    endSec: number;
+    T: number;               // تعداد گام‌های اسلایدر (ثانیه)
+    arr: TLPoint[];          // نقاط مرتب بر اساس زمان
+    secIdx: Map<number, number>; // sec -> index در arr (آخرینِ آن ثانیه)
+  };
+  function lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
+
+  function interpAtMs(tl: Timeline, tMs: number): { lat: number; lng: number } | null {
+    const a = tl.arr;
+    if (!a.length) return null;
+    if (tMs <= a[0].ts) return { lat: a[0].lat, lng: a[0].lng };
+    if (tMs >= a[a.length - 1].ts) return { lat: a[a.length - 1].lat, lng: a[a.length - 1].lng };
+
+    // باینری سرچ
+    let lo = 0, hi = a.length - 1;
+    while (lo + 1 < hi) {
+      const mid = (lo + hi) >> 1;
+      if (a[mid].ts <= tMs) lo = mid; else hi = mid;
+    }
+    const p = a[lo], n = a[hi];
+    const span = (n.ts - p.ts) || 1;
+    const tt = Math.min(1, Math.max(0, (tMs - p.ts) / span));
+    return { lat: lerp(p.lat, n.lat, tt), lng: lerp(p.lng, n.lng, tt) };
+  }
+
+  const STEP_MS = 1000;
+  const [driverTimeline, setDriverTimeline] = React.useState<Timeline | null>(null);
+  const [vehicleTimeline, setVehicleTimeline] = React.useState<Timeline | null>(null);
+  function buildTimeline(points: Array<{ lat: number; lng: number; ts: number }>, fromISO: string, toISO: string): Timeline | null {
+    const from = +new Date(fromISO), to = +new Date(toISO);
+    if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return null;
+
+    const rows = points
+      .filter(p => p.ts >= from && p.ts <= to)
+      .map(p => ({ lat: +p.lat, lng: +p.lng, ts: +p.ts }))
+      .filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lng) && Number.isFinite(p.ts))
+      .sort((a, b) => a.ts - b.ts);
+
+    if (rows.length === 0) return null; // ⬅️ مهم
+
+    const startSec = Math.floor(from / 1000);
+    const endSec = Math.floor(to / 1000);
+    const T = Math.max(0, endSec - startSec);
+
+    const secIdx = new Map<number, number>();
+    rows.forEach((p, i) => {
+      const s = Math.floor(p.ts / 1000);
+      const prev = secIdx.get(s);
+      if (prev == null || rows[i].ts >= rows[prev].ts) secIdx.set(s, i);
+    });
+
+    return { stepMs: 1000, startMs: from, endMs: to, startSec, endSec, T, arr: rows, secIdx };
+  }
+
+  // نقاط را با ts فلت می‌کند (gps_points/points/track_points/... را پوشش می‌دهد)
+  const normalizeTrackRowsWithTs = (payload: any): Array<{ lat: number; lng: number; ts: number }> => {
+    // همان منطق normalizeTrackPoints اما با ts
+    let arr: any[] =
+      Array.isArray(payload) ? payload :
+        Array.isArray(payload?.items) ? payload.items :
+          Array.isArray(payload?.data?.items) ? payload.data.items :
+            Array.isArray(payload?.data) ? payload.data :
+              Array.isArray(payload?.rows) ? payload.rows :
+                Array.isArray(payload?.points) ? payload.points :
+                  Array.isArray(payload?.track_points) ? payload.track_points :
+                    [];
+
+    // اگر آرایهٔ بلاک‌هاست، gps_points/points/... را فلت کن
+    const out: any[] = [];
+    arr.forEach((r: any) => {
+      if (Array.isArray(r?.gps_points)) out.push(...r.gps_points);
+      else if (Array.isArray(r?.track_points)) out.push(...r.track_points);
+      else if (Array.isArray(r?.trackPoints)) out.push(...r.trackPoints);
+      else if (Array.isArray(r?.points)) out.push(...r.points);
+      else out.push(r); // شاید خودِ آیتم همین نقطه باشد
+    });
+
+    const rows = out.map((p: any, i: number) => {
+      const lat = Number(p?.lat ?? p?.latitude ?? p?.y ?? (Array.isArray(p) ? p[0] : undefined));
+      const lng = Number(p?.lng ?? p?.lon ?? p?.long ?? p?.longitude ?? p?.x ?? (Array.isArray(p) ? p[1] : undefined));
+      const tRaw = p?.ts ?? p?.timestamp ?? p?.t ?? p?.time ?? p?.at ?? p?.created_at ?? p?.createdAt;
+      const ts = Number.isFinite(+tRaw) ? +tRaw : Date.parse(String(tRaw)) || NaN;
+      return { lat, lng, ts };
+    })
+      .filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng) && Number.isFinite(r.ts))
+      .sort((a, b) => a.ts - b.ts);
+
+    return rows;
+  };
 
   const myDriverIds = React.useMemo(() => new Set(drivers.map(d => d.id)), [drivers]);
   const DEFAULT_PERMS: string[] = ['view_report'];
@@ -13451,7 +14336,17 @@ function OwnerRoleSection({ user }: { user: User }) {
         // gps_points ها را از تمام آیتم‌ها فلت کن
         const rawPts: any[] = (Array.isArray(data?.items) ? data.items : [])
           .flatMap((it: any) => Array.isArray(it?.gps_points) ? it.gps_points : []);
-
+        const rows = rawPts.map((p: any, i: number) => {
+          const lat = Number(p?.lat ?? p?.latitude ?? p?.y ?? (Array.isArray(p) ? p[0] : undefined));
+          const lng = Number(p?.lng ?? p?.lon ?? p?.long ?? p?.longitude ?? p?.x ?? (Array.isArray(p) ? p[1] : undefined));
+          const tRaw = p?.ts ?? p?.timestamp ?? p?.t ?? p?.time ?? p?.at ?? p?.created_at ?? p?.createdAt;
+          const ts = Number.isFinite(+tRaw) ? +tRaw : Date.parse(String(tRaw)) || NaN;
+          return { lat, lng, ts };
+        }).filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng) && Number.isFinite(r.ts))
+          .sort((a, b) => a.ts - b.ts);
+        setDriverTrackPts(rows.map(r => [r.lat, r.lng] as [number, number])); // برای رندر استاتیک
+        setDriverTimeline(buildTimeline(rows, from, to));                      // ⬅️ جدید
+        if (rows.length) setFocusLatLng([rows[rows.length - 1].lat, rows[rows.length - 1].lng]);
         // به [lat,lng] نرمال کن (با پشتیبانی از lat/lon و latitude/longitude)
         const pts = rawPts.map((p: any, i: number) => {
           const lat = Number(p?.lat ?? p?.latitude ?? p?.y ?? (Array.isArray(p) ? p[0] : undefined));
@@ -13477,19 +14372,26 @@ function OwnerRoleSection({ user }: { user: User }) {
   // REPLACE loadVehicleTrack
   const loadVehicleTrack = React.useCallback(
     async (vehicleId: number, from = fromISO, to = toISO) => {
-      if (!vehicleId) { setVehicleTrackPts([]); return; }
+      if (!vehicleId) { setVehicleTrackPts([]); setVehicleTimeline(null); return; }
       try {
         const { data } = await api.get('/tracks', { params: { vehicle_id: vehicleId, from, to, limit: 5000 } });
+
+        // استاتیک: فقط برای نمایش کل مسیر
         const pts = normalizeTrackPoints(data);
         setVehicleTrackPts(pts);
         if (pts.length) setFocusLatLng(pts[pts.length - 1]);
+
+        // تایم‌لاین: از نسخهٔ «با ts» استفاده کن
+        const rows = normalizeTrackRowsWithTs(data);
+        setVehicleTimeline(buildTimeline(rows, from, to));  // ممکن است null شود (اوکی است)
+
       } catch {
+        // fallback لایو
         const buf = vehicleLiveRef.current[vehicleId] || [];
         const fromT = +new Date(from); const toT = +new Date(to);
-        const pts = buf
-          .filter((p) => p[2] >= fromT && p[2] <= toT)
-          .map((p) => [p[0], p[1]] as [number, number]);
+        const pts = buf.filter(p => p[2] >= fromT && p[2] <= toT).map(p => [p[0], p[1]] as [number, number]);
         setVehicleTrackPts(pts);
+        setVehicleTimeline(null); // ⬅️ مطمئن شو با دیتاى فالبک پخش فعال نشه
         if (pts.length) setFocusLatLng(pts[pts.length - 1]);
       }
     },
@@ -13497,10 +14399,15 @@ function OwnerRoleSection({ user }: { user: User }) {
   );
 
 
+
+
   // === ANIMATION: state + helpers ===
   type AnimMode = 'driver' | 'vehicle' | null;
-  type AnimState = { mode: AnimMode; idx: number; playing: boolean; speed: number; follow: boolean };
-  const [animState, setAnimState] = React.useState<AnimState>({ mode: null, idx: 0, playing: false, speed: 1, follow: true });
+  type AnimState = { mode: AnimMode; idx: number; playing: boolean; speed: number; follow: boolean; accMs: number };
+  const [animState, setAnimState] = React.useState<AnimState>({
+    mode: null, idx: 0, playing: false, speed: 1, follow: true, accMs: 0
+  });
+
   const animRef = React.useRef(animState);
   React.useEffect(() => { animRef.current = animState; }, [animState]);
 
@@ -13527,50 +14434,65 @@ function OwnerRoleSection({ user }: { user: User }) {
 
   const startAnimation = React.useCallback((mode: AnimMode) => {
     if (!mode) return;
-    const pts = getActivePts(mode);
-    if (!pts || pts.length < 2) return;
-
-    // اگر روی مود دیگری بودیم، از صفر شروع کن
-    setAnimState({ mode, idx: 0, playing: true, speed: 1, follow: true });
-  }, [getActivePts]);
+    const tl = mode === 'driver' ? driverTimeline : mode === 'vehicle' ? vehicleTimeline : null;
+    if (!tl) return;
+    setAnimState({ mode, idx: 0, playing: true, speed: 1, follow: true, accMs: 0 });
+  }, [driverTimeline, vehicleTimeline]);
 
   const togglePlayPause = React.useCallback(() => {
     setAnimState(s => {
       if (!s.mode) return s;
+      const tl = s.mode === 'driver' ? driverTimeline : vehicleTimeline;
+      if (!tl) return s;
+
       if (!s.playing) {
-        // اگر در انتها بود، دوباره از اول
-        const pts = getActivePts(s.mode);
-        const atEnd = s.idx >= Math.max(0, pts.length - 1);
+        const atEnd = s.idx >= tl.T;
         return { ...s, idx: atEnd ? 0 : s.idx, playing: true };
       }
       return { ...s, playing: false };
     });
-  }, [getActivePts]);
+  }, [driverTimeline, vehicleTimeline]);
+
 
   // رانِ فریم‌ها بر اساس سرعت
   React.useEffect(() => {
     clearAnimTimer();
     if (!animState.playing || !animState.mode) return;
 
-    const interval = Math.max(20, ANIM_BASE_MS / (animState.speed || 1));
+    const tl = animState.mode === 'driver' ? driverTimeline : vehicleTimeline;
+    if (!tl) return;
+
+    const interval = Math.max(20, ANIM_BASE_MS); // فریم پایه ثابت، سرعت را با delta اعمال می‌کنیم
     animTimerRef.current = window.setInterval(() => {
       setAnimState(s => {
         if (!s.mode) return s;
-        const pts = getActivePts(s.mode);
-        if (!pts || pts.length < 2) return { ...s, playing: false };
+        const TL = s.mode === 'driver' ? driverTimeline : vehicleTimeline;
+        if (!TL) return { ...s, playing: false };
 
-        const nextIdx = Math.min(s.idx + 1, pts.length - 1);
-        if (nextIdx >= pts.length - 1) {
-          // رسید به آخر
-          clearAnimTimer();
-          return { ...s, idx: nextIdx, playing: false };
+        // delta = interval * speed
+        const delta = interval * (s.speed || 1);
+        let acc = (s.accMs || 0) + delta;
+
+        if (acc < TL.stepMs) {
+          return { ...s, accMs: acc };
         }
-        return { ...s, idx: nextIdx };
+
+        const advance = Math.floor(acc / TL.stepMs);
+        const nextIdx = Math.min(s.idx + advance, TL.T);
+        acc = acc % TL.stepMs;
+
+        const atEnd = nextIdx >= TL.T;
+        return {
+          ...s,
+          idx: nextIdx,
+          accMs: acc,
+          playing: atEnd ? false : s.playing
+        };
       });
     }, interval);
 
     return () => clearAnimTimer();
-  }, [animState.playing, animState.mode, animState.speed, getActivePts]);
+  }, [animState.playing, animState.mode, animState.speed, driverTimeline, vehicleTimeline]);
 
   // وقتی ترک تغییر می‌کند، ایندکس را ریست کن تا با ترک جدید هم‌راستا شود
   React.useEffect(() => {
@@ -13583,32 +14505,53 @@ function OwnerRoleSection({ user }: { user: User }) {
   }, [vehicleTrackPts]);
 
   // اگر تب عوض شد، پخش را متوقف کن تا اشتباهی نماند
-  React.useEffect(() => { stopAnimation(); setAnimState({ mode: null, idx: 0, playing: false, speed: 1, follow: true }); }, [tab, stopAnimation]);
+  React.useEffect(() => {
+    setAnimState(s => ({ ...s, idx: 0, accMs: 0, playing: false }));
+  }, [fromISO, toISO]);
   // === ANIMATION: layer ===
-  function TrackAnimationLayer({ pts, idx, follow }: { pts: [number, number][], idx: number, follow: boolean }) {
+  function TrackAnimationLayer({
+    timeline, idx, accMs, follow,
+  }: { timeline: Timeline; idx: number; accMs: number; follow: boolean }) {
     const map = useMap();
-    const safeIdx = Math.min(Math.max(0, idx), Math.max(0, pts.length - 1));
-    const head = pts[safeIdx];
+    const clampedIdx = Math.min(Math.max(0, idx), timeline.T);
+    const nowMs = timeline.startMs + clampedIdx * timeline.stepMs + (accMs || 0);
+    if (!timeline?.arr?.length) return null;
+
+    const pos = React.useMemo(() => interpAtMs(timeline, nowMs), [timeline, nowMs]);
+    const traversed = React.useMemo(() => {
+      // همهٔ نقاطی که زمانشان <= nowMs
+      const arr = timeline.arr;
+      if (!arr.length) return [] as [number, number][];
+      let i = arr.findIndex(p => p.ts > nowMs);
+      if (i < 0) i = arr.length;
+      const base = arr.slice(0, Math.max(1, i)).map(p => [p.lat, p.lng] as [number, number]);
+      // آخرین قطعه را با نقطهٔ اینتِرپوله اضافه کن
+      if (pos && base.length && (base[base.length - 1][0] !== pos.lat || base[base.length - 1][1] !== pos.lng)) {
+        base.push([pos.lat, pos.lng]);
+      }
+      return base;
+    }, [timeline, nowMs, pos?.lat, pos?.lng]);
 
     React.useEffect(() => {
-      if (follow && head) {
-        // پانِ نرم به نقطه‌ی فعلی
-        (map as any).panTo(head, { animate: true, duration: 0.25 });
-      }
-    }, [head?.[0], head?.[1], follow, map]);
+      if (follow && pos) (map as any).panTo([pos.lat, pos.lng], { animate: true, duration: 0.25 });
+    }, [follow, pos?.lat, pos?.lng, map]);
 
-    if (!pts || pts.length < 2) return null;
+    if (!pos) return null;
 
     return (
       <>
-        <Polyline positions={pts.slice(0, safeIdx + 1)} pathOptions={{ color: '#ff9800', weight: 5, opacity: 0.9 }} />
-        <Marker position={pts[0]} icon={badgeIcon('شروع', '#43a047') as any} />
-        <Marker position={head} icon={badgeIcon('پخش', '#ff9800') as any} />
-        {/* انتهای مسیر برای مرجع */}
-        <Marker position={pts[pts.length - 1]} icon={badgeIcon('پایان', '#e53935') as any} />
+        {/* مسیر طی‌شده تا این لحظه */}
+        {traversed.length > 1 && (
+          <Polyline positions={traversed} pathOptions={{ weight: 3, opacity: 0.85 }} />
+        )}
+        {/* مارکرِ در حال پخش */}
+        <Marker position={[pos.lat, pos.lng]} icon={badgeIcon('پخش', '#ff9800') as any} />
       </>
     );
   }
+
+
+
 
   const loadDriverKPI = React.useCallback(
     async (driverId: number, from = fromISO, to = toISO) => {
@@ -13765,7 +14708,7 @@ function OwnerRoleSection({ user }: { user: User }) {
   const [sheetMode, setSheetMode] = React.useState<'vehicle' | 'driver' | null>(null);
 
   const [drawingRoute, setDrawingRoute] = React.useState(false);
-  const [routePoints, setRoutePoints] = useState<{ lat: number; lng: number }[]>([]);
+  const [routePoints, setRoutePoints] = React.useState<{ lat: number; lng: number }[]>([]);
   const [routeName, setRouteName] = useState('');
   const [routeThreshold, setRouteThreshold] = useState<number>(100);
   // کلیک‌گیر روی نقشه
@@ -14103,7 +15046,6 @@ function OwnerRoleSection({ user }: { user: User }) {
     return p;
   }
 
-  // REPLACE
   async function fetchDriverViolations(
     api: any,
     driverId: number,
@@ -14115,13 +15057,10 @@ function OwnerRoleSection({ user }: { user: User }) {
       const { data } = await api.get(`/drivers/${driverId}/violations`, { params });
       return data;
     } catch {
-      // آخرین فالبک (در صورت یکی‌بودن دیتامدل)
       const { data } = await api.get('/violations', { params: { ...params, driver_id: String(driverId) } });
       return data;
     }
   }
-
-
 
 
 
@@ -14870,14 +15809,22 @@ function OwnerRoleSection({ user }: { user: User }) {
         const ds = await fetchBranchDrivers();
         if (!alive) return;
         setDrivers(ds);
+
+        setStatsLoading(true);
+        await fetchStats(ds.map(d => d.id), fromISO, toISO);
       } catch (e) {
         console.error('[branch-manager] init error:', e);
       } finally {
-        if (alive) setInitLoading(false);
+        if (alive) {
+          setStatsLoading(false);
+          setInitLoading(false);
+        }
       }
     })();
     return () => { alive = false; };
-  }, [user?.id]); // ⬅️ از fromISO/toISO اینجا حذف شد
+  }, [user?.id, fromISO, toISO, fetchStats]);
+
+
   React.useEffect(() => {
     if (!drivers.length) return;
     let alive = true;
@@ -14926,17 +15873,6 @@ function OwnerRoleSection({ user }: { user: User }) {
     return Array.from(all);
   }, [availableTypes, grantedPerType]);
 
-  React.useEffect(() => {
-    (async () => {
-      try {
-        setLoading(true);
-        const ds = await fetchBranchDrivers();
-        setDrivers(ds);
-        await fetchStats(ds.map(d => d.id), fromISO, toISO);
-      } catch (e) { console.error('[branch-manager] init error:', e); }
-      finally { setLoading(false); }
-    })();
-  }, [user?.id, fromISO, toISO, fetchStats]);
 
   // ✅ فقط گرانت‌ها
   React.useEffect(() => {
@@ -15230,34 +16166,6 @@ function OwnerRoleSection({ user }: { user: User }) {
   }
 
 
-
-
-  // این نسخه را بگذار جای fetchVehiclesOfType فعلی‌ت
-
-
-
-
-
-  // REPLACE: قبلاً parentSA?.id تکی بود؛ الان از parentSAIds استفاده کن
-  // ✅ فقط همین
-  React.useEffect(() => {
-    if (!activeType) return;
-    fetchVehiclesOfType(activeType);
-  }, [activeType, parentSAId, fetchVehiclesOfType]);
-
-
-
-
-  // --- جایگزین این تابع کن ---
-
-
-
-
-
-  // وقتی تب نوع فعال شد، ماشین‌های همان نوع را بگیر و سابسکرایب pos
-
-
-
   React.useEffect(() => {
     const s = socketRef.current;
     if (!s || !activeType || !canTrackVehicles) return;
@@ -15354,74 +16262,53 @@ function OwnerRoleSection({ user }: { user: User }) {
       });
     };
 
-    // --- NEW: هندلر کیلومترشمار ---
-    const onOdo = (data: { vehicle_id: number; odometer: number }) => {
-      // فقط اگر همین ماشینی‌ست که الان انتخاب شده
-      if (selectedVehicleIdRef.current === data.vehicle_id) {
-        setVehicleTlm(prev => ({ ...prev, odometer: data.odometer }));
+    const onOdo = (d: { vehicle_id: number; odometer: number }) => {
+      if (selectedVehicleIdRef.current === d.vehicle_id) {
+        setVehicleTlm(prev => ({ ...prev, odometer: d.odometer }));
       }
     };
-    s.on('vehicle:ignition', (d: { vehicle_id: number; ignition: boolean }) =>
-      selectedVehicleIdRef.current === d.vehicle_id && setVehicleTlm(p => ({ ...p, ignition: d.ignition })));
 
-    s.on('vehicle:idle_time', (d: { vehicle_id: number; idle_time: number }) =>
-      selectedVehicleIdRef.current === d.vehicle_id && setVehicleTlm(p => ({ ...p, idle_time: d.idle_time })));
-
-    s.on('vehicle:odometer', (d: { vehicle_id: number; odometer: number }) =>
-      selectedVehicleIdRef.current === d.vehicle_id && setVehicleTlm(p => ({ ...p, odometer: d.odometer })));
-
-    // === ثبت لیسنرها ===
-    s.on('driver:pos', onDriverPos);
-    s.on('vehicle:pos', onVehiclePos);
-    s.on('vehicle:stations', onStations);
-    s.on('vehicle:odometer', onOdo);   // ⬅️ این خط جدید
-    // --- VIOLATIONS: handler ---
     const onViolation = (msg: any) => {
       const v = normalizeViolations(msg?.violation ?? msg, msg?.vehicle_id ?? msg?.vehicleId)[0];
       if (!v) return;
       setViolationsByVid(prev => {
         const cur = prev[v.vehicle_id] || [];
-        // اگر فیلتر severe فعال است، اینجا رد نکن—در UI فیلتر کن که تاریخچه حفظ بماند
-        // از تکرار جلوگیری
         const exists = v.id && cur.some(x => x.id === v.id);
-        const next = exists ? cur : [v, ...cur];
-        return { ...prev, [v.vehicle_id]: next };
+        return { ...prev, [v.vehicle_id]: exists ? cur : [v, ...cur] };
       });
     };
 
-    // ثبت لیسنر
+    s.on('driver:pos', onDriverPos);
+    s.on('vehicle:pos', onVehiclePos);
+    s.on('vehicle:stations', onStations);
+    s.on('vehicle:odometer', onOdo);
     s.on('vehicle:violation', onViolation);
 
-    // پاکسازی
-    // ...
-
-    // === پاکسازی ===
     return () => {
-      // آن‌سابسکرایب pos ها
-      subscribedVehiclesRef.current.forEach((id) => {
-        s.emit('unsubscribe', { topic: `vehicle/${id}/pos` });
-      });
-      subscribedVehiclesRef.current = new Set();
-
-      // آن‌سابسکرایب stations
+      // آزادسازی همه‌ی سابسکرایب‌های pos
+      if (subscribedVehiclesRef.current.size) {
+        subscribedVehiclesRef.current.forEach(id => s.emit('unsubscribe', { topic: `vehicle/${id}/pos` }));
+        subscribedVehiclesRef.current.clear();
+      }
+      // stations
       if (lastStationsSubRef.current) {
         const { vid, uid } = lastStationsSubRef.current;
         s.emit('unsubscribe', { topic: `vehicle/${vid}/stations/${uid}` });
+        s.emit('unsubscribe', { topic: `vehicle/${vid}/stations` });
         lastStationsSubRef.current = null;
       }
-      s.off('vehicle:violation', onViolation);
+      // telemetry topics
+      if (lastIgnVidRef.current) { s.emit('unsubscribe', { topic: `vehicle/${lastIgnVidRef.current}/ignition` }); lastIgnVidRef.current = null; }
+      if (lastIdleVidRef.current) { s.emit('unsubscribe', { topic: `vehicle/${lastIdleVidRef.current}/idle_time` }); lastIdleVidRef.current = null; }
+      if (lastTelemOdoVidRef.current) { s.emit('unsubscribe', { topic: `vehicle/${lastTelemOdoVidRef.current}/odometer` }); lastTelemOdoVidRef.current = null; }
+      if (lastVioVidRef.current) { s.emit('unsubscribe', { topic: `vehicle/${lastVioVidRef.current}/violations` }); lastVioVidRef.current = null; }
 
-      // --- NEW: آن‌سابسکرایب از تاپیک odometer اگر فعال بود
-      if (lastTelemOdoVidRef.current) {
-        s.emit('unsubscribe', { topic: `vehicle/${lastTelemOdoVidRef.current}/odometer` });
-        lastTelemOdoVidRef.current = null;
-      }
-
-      // off هندلرها
+      // off هندلرها (همه نام‌دارند تا واقعا off شوند)
       s.off('driver:pos', onDriverPos);
       s.off('vehicle:pos', onVehiclePos);
       s.off('vehicle:stations', onStations);
       s.off('vehicle:odometer', onOdo);
+      s.off('vehicle:violation', onViolation);
 
       s.disconnect();
       socketRef.current = null;
@@ -15568,129 +16455,86 @@ function OwnerRoleSection({ user }: { user: User }) {
 
   const lastTelemOdoVidRef = React.useRef<number | null>(null);
 
-  // ===== Map click helper =====
-  // بیرون از BranchManagerRoleSection.tsx (یا بالا، خارج از بدنه‌ی تابع)
+  const loadVehicleGeofences = React.useCallback(async (vid: number) => {
+    try {
+      const { data } = await api.get(`/vehicles/${vid}/geofence`, {
+        params: { _: Date.now() }, headers: { 'Cache-Control': 'no-store' },
+      });
+      const list = normalizeGeofences(data);
+      setGeofencesByVid(p => ({ ...p, [vid]: list }));
+      return list;
+    } catch {
+      setGeofencesByVid(p => ({ ...p, [vid]: [] }));
+      return [];
+    }
+  }, [api]);
 
   const onPickVehicleBM = React.useCallback(async (v: Vehicle) => {
     setSelectedVehicleId(v.id);
-    await loadVehicleGeofences(v.id);
-    setSheetOpen(true);        // ⬅️ این خط را اضافه کن
+    setSheetOpen(true);
     setSheetMode('vehicle');
-    await loadViolations(v.id);
 
-    // ریست حالت‌های افزودن/ادیت ایستگاه
+    // تمرکز نقشه
+    if (v.last_location) setFocusLatLng([v.last_location.lat, v.last_location.lng]);
+
+    // مسیر و ترک
+    await loadVehicleRoute(v.id);
+    await loadVehicleTrack(v.id, fromISO, toISO);
+
+    // ژئوفنس
+    await loadVehicleGeofences(v.id);
+
+    // ایستگاه‌ها
     setAddingStationsForVid(null);
     setEditingStation(null);
     setMovingStationId(null);
     setTempStation(null);
-    await loadVehicleRoute(v.id);
+    if (canStations) await ensureStationsLive(v.id);
+    else await fetchStations(v.id);
 
-    if (v.last_location) setFocusLatLng([v.last_location.lat, v.last_location.lng]);
-
-    // ایستگاه‌ها (در صورت مجوز)
-    if (canStations) {
-      await ensureStationsLive(v.id);   // subscribe + fetch
-    } else {
-      await fetchStations(v.id);        // فقط fetch برای نمایش روی نقشه
-    }
-    const s = socketRef.current;
-    if (s && canViolations) {
-      if (lastVioVidRef.current && lastVioVidRef.current !== v.id) {
-        s.emit('unsubscribe', { topic: `vehicle/${lastVioVidRef.current}/violations` });
-        lastVioVidRef.current = null;
+    // تخلفات (فچ اولیه + سابسکرایب لایو)
+    if (canViolations) {
+      const s = socketRef.current;
+      if (s) {
+        if (lastVioVidRef.current && lastVioVidRef.current !== v.id) {
+          s.emit('unsubscribe', { topic: `vehicle/${lastVioVidRef.current}/violations` });
+        }
+        s.emit('subscribe', { topic: `vehicle/${v.id}/violations` });
+        lastVioVidRef.current = v.id;
       }
-      s.emit('subscribe', { topic: `vehicle/${v.id}/violations` });
-      lastVioVidRef.current = v.id;
-
-      // فچ اولیه در بازه انتخابی
       await refreshViolations(v.id, fromISO, toISO);
     }
 
-    // --- آزاد کردن سابسکرایب‌های قبلی تله‌متری (هر کدام جدا) ---
-    if (s && lastIgnVidRef.current && lastIgnVidRef.current !== v.id) {
-      s.emit('unsubscribe', { topic: `vehicle/${lastIgnVidRef.current}/ignition` });
-      lastIgnVidRef.current = null;
-    }
-    if (s && lastIdleVidRef.current && lastIdleVidRef.current !== v.id) {
-      s.emit('unsubscribe', { topic: `vehicle/${lastIdleVidRef.current}/idle_time` });
-      lastIdleVidRef.current = null;
-    }
-
-
-    // مقادیر قبلی تله‌متری را پاک کن (تا UI وضعیت نامشخص نشان دهد)
+    // تله‌متری (کلیدهای مجاز)
     setVehicleTlm({});
-
-    // ===== فچ اولیه تله‌متری (صرفاً برای کلیدهای مجاز) =====
-    try {
-      const keysWanted: ('ignition' | 'idle_time' | 'odometer')[] = [];
-      if (canIgnition) keysWanted.push('ignition');
-      if (canIdleTime) keysWanted.push('idle_time');
-      if (canOdometer) keysWanted.push('odometer');
-
-      if (keysWanted.length) {
-        const { data } = await api.get(`/vehicles/${v.id}/telemetry`, { params: { keys: keysWanted } });
-
-        const next: { ignition?: boolean; idle_time?: number; odometer?: number } = {};
-        if (typeof data?.ignition === 'boolean') next.ignition = data.ignition;
-        if (typeof data?.idle_time === 'number') next.idle_time = data.idle_time;
-        if (typeof data?.odometer === 'number') next.odometer = data.odometer;
-
-        setVehicleTlm(next);
-      }
-    } catch {
-      // مشکلی نبود؛ بعداً از سوکت آپدیت می‌گیریم
-    }
-
-    // ===== سابسکرایب تله‌متری برای ماشین انتخاب‌شده (هر کدام که مجاز است) =====
+    const s = socketRef.current;
     if (s) {
-      if (canIgnition) {
-        s.emit('subscribe', { topic: `vehicle/${v.id}/ignition` });
-        lastIgnVidRef.current = v.id;
-      }
-      if (canIdleTime) {
-        s.emit('subscribe', { topic: `vehicle/${v.id}/idle_time` });
-        lastIdleVidRef.current = v.id;  // ✅ درست
-      }
-
-      if (canOdometer) {
-        s.emit('subscribe', { topic: `vehicle/${v.id}/odometer` });
-        lastTelemOdoVidRef.current = v.id;
-      }
+      if (canIgnition) { s.emit('subscribe', { topic: `vehicle/${v.id}/ignition` }); lastIgnVidRef.current = v.id; }
+      if (canIdleTime) { s.emit('subscribe', { topic: `vehicle/${v.id}/idle_time` }); lastIdleVidRef.current = v.id; }
+      if (canOdometer) { s.emit('subscribe', { topic: `vehicle/${v.id}/odometer` }); lastTelemOdoVidRef.current = v.id; }
     }
-    // ژئوفنس (در صورت مجوز)
-    setSelectedVehicleId(v.id);
-    await loadVehicleGeofences(v.id); // همین یکی بماند
-    await loadVehicleTrack(v.id, fromISO, toISO);
-
-
-
-
-    // ===== لوازم مصرفی (کاملاً مستقل از تله‌متری) =====
-    if (canConsumables) {
-      // اسنپ‌شات لوکال
-      const snap = loadConsLocal(v.id);
-      if (snap.length) {
-        setConsumablesByVid(p => ({ ...p, [v.id]: snap }));
-        setConsStatusByVid(p => ({ ...p, [v.id]: 'loaded' }));
-      } else {
-        setConsumablesByVid(p => ({ ...p, [v.id]: [] }));
-        setConsStatusByVid(p => ({ ...p, [v.id]: 'loading' }));
+    try {
+      const keys: ('ignition' | 'idle_time' | 'odometer')[] = [];
+      if (canIgnition) keys.push('ignition');
+      if (canIdleTime) keys.push('idle_time');
+      if (canOdometer) keys.push('odometer');
+      if (keys.length) {
+        const { data } = await api.get(`/vehicles/${v.id}/telemetry`, { params: { keys } });
+        setVehicleTlm({
+          ignition: typeof data?.ignition === 'boolean' ? data.ignition : undefined,
+          idle_time: typeof data?.idle_time === 'number' ? data.idle_time : undefined,
+          odometer: typeof data?.odometer === 'number' ? data.odometer : undefined,
+        });
       }
-      // همسان‌سازی از سرور
-      refreshConsumables(v.id);
-    } else {
-      setConsumablesByVid(p => ({ ...p, [v.id]: [] }));
-      setConsStatusByVid(p => ({ ...p, [v.id]: 'idle' }));
-    }
+    } catch { /* نادیده بگیر؛ لایو می‌آید */ }
   }, [
-    canStations,
-    ensureStationsLive,
-    canConsumables,
-    refreshConsumables,
-    canIgnition,
-    canIdleTime,
-    canOdometer,
+    canStations, ensureStationsLive, fetchStations,
+    canViolations, refreshViolations,
+    canIgnition, canIdleTime, canOdometer,
+    loadVehicleRoute, loadVehicleTrack, loadVehicleGeofences,
+    fromISO, toISO
   ]);
+
 
 
 
@@ -15857,19 +16701,7 @@ function OwnerRoleSection({ user }: { user: User }) {
     return null;
   }
 
-  async function loadVehicleGeofences(vid: number) {
-    try {
-      const { data } = await api.get(`/vehicles/${vid}/geofence`, {
-        params: { _: Date.now() }, headers: { 'Cache-Control': 'no-store' }
-      });
-      const list = normalizeGeofences(data); // تک آبجکت را هم آرایه می‌کند
-      setGeofencesByVid(p => ({ ...p, [vid]: list }));
-      return list;
-    } catch {
-      setGeofencesByVid(p => ({ ...p, [vid]: [] }));
-      return [];
-    }
-  }
+
   React.useEffect(() => {
     if (selectedVehicleId && canViolations) {
       refreshViolations(selectedVehicleId, fromISO, toISO);
@@ -15877,17 +16709,17 @@ function OwnerRoleSection({ user }: { user: User }) {
   }, [selectedVehicleId, canViolations, fromISO, toISO, refreshViolations]);
 
 
-  const saveEditConsumable = async () => {
+  const saveEditConsumable = React.useCallback(async () => {
     if (!selectedVehicleId || !editingCons?.id) return;
     setSavingCons(true);
     try {
       const payload: any = { mode: editingCons.mode, note: (editingCons.note ?? '').trim() };
       if (editingCons.mode === 'time') {
-        if (!editingCons.start_at) { alert('start_at لازم است'); setSavingCons(false); return; }
+        if (!editingCons.start_at) { alert('start_at لازم است'); return; }
         payload.start_at = new Date(editingCons.start_at).toISOString();
       } else {
         const n = Number(editingCons.base_odometer_km);
-        if (!Number.isFinite(n)) { alert('base_odometer_km معتبر نیست'); setSavingCons(false); return; }
+        if (!Number.isFinite(n)) { alert('base_odometer_km معتبر نیست'); return; }
         payload.base_odometer_km = n;
       }
       await updateConsumable(selectedVehicleId, editingCons.id, payload);
@@ -15896,8 +16728,11 @@ function OwnerRoleSection({ user }: { user: User }) {
     } catch (e: any) {
       console.error('PATCH /consumables failed:', e?.response?.data || e);
       alert(e?.response?.data?.message || 'خطا در ویرایش آیتم روی سرور');
-    } finally { setSavingCons(false); }
-  };
+    } finally {
+      setSavingCons(false);
+    }
+  }, [selectedVehicleId, editingCons, updateConsumable, refreshConsumables]);
+
 
   const deleteConsumable = async (c: any) => {
     if (!selectedVehicleId || !c?.id) return;
@@ -16089,35 +16924,88 @@ function OwnerRoleSection({ user }: { user: User }) {
             <Pane name="vehicles-layer" style={{ zIndex: 650 }}>
               {/* === ANIMATION-aware track rendering === */}
               {(() => {
-                const isAnimDriver = animState.mode === 'driver' && tab === 'drivers' && driverTrackPts.length > 1;
-                const isAnimVehicle = animState.mode === 'vehicle' && tab !== 'drivers' && vehicleTrackPts.length > 1;
+                const modeIsDriver = tab === 'drivers';
 
-                // DRIVER
-                if (tab === 'drivers') {
-                  return isAnimDriver ? (
-                    <TrackAnimationLayer pts={driverTrackPts} idx={animState.idx} follow={animState.follow} />
-                  ) : (
+                // آیا در حالت پخش هستیم و تایم‌لاین آماده است؟
+                const animDriverOn = animState.mode === 'driver' && modeIsDriver && !!driverTimeline && (driverTimeline!.arr.length > 0);
+                const animVehicleOn = animState.mode === 'vehicle' && !modeIsDriver && !!vehicleTimeline && (vehicleTimeline!.arr.length > 0);
+
+
+                // === DRIVER ===
+                if (modeIsDriver) {
+                  if (animDriverOn) {
+                    return (
+                      <>
+                        {/* مسیر کامل، کم‌رنگ زیر مارکرِ در حال پخش */}
+                        {driverTrackPts.length > 1 && (
+                          <Polyline
+                            positions={driverTrackPts}
+                            pathOptions={{ color: '#1976d2', weight: 3, opacity: 0.25 }}
+                          />
+                        )}
+
+                        {/* لایه‌ی انیمیشن با اینتِرپولیشنِ زمانی */}
+                        <TrackAnimationLayer
+                          timeline={driverTimeline!}
+                          idx={animState.idx}
+                          accMs={animState.accMs}
+                          follow={animState.follow}
+                        />
+                      </>
+                    );
+                  }
+
+                  // حالت استاتیک (بدون پخش): فیت روی ترک + رسم پررنگ
+                  return (
                     driverTrackPts.length > 1 && (
                       <>
                         <FitToTrack pts={driverTrackPts} />
-                        <Polyline positions={driverTrackPts} pathOptions={{ color: '#1976d2', weight: 4, opacity: 0.9 }} />
+                        <Polyline
+                          positions={driverTrackPts}
+                          pathOptions={{ color: '#1976d2', weight: 4, opacity: 0.9 }}
+                        />
                       </>
                     )
                   );
                 }
 
-                // VEHICLE
-                return isAnimVehicle ? (
-                  <TrackAnimationLayer pts={vehicleTrackPts} idx={animState.idx} follow={animState.follow} />
-                ) : (
+                // === VEHICLE ===
+                if (animVehicleOn) {
+                  return (
+                    <>
+                      {/* مسیر کامل، کم‌رنگ زیر مارکرِ در حال پخش */}
+                      {vehicleTrackPts.length > 1 && (
+                        <Polyline
+                          positions={vehicleTrackPts}
+                          pathOptions={{ color: '#00796b', weight: 3, opacity: 0.25 }}
+                        />
+                      )}
+
+                      {/* لایه‌ی انیمیشن با اینتِرپولیشنِ زمانی */}
+                      <TrackAnimationLayer
+                        timeline={vehicleTimeline!}
+                        idx={animState.idx}
+                        accMs={animState.accMs}
+                        follow={animState.follow}
+                      />
+                    </>
+                  );
+                }
+
+                // حالت استاتیک خودرو
+                return (
                   vehicleTrackPts.length > 1 && (
                     <>
                       <FitToTrack pts={vehicleTrackPts} />
-                      <Polyline positions={vehicleTrackPts} pathOptions={{ color: '#00796b', weight: 4, opacity: 0.9 }} />
+                      <Polyline
+                        positions={vehicleTrackPts}
+                        pathOptions={{ color: '#00796b', weight: 4, opacity: 0.9 }}
+                      />
                     </>
                   )
                 );
               })()}
+
 
               {/* راننده‌ها + مسیر لحظه‌ای راننده (حفظ منطق) */}
               {tab === 'drivers' && canTrackDrivers && filteredDrivers.map(d => (d as any).last_location && (
@@ -16356,7 +17244,7 @@ function OwnerRoleSection({ user }: { user: User }) {
                         size="small"
                         variant="outlined"
                         color="error"
-                        onClick={() => { stopAnimation(); setAnimState({ mode: animState.mode, idx: 0, playing: false, speed: 1, follow: animState.follow }); }}
+                        onClick={() => { stopAnimation(); setAnimState(s => ({ ...s, idx: 0, playing: false, speed: 1, accMs: 0 })); }}
                         disabled={!animState.mode}
                       >
                         پایان
@@ -16375,6 +17263,8 @@ function OwnerRoleSection({ user }: { user: User }) {
                         <MenuItem value="1">۱×</MenuItem>
                         <MenuItem value="2">۲×</MenuItem>
                         <MenuItem value="4">۴×</MenuItem>
+                        <MenuItem value="8">۸×</MenuItem>
+                        <MenuItem value="10">۱۰×</MenuItem>
                       </TextField>
 
                       {/* follow */}
@@ -16393,24 +17283,34 @@ function OwnerRoleSection({ user }: { user: User }) {
 
                     {/* اسلایدر پیشرفت */}
                     {(() => {
-                      const pts = getActivePts(animState.mode);
-                      const max = Math.max(0, pts.length - 1);
+                      const tl = animState.mode === 'driver' ? driverTimeline
+                        : animState.mode === 'vehicle' ? vehicleTimeline
+                          : null;
+
+                      const max = tl ? tl.T : 0;
+
                       return (
                         <Box sx={{ px: 1, mt: 0.5 }}>
                           <Slider
                             size="small"
                             value={Math.min(animState.idx, max)}
                             min={0}
-                            max={max || 1}
+                            max={Math.max(1, max)}
                             onChange={(_, v) => {
                               const idx = Array.isArray(v) ? v[0] : v;
-                              setAnimState(s => ({ ...s, idx: Number(idx), playing: false }));
+                              setAnimState(s => ({ ...s, idx: Number(idx), playing: false, accMs: 0 }));
                             }}
                             valueLabelDisplay="auto"
+                            valueLabelFormat={(v) => {
+                              if (!tl) return `${v}`;
+                              const sec = tl.startSec + v;
+                              return new Date(sec * 1000).toLocaleTimeString('fa-IR');
+                            }}
                           />
                         </Box>
                       );
                     })()}
+
                   </Paper>
                 )}
 
@@ -16658,7 +17558,7 @@ function OwnerRoleSection({ user }: { user: User }) {
                                 startAnimation('driver');
 
                                 // اگر دوست دارید ماشین فعلی راننده هم در سایدبار انتخاب شود (اختیاری):
-                                const vid = await getDriverCurrentVehicleId(d.id).catch(() => null);
+                                const vid = await getCurrentVehicleIdSafe(api, d.id).catch(() => null);
                                 if (vid) setSelectedVehicleId(vid);
                               }}
                             >
@@ -17483,6 +18383,102 @@ function TechnicianRoleSection({ user }: { user: User }) {
   const selectedDriverIdRef = React.useRef<number | null>(null);
   React.useEffect(() => { selectedDriverIdRef.current = selectedDriverId; }, [selectedDriverId]);
   // (selectedVehicleIdRef قبلاً داری؛ همون کافیه)
+  // === ANIMATION: timeline model (time-based) ===
+  type TLPoint = { lat: number; lng: number; ts: number }; // ms
+  type Timeline = {
+    stepMs: number;          // 1000
+    startMs: number;         // از from
+    endMs: number;           // تا to
+    startSec: number;
+    endSec: number;
+    T: number;               // تعداد گام‌های اسلایدر (ثانیه)
+    arr: TLPoint[];          // نقاط مرتب بر اساس زمان
+    secIdx: Map<number, number>; // sec -> index در arr (آخرینِ آن ثانیه)
+  };
+  function lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
+
+  function interpAtMs(tl: Timeline, tMs: number): { lat: number; lng: number } | null {
+    const a = tl.arr;
+    if (!a.length) return null;
+    if (tMs <= a[0].ts) return { lat: a[0].lat, lng: a[0].lng };
+    if (tMs >= a[a.length - 1].ts) return { lat: a[a.length - 1].lat, lng: a[a.length - 1].lng };
+
+    // باینری سرچ
+    let lo = 0, hi = a.length - 1;
+    while (lo + 1 < hi) {
+      const mid = (lo + hi) >> 1;
+      if (a[mid].ts <= tMs) lo = mid; else hi = mid;
+    }
+    const p = a[lo], n = a[hi];
+    const span = (n.ts - p.ts) || 1;
+    const tt = Math.min(1, Math.max(0, (tMs - p.ts) / span));
+    return { lat: lerp(p.lat, n.lat, tt), lng: lerp(p.lng, n.lng, tt) };
+  }
+
+  const STEP_MS = 1000;
+  const [driverTimeline, setDriverTimeline] = React.useState<Timeline | null>(null);
+  const [vehicleTimeline, setVehicleTimeline] = React.useState<Timeline | null>(null);
+  function buildTimeline(points: Array<{ lat: number; lng: number; ts: number }>, fromISO: string, toISO: string): Timeline | null {
+    const from = +new Date(fromISO), to = +new Date(toISO);
+    if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return null;
+
+    const rows = points
+      .filter(p => p.ts >= from && p.ts <= to)
+      .map(p => ({ lat: +p.lat, lng: +p.lng, ts: +p.ts }))
+      .filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lng) && Number.isFinite(p.ts))
+      .sort((a, b) => a.ts - b.ts);
+
+    if (rows.length === 0) return null; // ⬅️ مهم
+
+    const startSec = Math.floor(from / 1000);
+    const endSec = Math.floor(to / 1000);
+    const T = Math.max(0, endSec - startSec);
+
+    const secIdx = new Map<number, number>();
+    rows.forEach((p, i) => {
+      const s = Math.floor(p.ts / 1000);
+      const prev = secIdx.get(s);
+      if (prev == null || rows[i].ts >= rows[prev].ts) secIdx.set(s, i);
+    });
+
+    return { stepMs: 1000, startMs: from, endMs: to, startSec, endSec, T, arr: rows, secIdx };
+  }
+
+  // نقاط را با ts فلت می‌کند (gps_points/points/track_points/... را پوشش می‌دهد)
+  const normalizeTrackRowsWithTs = (payload: any): Array<{ lat: number; lng: number; ts: number }> => {
+    // همان منطق normalizeTrackPoints اما با ts
+    let arr: any[] =
+      Array.isArray(payload) ? payload :
+        Array.isArray(payload?.items) ? payload.items :
+          Array.isArray(payload?.data?.items) ? payload.data.items :
+            Array.isArray(payload?.data) ? payload.data :
+              Array.isArray(payload?.rows) ? payload.rows :
+                Array.isArray(payload?.points) ? payload.points :
+                  Array.isArray(payload?.track_points) ? payload.track_points :
+                    [];
+
+    // اگر آرایهٔ بلاک‌هاست، gps_points/points/... را فلت کن
+    const out: any[] = [];
+    arr.forEach((r: any) => {
+      if (Array.isArray(r?.gps_points)) out.push(...r.gps_points);
+      else if (Array.isArray(r?.track_points)) out.push(...r.track_points);
+      else if (Array.isArray(r?.trackPoints)) out.push(...r.trackPoints);
+      else if (Array.isArray(r?.points)) out.push(...r.points);
+      else out.push(r); // شاید خودِ آیتم همین نقطه باشد
+    });
+
+    const rows = out.map((p: any, i: number) => {
+      const lat = Number(p?.lat ?? p?.latitude ?? p?.y ?? (Array.isArray(p) ? p[0] : undefined));
+      const lng = Number(p?.lng ?? p?.lon ?? p?.long ?? p?.longitude ?? p?.x ?? (Array.isArray(p) ? p[1] : undefined));
+      const tRaw = p?.ts ?? p?.timestamp ?? p?.t ?? p?.time ?? p?.at ?? p?.created_at ?? p?.createdAt;
+      const ts = Number.isFinite(+tRaw) ? +tRaw : Date.parse(String(tRaw)) || NaN;
+      return { lat, lng, ts };
+    })
+      .filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng) && Number.isFinite(r.ts))
+      .sort((a, b) => a.ts - b.ts);
+
+    return rows;
+  };
 
   const myDriverIds = React.useMemo(() => new Set(drivers.map(d => d.id)), [drivers]);
   const DEFAULT_PERMS: string[] = ['view_report'];
@@ -17650,7 +18646,17 @@ function TechnicianRoleSection({ user }: { user: User }) {
         // gps_points ها را از تمام آیتم‌ها فلت کن
         const rawPts: any[] = (Array.isArray(data?.items) ? data.items : [])
           .flatMap((it: any) => Array.isArray(it?.gps_points) ? it.gps_points : []);
-
+        const rows = rawPts.map((p: any, i: number) => {
+          const lat = Number(p?.lat ?? p?.latitude ?? p?.y ?? (Array.isArray(p) ? p[0] : undefined));
+          const lng = Number(p?.lng ?? p?.lon ?? p?.long ?? p?.longitude ?? p?.x ?? (Array.isArray(p) ? p[1] : undefined));
+          const tRaw = p?.ts ?? p?.timestamp ?? p?.t ?? p?.time ?? p?.at ?? p?.created_at ?? p?.createdAt;
+          const ts = Number.isFinite(+tRaw) ? +tRaw : Date.parse(String(tRaw)) || NaN;
+          return { lat, lng, ts };
+        }).filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng) && Number.isFinite(r.ts))
+          .sort((a, b) => a.ts - b.ts);
+        setDriverTrackPts(rows.map(r => [r.lat, r.lng] as [number, number])); // برای رندر استاتیک
+        setDriverTimeline(buildTimeline(rows, from, to));                      // ⬅️ جدید
+        if (rows.length) setFocusLatLng([rows[rows.length - 1].lat, rows[rows.length - 1].lng]);
         // به [lat,lng] نرمال کن (با پشتیبانی از lat/lon و latitude/longitude)
         const pts = rawPts.map((p: any, i: number) => {
           const lat = Number(p?.lat ?? p?.latitude ?? p?.y ?? (Array.isArray(p) ? p[0] : undefined));
@@ -17676,19 +18682,26 @@ function TechnicianRoleSection({ user }: { user: User }) {
   // REPLACE loadVehicleTrack
   const loadVehicleTrack = React.useCallback(
     async (vehicleId: number, from = fromISO, to = toISO) => {
-      if (!vehicleId) { setVehicleTrackPts([]); return; }
+      if (!vehicleId) { setVehicleTrackPts([]); setVehicleTimeline(null); return; }
       try {
         const { data } = await api.get('/tracks', { params: { vehicle_id: vehicleId, from, to, limit: 5000 } });
+
+        // استاتیک: فقط برای نمایش کل مسیر
         const pts = normalizeTrackPoints(data);
         setVehicleTrackPts(pts);
         if (pts.length) setFocusLatLng(pts[pts.length - 1]);
+
+        // تایم‌لاین: از نسخهٔ «با ts» استفاده کن
+        const rows = normalizeTrackRowsWithTs(data);
+        setVehicleTimeline(buildTimeline(rows, from, to));  // ممکن است null شود (اوکی است)
+
       } catch {
+        // fallback لایو
         const buf = vehicleLiveRef.current[vehicleId] || [];
         const fromT = +new Date(from); const toT = +new Date(to);
-        const pts = buf
-          .filter((p) => p[2] >= fromT && p[2] <= toT)
-          .map((p) => [p[0], p[1]] as [number, number]);
+        const pts = buf.filter(p => p[2] >= fromT && p[2] <= toT).map(p => [p[0], p[1]] as [number, number]);
         setVehicleTrackPts(pts);
+        setVehicleTimeline(null); // ⬅️ مطمئن شو با دیتاى فالبک پخش فعال نشه
         if (pts.length) setFocusLatLng(pts[pts.length - 1]);
       }
     },
@@ -17696,10 +18709,15 @@ function TechnicianRoleSection({ user }: { user: User }) {
   );
 
 
+
+
   // === ANIMATION: state + helpers ===
   type AnimMode = 'driver' | 'vehicle' | null;
-  type AnimState = { mode: AnimMode; idx: number; playing: boolean; speed: number; follow: boolean };
-  const [animState, setAnimState] = React.useState<AnimState>({ mode: null, idx: 0, playing: false, speed: 1, follow: true });
+  type AnimState = { mode: AnimMode; idx: number; playing: boolean; speed: number; follow: boolean; accMs: number };
+  const [animState, setAnimState] = React.useState<AnimState>({
+    mode: null, idx: 0, playing: false, speed: 1, follow: true, accMs: 0
+  });
+
   const animRef = React.useRef(animState);
   React.useEffect(() => { animRef.current = animState; }, [animState]);
 
@@ -17726,50 +18744,65 @@ function TechnicianRoleSection({ user }: { user: User }) {
 
   const startAnimation = React.useCallback((mode: AnimMode) => {
     if (!mode) return;
-    const pts = getActivePts(mode);
-    if (!pts || pts.length < 2) return;
-
-    // اگر روی مود دیگری بودیم، از صفر شروع کن
-    setAnimState({ mode, idx: 0, playing: true, speed: 1, follow: true });
-  }, [getActivePts]);
+    const tl = mode === 'driver' ? driverTimeline : mode === 'vehicle' ? vehicleTimeline : null;
+    if (!tl) return;
+    setAnimState({ mode, idx: 0, playing: true, speed: 1, follow: true, accMs: 0 });
+  }, [driverTimeline, vehicleTimeline]);
 
   const togglePlayPause = React.useCallback(() => {
     setAnimState(s => {
       if (!s.mode) return s;
+      const tl = s.mode === 'driver' ? driverTimeline : vehicleTimeline;
+      if (!tl) return s;
+
       if (!s.playing) {
-        // اگر در انتها بود، دوباره از اول
-        const pts = getActivePts(s.mode);
-        const atEnd = s.idx >= Math.max(0, pts.length - 1);
+        const atEnd = s.idx >= tl.T;
         return { ...s, idx: atEnd ? 0 : s.idx, playing: true };
       }
       return { ...s, playing: false };
     });
-  }, [getActivePts]);
+  }, [driverTimeline, vehicleTimeline]);
+
 
   // رانِ فریم‌ها بر اساس سرعت
   React.useEffect(() => {
     clearAnimTimer();
     if (!animState.playing || !animState.mode) return;
 
-    const interval = Math.max(20, ANIM_BASE_MS / (animState.speed || 1));
+    const tl = animState.mode === 'driver' ? driverTimeline : vehicleTimeline;
+    if (!tl) return;
+
+    const interval = Math.max(20, ANIM_BASE_MS); // فریم پایه ثابت، سرعت را با delta اعمال می‌کنیم
     animTimerRef.current = window.setInterval(() => {
       setAnimState(s => {
         if (!s.mode) return s;
-        const pts = getActivePts(s.mode);
-        if (!pts || pts.length < 2) return { ...s, playing: false };
+        const TL = s.mode === 'driver' ? driverTimeline : vehicleTimeline;
+        if (!TL) return { ...s, playing: false };
 
-        const nextIdx = Math.min(s.idx + 1, pts.length - 1);
-        if (nextIdx >= pts.length - 1) {
-          // رسید به آخر
-          clearAnimTimer();
-          return { ...s, idx: nextIdx, playing: false };
+        // delta = interval * speed
+        const delta = interval * (s.speed || 1);
+        let acc = (s.accMs || 0) + delta;
+
+        if (acc < TL.stepMs) {
+          return { ...s, accMs: acc };
         }
-        return { ...s, idx: nextIdx };
+
+        const advance = Math.floor(acc / TL.stepMs);
+        const nextIdx = Math.min(s.idx + advance, TL.T);
+        acc = acc % TL.stepMs;
+
+        const atEnd = nextIdx >= TL.T;
+        return {
+          ...s,
+          idx: nextIdx,
+          accMs: acc,
+          playing: atEnd ? false : s.playing
+        };
       });
     }, interval);
 
     return () => clearAnimTimer();
-  }, [animState.playing, animState.mode, animState.speed, getActivePts]);
+  }, [animState.playing, animState.mode, animState.speed, driverTimeline, vehicleTimeline]);
 
   // وقتی ترک تغییر می‌کند، ایندکس را ریست کن تا با ترک جدید هم‌راستا شود
   React.useEffect(() => {
@@ -17782,32 +18815,53 @@ function TechnicianRoleSection({ user }: { user: User }) {
   }, [vehicleTrackPts]);
 
   // اگر تب عوض شد، پخش را متوقف کن تا اشتباهی نماند
-  React.useEffect(() => { stopAnimation(); setAnimState({ mode: null, idx: 0, playing: false, speed: 1, follow: true }); }, [tab, stopAnimation]);
+  React.useEffect(() => {
+    setAnimState(s => ({ ...s, idx: 0, accMs: 0, playing: false }));
+  }, [fromISO, toISO]);
   // === ANIMATION: layer ===
-  function TrackAnimationLayer({ pts, idx, follow }: { pts: [number, number][], idx: number, follow: boolean }) {
+  function TrackAnimationLayer({
+    timeline, idx, accMs, follow,
+  }: { timeline: Timeline; idx: number; accMs: number; follow: boolean }) {
     const map = useMap();
-    const safeIdx = Math.min(Math.max(0, idx), Math.max(0, pts.length - 1));
-    const head = pts[safeIdx];
+    const clampedIdx = Math.min(Math.max(0, idx), timeline.T);
+    const nowMs = timeline.startMs + clampedIdx * timeline.stepMs + (accMs || 0);
+    if (!timeline?.arr?.length) return null;
+
+    const pos = React.useMemo(() => interpAtMs(timeline, nowMs), [timeline, nowMs]);
+    const traversed = React.useMemo(() => {
+      // همهٔ نقاطی که زمانشان <= nowMs
+      const arr = timeline.arr;
+      if (!arr.length) return [] as [number, number][];
+      let i = arr.findIndex(p => p.ts > nowMs);
+      if (i < 0) i = arr.length;
+      const base = arr.slice(0, Math.max(1, i)).map(p => [p.lat, p.lng] as [number, number]);
+      // آخرین قطعه را با نقطهٔ اینتِرپوله اضافه کن
+      if (pos && base.length && (base[base.length - 1][0] !== pos.lat || base[base.length - 1][1] !== pos.lng)) {
+        base.push([pos.lat, pos.lng]);
+      }
+      return base;
+    }, [timeline, nowMs, pos?.lat, pos?.lng]);
 
     React.useEffect(() => {
-      if (follow && head) {
-        // پانِ نرم به نقطه‌ی فعلی
-        (map as any).panTo(head, { animate: true, duration: 0.25 });
-      }
-    }, [head?.[0], head?.[1], follow, map]);
+      if (follow && pos) (map as any).panTo([pos.lat, pos.lng], { animate: true, duration: 0.25 });
+    }, [follow, pos?.lat, pos?.lng, map]);
 
-    if (!pts || pts.length < 2) return null;
+    if (!pos) return null;
 
     return (
       <>
-        <Polyline positions={pts.slice(0, safeIdx + 1)} pathOptions={{ color: '#ff9800', weight: 5, opacity: 0.9 }} />
-        <Marker position={pts[0]} icon={badgeIcon('شروع', '#43a047') as any} />
-        <Marker position={head} icon={badgeIcon('پخش', '#ff9800') as any} />
-        {/* انتهای مسیر برای مرجع */}
-        <Marker position={pts[pts.length - 1]} icon={badgeIcon('پایان', '#e53935') as any} />
+        {/* مسیر طی‌شده تا این لحظه */}
+        {traversed.length > 1 && (
+          <Polyline positions={traversed} pathOptions={{ weight: 3, opacity: 0.85 }} />
+        )}
+        {/* مارکرِ در حال پخش */}
+        <Marker position={[pos.lat, pos.lng]} icon={badgeIcon('پخش', '#ff9800') as any} />
       </>
     );
   }
+
+
+
 
   const loadDriverKPI = React.useCallback(
     async (driverId: number, from = fromISO, to = toISO) => {
@@ -17964,7 +19018,7 @@ function TechnicianRoleSection({ user }: { user: User }) {
   const [sheetMode, setSheetMode] = React.useState<'vehicle' | 'driver' | null>(null);
 
   const [drawingRoute, setDrawingRoute] = React.useState(false);
-  const [routePoints, setRoutePoints] = useState<{ lat: number; lng: number }[]>([]);
+  const [routePoints, setRoutePoints] = React.useState<{ lat: number; lng: number }[]>([]);
   const [routeName, setRouteName] = useState('');
   const [routeThreshold, setRouteThreshold] = useState<number>(100);
   // کلیک‌گیر روی نقشه
@@ -18302,7 +19356,6 @@ function TechnicianRoleSection({ user }: { user: User }) {
     return p;
   }
 
-  // REPLACE
   async function fetchDriverViolations(
     api: any,
     driverId: number,
@@ -18314,13 +19367,10 @@ function TechnicianRoleSection({ user }: { user: User }) {
       const { data } = await api.get(`/drivers/${driverId}/violations`, { params });
       return data;
     } catch {
-      // آخرین فالبک (در صورت یکی‌بودن دیتامدل)
       const { data } = await api.get('/violations', { params: { ...params, driver_id: String(driverId) } });
       return data;
     }
   }
-
-
 
 
 
@@ -19069,14 +20119,22 @@ function TechnicianRoleSection({ user }: { user: User }) {
         const ds = await fetchBranchDrivers();
         if (!alive) return;
         setDrivers(ds);
+
+        setStatsLoading(true);
+        await fetchStats(ds.map(d => d.id), fromISO, toISO);
       } catch (e) {
         console.error('[branch-manager] init error:', e);
       } finally {
-        if (alive) setInitLoading(false);
+        if (alive) {
+          setStatsLoading(false);
+          setInitLoading(false);
+        }
       }
     })();
     return () => { alive = false; };
-  }, [user?.id]); // ⬅️ از fromISO/toISO اینجا حذف شد
+  }, [user?.id, fromISO, toISO, fetchStats]);
+
+
   React.useEffect(() => {
     if (!drivers.length) return;
     let alive = true;
@@ -19125,17 +20183,6 @@ function TechnicianRoleSection({ user }: { user: User }) {
     return Array.from(all);
   }, [availableTypes, grantedPerType]);
 
-  React.useEffect(() => {
-    (async () => {
-      try {
-        setLoading(true);
-        const ds = await fetchBranchDrivers();
-        setDrivers(ds);
-        await fetchStats(ds.map(d => d.id), fromISO, toISO);
-      } catch (e) { console.error('[branch-manager] init error:', e); }
-      finally { setLoading(false); }
-    })();
-  }, [user?.id, fromISO, toISO, fetchStats]);
 
   // ✅ فقط گرانت‌ها
   React.useEffect(() => {
@@ -19429,34 +20476,6 @@ function TechnicianRoleSection({ user }: { user: User }) {
   }
 
 
-
-
-  // این نسخه را بگذار جای fetchVehiclesOfType فعلی‌ت
-
-
-
-
-
-  // REPLACE: قبلاً parentSA?.id تکی بود؛ الان از parentSAIds استفاده کن
-  // ✅ فقط همین
-  React.useEffect(() => {
-    if (!activeType) return;
-    fetchVehiclesOfType(activeType);
-  }, [activeType, parentSAId, fetchVehiclesOfType]);
-
-
-
-
-  // --- جایگزین این تابع کن ---
-
-
-
-
-
-  // وقتی تب نوع فعال شد، ماشین‌های همان نوع را بگیر و سابسکرایب pos
-
-
-
   React.useEffect(() => {
     const s = socketRef.current;
     if (!s || !activeType || !canTrackVehicles) return;
@@ -19553,74 +20572,53 @@ function TechnicianRoleSection({ user }: { user: User }) {
       });
     };
 
-    // --- NEW: هندلر کیلومترشمار ---
-    const onOdo = (data: { vehicle_id: number; odometer: number }) => {
-      // فقط اگر همین ماشینی‌ست که الان انتخاب شده
-      if (selectedVehicleIdRef.current === data.vehicle_id) {
-        setVehicleTlm(prev => ({ ...prev, odometer: data.odometer }));
+    const onOdo = (d: { vehicle_id: number; odometer: number }) => {
+      if (selectedVehicleIdRef.current === d.vehicle_id) {
+        setVehicleTlm(prev => ({ ...prev, odometer: d.odometer }));
       }
     };
-    s.on('vehicle:ignition', (d: { vehicle_id: number; ignition: boolean }) =>
-      selectedVehicleIdRef.current === d.vehicle_id && setVehicleTlm(p => ({ ...p, ignition: d.ignition })));
 
-    s.on('vehicle:idle_time', (d: { vehicle_id: number; idle_time: number }) =>
-      selectedVehicleIdRef.current === d.vehicle_id && setVehicleTlm(p => ({ ...p, idle_time: d.idle_time })));
-
-    s.on('vehicle:odometer', (d: { vehicle_id: number; odometer: number }) =>
-      selectedVehicleIdRef.current === d.vehicle_id && setVehicleTlm(p => ({ ...p, odometer: d.odometer })));
-
-    // === ثبت لیسنرها ===
-    s.on('driver:pos', onDriverPos);
-    s.on('vehicle:pos', onVehiclePos);
-    s.on('vehicle:stations', onStations);
-    s.on('vehicle:odometer', onOdo);   // ⬅️ این خط جدید
-    // --- VIOLATIONS: handler ---
     const onViolation = (msg: any) => {
       const v = normalizeViolations(msg?.violation ?? msg, msg?.vehicle_id ?? msg?.vehicleId)[0];
       if (!v) return;
       setViolationsByVid(prev => {
         const cur = prev[v.vehicle_id] || [];
-        // اگر فیلتر severe فعال است، اینجا رد نکن—در UI فیلتر کن که تاریخچه حفظ بماند
-        // از تکرار جلوگیری
         const exists = v.id && cur.some(x => x.id === v.id);
-        const next = exists ? cur : [v, ...cur];
-        return { ...prev, [v.vehicle_id]: next };
+        return { ...prev, [v.vehicle_id]: exists ? cur : [v, ...cur] };
       });
     };
 
-    // ثبت لیسنر
+    s.on('driver:pos', onDriverPos);
+    s.on('vehicle:pos', onVehiclePos);
+    s.on('vehicle:stations', onStations);
+    s.on('vehicle:odometer', onOdo);
     s.on('vehicle:violation', onViolation);
 
-    // پاکسازی
-    // ...
-
-    // === پاکسازی ===
     return () => {
-      // آن‌سابسکرایب pos ها
-      subscribedVehiclesRef.current.forEach((id) => {
-        s.emit('unsubscribe', { topic: `vehicle/${id}/pos` });
-      });
-      subscribedVehiclesRef.current = new Set();
-
-      // آن‌سابسکرایب stations
+      // آزادسازی همه‌ی سابسکرایب‌های pos
+      if (subscribedVehiclesRef.current.size) {
+        subscribedVehiclesRef.current.forEach(id => s.emit('unsubscribe', { topic: `vehicle/${id}/pos` }));
+        subscribedVehiclesRef.current.clear();
+      }
+      // stations
       if (lastStationsSubRef.current) {
         const { vid, uid } = lastStationsSubRef.current;
         s.emit('unsubscribe', { topic: `vehicle/${vid}/stations/${uid}` });
+        s.emit('unsubscribe', { topic: `vehicle/${vid}/stations` });
         lastStationsSubRef.current = null;
       }
-      s.off('vehicle:violation', onViolation);
+      // telemetry topics
+      if (lastIgnVidRef.current) { s.emit('unsubscribe', { topic: `vehicle/${lastIgnVidRef.current}/ignition` }); lastIgnVidRef.current = null; }
+      if (lastIdleVidRef.current) { s.emit('unsubscribe', { topic: `vehicle/${lastIdleVidRef.current}/idle_time` }); lastIdleVidRef.current = null; }
+      if (lastTelemOdoVidRef.current) { s.emit('unsubscribe', { topic: `vehicle/${lastTelemOdoVidRef.current}/odometer` }); lastTelemOdoVidRef.current = null; }
+      if (lastVioVidRef.current) { s.emit('unsubscribe', { topic: `vehicle/${lastVioVidRef.current}/violations` }); lastVioVidRef.current = null; }
 
-      // --- NEW: آن‌سابسکرایب از تاپیک odometer اگر فعال بود
-      if (lastTelemOdoVidRef.current) {
-        s.emit('unsubscribe', { topic: `vehicle/${lastTelemOdoVidRef.current}/odometer` });
-        lastTelemOdoVidRef.current = null;
-      }
-
-      // off هندلرها
+      // off هندلرها (همه نام‌دارند تا واقعا off شوند)
       s.off('driver:pos', onDriverPos);
       s.off('vehicle:pos', onVehiclePos);
       s.off('vehicle:stations', onStations);
       s.off('vehicle:odometer', onOdo);
+      s.off('vehicle:violation', onViolation);
 
       s.disconnect();
       socketRef.current = null;
@@ -19767,129 +20765,86 @@ function TechnicianRoleSection({ user }: { user: User }) {
 
   const lastTelemOdoVidRef = React.useRef<number | null>(null);
 
-  // ===== Map click helper =====
-  // بیرون از BranchManagerRoleSection.tsx (یا بالا، خارج از بدنه‌ی تابع)
+  const loadVehicleGeofences = React.useCallback(async (vid: number) => {
+    try {
+      const { data } = await api.get(`/vehicles/${vid}/geofence`, {
+        params: { _: Date.now() }, headers: { 'Cache-Control': 'no-store' },
+      });
+      const list = normalizeGeofences(data);
+      setGeofencesByVid(p => ({ ...p, [vid]: list }));
+      return list;
+    } catch {
+      setGeofencesByVid(p => ({ ...p, [vid]: [] }));
+      return [];
+    }
+  }, [api]);
 
   const onPickVehicleBM = React.useCallback(async (v: Vehicle) => {
     setSelectedVehicleId(v.id);
-    await loadVehicleGeofences(v.id);
-    setSheetOpen(true);        // ⬅️ این خط را اضافه کن
+    setSheetOpen(true);
     setSheetMode('vehicle');
-    await loadViolations(v.id);
 
-    // ریست حالت‌های افزودن/ادیت ایستگاه
+    // تمرکز نقشه
+    if (v.last_location) setFocusLatLng([v.last_location.lat, v.last_location.lng]);
+
+    // مسیر و ترک
+    await loadVehicleRoute(v.id);
+    await loadVehicleTrack(v.id, fromISO, toISO);
+
+    // ژئوفنس
+    await loadVehicleGeofences(v.id);
+
+    // ایستگاه‌ها
     setAddingStationsForVid(null);
     setEditingStation(null);
     setMovingStationId(null);
     setTempStation(null);
-    await loadVehicleRoute(v.id);
+    if (canStations) await ensureStationsLive(v.id);
+    else await fetchStations(v.id);
 
-    if (v.last_location) setFocusLatLng([v.last_location.lat, v.last_location.lng]);
-
-    // ایستگاه‌ها (در صورت مجوز)
-    if (canStations) {
-      await ensureStationsLive(v.id);   // subscribe + fetch
-    } else {
-      await fetchStations(v.id);        // فقط fetch برای نمایش روی نقشه
-    }
-    const s = socketRef.current;
-    if (s && canViolations) {
-      if (lastVioVidRef.current && lastVioVidRef.current !== v.id) {
-        s.emit('unsubscribe', { topic: `vehicle/${lastVioVidRef.current}/violations` });
-        lastVioVidRef.current = null;
+    // تخلفات (فچ اولیه + سابسکرایب لایو)
+    if (canViolations) {
+      const s = socketRef.current;
+      if (s) {
+        if (lastVioVidRef.current && lastVioVidRef.current !== v.id) {
+          s.emit('unsubscribe', { topic: `vehicle/${lastVioVidRef.current}/violations` });
+        }
+        s.emit('subscribe', { topic: `vehicle/${v.id}/violations` });
+        lastVioVidRef.current = v.id;
       }
-      s.emit('subscribe', { topic: `vehicle/${v.id}/violations` });
-      lastVioVidRef.current = v.id;
-
-      // فچ اولیه در بازه انتخابی
       await refreshViolations(v.id, fromISO, toISO);
     }
 
-    // --- آزاد کردن سابسکرایب‌های قبلی تله‌متری (هر کدام جدا) ---
-    if (s && lastIgnVidRef.current && lastIgnVidRef.current !== v.id) {
-      s.emit('unsubscribe', { topic: `vehicle/${lastIgnVidRef.current}/ignition` });
-      lastIgnVidRef.current = null;
-    }
-    if (s && lastIdleVidRef.current && lastIdleVidRef.current !== v.id) {
-      s.emit('unsubscribe', { topic: `vehicle/${lastIdleVidRef.current}/idle_time` });
-      lastIdleVidRef.current = null;
-    }
-
-
-    // مقادیر قبلی تله‌متری را پاک کن (تا UI وضعیت نامشخص نشان دهد)
+    // تله‌متری (کلیدهای مجاز)
     setVehicleTlm({});
-
-    // ===== فچ اولیه تله‌متری (صرفاً برای کلیدهای مجاز) =====
-    try {
-      const keysWanted: ('ignition' | 'idle_time' | 'odometer')[] = [];
-      if (canIgnition) keysWanted.push('ignition');
-      if (canIdleTime) keysWanted.push('idle_time');
-      if (canOdometer) keysWanted.push('odometer');
-
-      if (keysWanted.length) {
-        const { data } = await api.get(`/vehicles/${v.id}/telemetry`, { params: { keys: keysWanted } });
-
-        const next: { ignition?: boolean; idle_time?: number; odometer?: number } = {};
-        if (typeof data?.ignition === 'boolean') next.ignition = data.ignition;
-        if (typeof data?.idle_time === 'number') next.idle_time = data.idle_time;
-        if (typeof data?.odometer === 'number') next.odometer = data.odometer;
-
-        setVehicleTlm(next);
-      }
-    } catch {
-      // مشکلی نبود؛ بعداً از سوکت آپدیت می‌گیریم
-    }
-
-    // ===== سابسکرایب تله‌متری برای ماشین انتخاب‌شده (هر کدام که مجاز است) =====
+    const s = socketRef.current;
     if (s) {
-      if (canIgnition) {
-        s.emit('subscribe', { topic: `vehicle/${v.id}/ignition` });
-        lastIgnVidRef.current = v.id;
-      }
-      if (canIdleTime) {
-        s.emit('subscribe', { topic: `vehicle/${v.id}/idle_time` });
-        lastIdleVidRef.current = v.id;  // ✅ درست
-      }
-
-      if (canOdometer) {
-        s.emit('subscribe', { topic: `vehicle/${v.id}/odometer` });
-        lastTelemOdoVidRef.current = v.id;
-      }
+      if (canIgnition) { s.emit('subscribe', { topic: `vehicle/${v.id}/ignition` }); lastIgnVidRef.current = v.id; }
+      if (canIdleTime) { s.emit('subscribe', { topic: `vehicle/${v.id}/idle_time` }); lastIdleVidRef.current = v.id; }
+      if (canOdometer) { s.emit('subscribe', { topic: `vehicle/${v.id}/odometer` }); lastTelemOdoVidRef.current = v.id; }
     }
-    // ژئوفنس (در صورت مجوز)
-    setSelectedVehicleId(v.id);
-    await loadVehicleGeofences(v.id); // همین یکی بماند
-    await loadVehicleTrack(v.id, fromISO, toISO);
-
-
-
-
-    // ===== لوازم مصرفی (کاملاً مستقل از تله‌متری) =====
-    if (canConsumables) {
-      // اسنپ‌شات لوکال
-      const snap = loadConsLocal(v.id);
-      if (snap.length) {
-        setConsumablesByVid(p => ({ ...p, [v.id]: snap }));
-        setConsStatusByVid(p => ({ ...p, [v.id]: 'loaded' }));
-      } else {
-        setConsumablesByVid(p => ({ ...p, [v.id]: [] }));
-        setConsStatusByVid(p => ({ ...p, [v.id]: 'loading' }));
+    try {
+      const keys: ('ignition' | 'idle_time' | 'odometer')[] = [];
+      if (canIgnition) keys.push('ignition');
+      if (canIdleTime) keys.push('idle_time');
+      if (canOdometer) keys.push('odometer');
+      if (keys.length) {
+        const { data } = await api.get(`/vehicles/${v.id}/telemetry`, { params: { keys } });
+        setVehicleTlm({
+          ignition: typeof data?.ignition === 'boolean' ? data.ignition : undefined,
+          idle_time: typeof data?.idle_time === 'number' ? data.idle_time : undefined,
+          odometer: typeof data?.odometer === 'number' ? data.odometer : undefined,
+        });
       }
-      // همسان‌سازی از سرور
-      refreshConsumables(v.id);
-    } else {
-      setConsumablesByVid(p => ({ ...p, [v.id]: [] }));
-      setConsStatusByVid(p => ({ ...p, [v.id]: 'idle' }));
-    }
+    } catch { /* نادیده بگیر؛ لایو می‌آید */ }
   }, [
-    canStations,
-    ensureStationsLive,
-    canConsumables,
-    refreshConsumables,
-    canIgnition,
-    canIdleTime,
-    canOdometer,
+    canStations, ensureStationsLive, fetchStations,
+    canViolations, refreshViolations,
+    canIgnition, canIdleTime, canOdometer,
+    loadVehicleRoute, loadVehicleTrack, loadVehicleGeofences,
+    fromISO, toISO
   ]);
+
 
 
 
@@ -20056,19 +21011,7 @@ function TechnicianRoleSection({ user }: { user: User }) {
     return null;
   }
 
-  async function loadVehicleGeofences(vid: number) {
-    try {
-      const { data } = await api.get(`/vehicles/${vid}/geofence`, {
-        params: { _: Date.now() }, headers: { 'Cache-Control': 'no-store' }
-      });
-      const list = normalizeGeofences(data); // تک آبجکت را هم آرایه می‌کند
-      setGeofencesByVid(p => ({ ...p, [vid]: list }));
-      return list;
-    } catch {
-      setGeofencesByVid(p => ({ ...p, [vid]: [] }));
-      return [];
-    }
-  }
+
   React.useEffect(() => {
     if (selectedVehicleId && canViolations) {
       refreshViolations(selectedVehicleId, fromISO, toISO);
@@ -20076,17 +21019,17 @@ function TechnicianRoleSection({ user }: { user: User }) {
   }, [selectedVehicleId, canViolations, fromISO, toISO, refreshViolations]);
 
 
-  const saveEditConsumable = async () => {
+  const saveEditConsumable = React.useCallback(async () => {
     if (!selectedVehicleId || !editingCons?.id) return;
     setSavingCons(true);
     try {
       const payload: any = { mode: editingCons.mode, note: (editingCons.note ?? '').trim() };
       if (editingCons.mode === 'time') {
-        if (!editingCons.start_at) { alert('start_at لازم است'); setSavingCons(false); return; }
+        if (!editingCons.start_at) { alert('start_at لازم است'); return; }
         payload.start_at = new Date(editingCons.start_at).toISOString();
       } else {
         const n = Number(editingCons.base_odometer_km);
-        if (!Number.isFinite(n)) { alert('base_odometer_km معتبر نیست'); setSavingCons(false); return; }
+        if (!Number.isFinite(n)) { alert('base_odometer_km معتبر نیست'); return; }
         payload.base_odometer_km = n;
       }
       await updateConsumable(selectedVehicleId, editingCons.id, payload);
@@ -20095,8 +21038,11 @@ function TechnicianRoleSection({ user }: { user: User }) {
     } catch (e: any) {
       console.error('PATCH /consumables failed:', e?.response?.data || e);
       alert(e?.response?.data?.message || 'خطا در ویرایش آیتم روی سرور');
-    } finally { setSavingCons(false); }
-  };
+    } finally {
+      setSavingCons(false);
+    }
+  }, [selectedVehicleId, editingCons, updateConsumable, refreshConsumables]);
+
 
   const deleteConsumable = async (c: any) => {
     if (!selectedVehicleId || !c?.id) return;
@@ -20288,35 +21234,88 @@ function TechnicianRoleSection({ user }: { user: User }) {
             <Pane name="vehicles-layer" style={{ zIndex: 650 }}>
               {/* === ANIMATION-aware track rendering === */}
               {(() => {
-                const isAnimDriver = animState.mode === 'driver' && tab === 'drivers' && driverTrackPts.length > 1;
-                const isAnimVehicle = animState.mode === 'vehicle' && tab !== 'drivers' && vehicleTrackPts.length > 1;
+                const modeIsDriver = tab === 'drivers';
 
-                // DRIVER
-                if (tab === 'drivers') {
-                  return isAnimDriver ? (
-                    <TrackAnimationLayer pts={driverTrackPts} idx={animState.idx} follow={animState.follow} />
-                  ) : (
+                // آیا در حالت پخش هستیم و تایم‌لاین آماده است؟
+                const animDriverOn = animState.mode === 'driver' && modeIsDriver && !!driverTimeline && (driverTimeline!.arr.length > 0);
+                const animVehicleOn = animState.mode === 'vehicle' && !modeIsDriver && !!vehicleTimeline && (vehicleTimeline!.arr.length > 0);
+
+
+                // === DRIVER ===
+                if (modeIsDriver) {
+                  if (animDriverOn) {
+                    return (
+                      <>
+                        {/* مسیر کامل، کم‌رنگ زیر مارکرِ در حال پخش */}
+                        {driverTrackPts.length > 1 && (
+                          <Polyline
+                            positions={driverTrackPts}
+                            pathOptions={{ color: '#1976d2', weight: 3, opacity: 0.25 }}
+                          />
+                        )}
+
+                        {/* لایه‌ی انیمیشن با اینتِرپولیشنِ زمانی */}
+                        <TrackAnimationLayer
+                          timeline={driverTimeline!}
+                          idx={animState.idx}
+                          accMs={animState.accMs}
+                          follow={animState.follow}
+                        />
+                      </>
+                    );
+                  }
+
+                  // حالت استاتیک (بدون پخش): فیت روی ترک + رسم پررنگ
+                  return (
                     driverTrackPts.length > 1 && (
                       <>
                         <FitToTrack pts={driverTrackPts} />
-                        <Polyline positions={driverTrackPts} pathOptions={{ color: '#1976d2', weight: 4, opacity: 0.9 }} />
+                        <Polyline
+                          positions={driverTrackPts}
+                          pathOptions={{ color: '#1976d2', weight: 4, opacity: 0.9 }}
+                        />
                       </>
                     )
                   );
                 }
 
-                // VEHICLE
-                return isAnimVehicle ? (
-                  <TrackAnimationLayer pts={vehicleTrackPts} idx={animState.idx} follow={animState.follow} />
-                ) : (
+                // === VEHICLE ===
+                if (animVehicleOn) {
+                  return (
+                    <>
+                      {/* مسیر کامل، کم‌رنگ زیر مارکرِ در حال پخش */}
+                      {vehicleTrackPts.length > 1 && (
+                        <Polyline
+                          positions={vehicleTrackPts}
+                          pathOptions={{ color: '#00796b', weight: 3, opacity: 0.25 }}
+                        />
+                      )}
+
+                      {/* لایه‌ی انیمیشن با اینتِرپولیشنِ زمانی */}
+                      <TrackAnimationLayer
+                        timeline={vehicleTimeline!}
+                        idx={animState.idx}
+                        accMs={animState.accMs}
+                        follow={animState.follow}
+                      />
+                    </>
+                  );
+                }
+
+                // حالت استاتیک خودرو
+                return (
                   vehicleTrackPts.length > 1 && (
                     <>
                       <FitToTrack pts={vehicleTrackPts} />
-                      <Polyline positions={vehicleTrackPts} pathOptions={{ color: '#00796b', weight: 4, opacity: 0.9 }} />
+                      <Polyline
+                        positions={vehicleTrackPts}
+                        pathOptions={{ color: '#00796b', weight: 4, opacity: 0.9 }}
+                      />
                     </>
                   )
                 );
               })()}
+
 
               {/* راننده‌ها + مسیر لحظه‌ای راننده (حفظ منطق) */}
               {tab === 'drivers' && canTrackDrivers && filteredDrivers.map(d => (d as any).last_location && (
@@ -20555,7 +21554,7 @@ function TechnicianRoleSection({ user }: { user: User }) {
                         size="small"
                         variant="outlined"
                         color="error"
-                        onClick={() => { stopAnimation(); setAnimState({ mode: animState.mode, idx: 0, playing: false, speed: 1, follow: animState.follow }); }}
+                        onClick={() => { stopAnimation(); setAnimState(s => ({ ...s, idx: 0, playing: false, speed: 1, accMs: 0 })); }}
                         disabled={!animState.mode}
                       >
                         پایان
@@ -20574,6 +21573,8 @@ function TechnicianRoleSection({ user }: { user: User }) {
                         <MenuItem value="1">۱×</MenuItem>
                         <MenuItem value="2">۲×</MenuItem>
                         <MenuItem value="4">۴×</MenuItem>
+                        <MenuItem value="8">۸×</MenuItem>
+                        <MenuItem value="10">۱۰×</MenuItem>
                       </TextField>
 
                       {/* follow */}
@@ -20592,24 +21593,34 @@ function TechnicianRoleSection({ user }: { user: User }) {
 
                     {/* اسلایدر پیشرفت */}
                     {(() => {
-                      const pts = getActivePts(animState.mode);
-                      const max = Math.max(0, pts.length - 1);
+                      const tl = animState.mode === 'driver' ? driverTimeline
+                        : animState.mode === 'vehicle' ? vehicleTimeline
+                          : null;
+
+                      const max = tl ? tl.T : 0;
+
                       return (
                         <Box sx={{ px: 1, mt: 0.5 }}>
                           <Slider
                             size="small"
                             value={Math.min(animState.idx, max)}
                             min={0}
-                            max={max || 1}
+                            max={Math.max(1, max)}
                             onChange={(_, v) => {
                               const idx = Array.isArray(v) ? v[0] : v;
-                              setAnimState(s => ({ ...s, idx: Number(idx), playing: false }));
+                              setAnimState(s => ({ ...s, idx: Number(idx), playing: false, accMs: 0 }));
                             }}
                             valueLabelDisplay="auto"
+                            valueLabelFormat={(v) => {
+                              if (!tl) return `${v}`;
+                              const sec = tl.startSec + v;
+                              return new Date(sec * 1000).toLocaleTimeString('fa-IR');
+                            }}
                           />
                         </Box>
                       );
                     })()}
+
                   </Paper>
                 )}
 
@@ -20857,7 +21868,7 @@ function TechnicianRoleSection({ user }: { user: User }) {
                                 startAnimation('driver');
 
                                 // اگر دوست دارید ماشین فعلی راننده هم در سایدبار انتخاب شود (اختیاری):
-                                const vid = await getDriverCurrentVehicleId(d.id).catch(() => null);
+                                const vid = await getCurrentVehicleIdSafe(api, d.id).catch(() => null);
                                 if (vid) setSelectedVehicleId(vid);
                               }}
                             >
@@ -24956,6 +25967,59 @@ type SettingsProfile = {
     geofence: TmpGeofence | null;
   };
 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

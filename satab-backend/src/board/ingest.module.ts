@@ -2,7 +2,6 @@
 import { Module } from '@nestjs/common';
 import { IngestController } from './ingest.controller';
 import { IngestService } from './ingest.service';
-import { ApiKeyGuard } from './guards/api-key.guard';
 
 import { GeofenceModule } from '../geofence/geofence.module'; // ✅ می‌آورد GeofenceService
 import { VehiclesModule } from '../vehicles/vehicles.module'; // ✅ می‌آورد VehiclesGateway
@@ -13,7 +12,7 @@ import { VehiclesModule } from '../vehicles/vehicles.module'; // ✅ می‌آو
     VehiclesModule,
   ],
   controllers: [IngestController],
-  providers: [IngestService, ApiKeyGuard],
+  providers: [IngestService],
   exports: [IngestService],
 })
 export class IngestModule {}

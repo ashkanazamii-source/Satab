@@ -33,6 +33,7 @@ import { ShiftProfilesModule } from './shifts/shift-profiles.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TemporaryAssignmentsModule } from './temporary-assignments/temporary-assignments.module';
 import { IngestModule } from './board/ingest.module';
+import { Sim800Module } from './sim800/sim800.module';
 
 
 @Module({
@@ -83,6 +84,7 @@ import { IngestModule } from './board/ingest.module';
     ShiftProfilesModule,
     TemporaryAssignmentsModule,
     IngestModule,
+    Sim800Module,
   ],
   providers: [
     // لاگ همهٔ درخواست‌های HTTP

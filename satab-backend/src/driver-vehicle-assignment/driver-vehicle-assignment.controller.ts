@@ -5,7 +5,7 @@ import {
   Query
 } from '@nestjs/common';
 import { DriverVehicleAssignmentService } from './driver-vehicle-assignment.service';
-import { StartAssignmentDto, EndAssignmentDto } from '../dto/assign.dto';
+import { StartAssignmentDto, EndAssignmentDto, ToggleAssignmentDto } from '../dto/assign.dto';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { Users } from '../users/users.entity';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';        // ⬅️ اضافه
@@ -14,7 +14,6 @@ import { ACL } from '../acl/acl.decorator';                    // (اختیار�
 
 @Controller('assignments')
 @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
-@UseGuards(JwtAuthGuard) // ⬅️ کل روتر لاگین می‌خواهد
 export class DriverVehicleAssignmentController {
   constructor(private readonly service: DriverVehicleAssignmentService) { }
 
@@ -35,7 +34,11 @@ export class DriverVehicleAssignmentController {
   end(@Body() dto: EndAssignmentDto) {
     return this.service.endAssignment(dto.driverId);
   }
-
+  @Post('toggle')
+  async toggle(@Body() dto: ToggleAssignmentDto) {
+    const at = dto.at ? new Date(dto.at) : undefined;
+    return this.service.toggleAssignment(dto.driverId, dto.vehicleId, { at });
+  }
   @Get('current/:driverId')
   current(@Param('driverId', ParseIntPipe) driverId: number) {
     return this.service.getCurrentAssignment(driverId);

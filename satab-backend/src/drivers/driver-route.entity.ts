@@ -65,7 +65,38 @@ export class DriverRoute {
   @Index()
   @Column({ type: 'int', nullable: true })
   assignment_id?: number | null;
+  // src/driver-route/driver-route.entity.ts
 
+
+  @Column({ type: 'jsonb', nullable: true })
+  start_vehicle_snapshot?: {
+    ts?: string | null;
+    odometer_km?: number | null;
+    ignition?: boolean | null;
+    engine_temp?: number | null;
+    last_location_lat?: number | null;
+    last_location_lng?: number | null;
+    last_location_ts?: string | null;
+    current_route_id?: number | null;
+    // هرچی از برد داری می‌تونی اینجا بذاری
+    [k: string]: any;
+  } | null;
+
+  // ---------- NEW: ستون‌های سایه‌ای آخرین تله‌متری ----------
+  @Column({ type: 'timestamptz', nullable: true })
+  last_telemetry_ts?: Date | null;
+
+  @Column({ type: 'boolean', nullable: true })
+  last_ignition?: boolean | null;
+
+  @Column({ type: 'int', nullable: true })
+  last_idle_time_sec?: number | null;
+
+  @Column({ type: 'double precision', nullable: true })
+  last_odometer_km?: number | null;
+
+  @Column({ type: 'double precision', nullable: true })
+  last_engine_temp?: number | null;
   /**
    * نقاط GPS مسیر به همراه زمان ثبت
    * (نکته: در بلندمدت بهتره به جدول جدا منتقل شود؛ فعلاً jsonb می‌ماند)

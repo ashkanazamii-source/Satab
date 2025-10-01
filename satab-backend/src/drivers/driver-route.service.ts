@@ -17,7 +17,11 @@ import { Users } from '../users/users.entity';
 import { getDistance } from 'geolib';
 import { DriverRoute, DriverRouteStatus } from './driver-route.entity';
 import { DriverRouteGateway } from './driver-route.gateway'; // ✅ ایمپورت کردن Gateway
-
+import { DeepPartial } from 'typeorm';
+import { DataSource } from 'typeorm';
+import { InjectDataSource } from '@nestjs/typeorm';
+// اگر DailyTrack داری:
+import { VehicleDailyTrack } from '../vehicles/vehicle_daily_tracks.entity'; // مسیر رو با پروژه خودت تطبیق بده
 type PointInput = {
   lat: number;
   lng: number;
@@ -71,6 +75,7 @@ type TelemetryMsg = {
   ignition?: boolean;
   idle_time?: number | string | null;
   odometer?: number | string | null;
+  engine_temp?: number | string | null; // ⬅⬅⬅ این خط رو اضافه کن
   engine_on_duration?: number | string | null;
   distance_m?: number | string | null;
   mission_count?: number | string | null;
@@ -83,17 +88,27 @@ type TelemetryMsg = {
 
 
 
+
 @Injectable()
 export class DriverRouteService {
+
   dailyTrackRepo: any;
-  dataSource: any;
   constructor(
     @InjectRepository(DriverRoute)
     private readonly routeRepo: Repository<DriverRoute>,
+
     @InjectRepository(Users)
     private readonly userRepo: Repository<Users>,
+
     @Inject(forwardRef(() => DriverRouteGateway))
     private readonly gateway: DriverRouteGateway,
+
+    @InjectDataSource()
+    private readonly dataSource: DataSource, // ⬅ تزریق واقعی dataSource
+
+    // اگر Entity ترک روزانه داری (processUnprocessedAssignments ازش استفاده می‌کنه):
+    @InjectRepository(VehicleDailyTrack)
+    private readonly VehicleDailyTrackRepo: Repository<VehicleDailyTrack>, // ⬅ تزریق واقعی repo
   ) { }
 
   /** محاسبه مسافت بر حسب کیلومتر */
@@ -286,42 +301,55 @@ export class DriverRouteService {
   async addRouteMeta(
     routeId: number,
     meta: {
-      ts: string;
+      ts: string;                       // ISO
       ignition?: boolean | null;
-      idle_time?: number | null;
-      odometer?: number | null;
+      idle_time?: number | null;        // sec
+      odometer?: number | null;         // km
       engine_temp?: number | null;
+      // هر کلید دیگری هم مجاز است (future-proof)
+      [k: string]: any;
     },
   ) {
-    // وجود و active بودن مسیر
     const route = await this.routeRepo.findOne({ where: { id: routeId } });
     if (!route) throw new NotFoundException('مسیر پیدا نشد');
     if (route.status !== DriverRouteStatus.active) return route;
 
-    // آبجکت رویداد
+    // رویداد نرمال‌شده
     const ev: Record<string, any> = { ts: meta.ts };
-    if (meta.ignition !== undefined) ev.ignition = meta.ignition;
-    if (meta.idle_time !== undefined) ev.idle_time = meta.idle_time;
-    if (meta.odometer !== undefined) ev.odometer = meta.odometer;
-    if (meta.engine_temp !== undefined) ev.engine_temp = meta.engine_temp;
+    for (const [k, v] of Object.entries(meta)) {
+      if (k === 'ts') continue;
+      if (v !== undefined) ev[k] = v;
+    }
 
     // تلاش برای آپدیت اتمی (PostgreSQL)
     try {
       const updated = await this.routeRepo.query(
         `
       UPDATE driver_routes
-      SET telemetry_events = COALESCE(telemetry_events, '[]'::jsonb) || $1::jsonb
-      WHERE id = $2 AND status = 'active'
+      SET
+        telemetry_events = COALESCE(telemetry_events, '[]'::jsonb) || $1::jsonb,
+        last_telemetry_ts = GREATEST(COALESCE(last_telemetry_ts, to_timestamp(0)), $2::timestamptz),
+        -- Shadow columns (اختیاری؛ اگر ستون‌ها را دارید):
+        last_ignition = COALESCE($3, last_ignition),
+        last_idle_time_sec = COALESCE($4, last_idle_time_sec),
+        last_odometer_km = COALESCE($5, last_odometer_km),
+        last_engine_temp = COALESCE($6, last_engine_temp)
+      WHERE id = $7 AND status = 'active'
       RETURNING *;
       `,
-        [JSON.stringify([ev]), routeId],
+        [
+          JSON.stringify([ev]),
+          meta.ts,
+          meta.ignition ?? null,
+          meta.idle_time ?? null,
+          meta.odometer ?? null,
+          meta.engine_temp ?? null,
+          routeId,
+        ],
       );
-      if (updated?.[0]) {
-        // برگشتن رکورد آپدیت شده (TypeORM plain → object)
-        return this.routeRepo.create(updated[0]);
-      }
+      if (updated?.[0]) return this.routeRepo.create(updated[0]);
     } catch {
-      // اگر DB غیر Postgres بود یا کوئری خطا داد، fallback:
+      // fallback برای DB غیر Postgres
     }
 
     // fallback: read-modify-save
@@ -329,6 +357,14 @@ export class DriverRouteService {
       ? (route as any).telemetry_events
       : [];
     (route as any).telemetry_events = [...arr, ev];
+    (route as any).last_telemetry_ts = new Date(meta.ts);
+
+    // Shadow columns (اگر دارید)
+    if (meta.ignition !== undefined) (route as any).last_ignition = meta.ignition;
+    if (meta.idle_time !== undefined) (route as any).last_idle_time_sec = meta.idle_time;
+    if (meta.odometer !== undefined) (route as any).last_odometer_km = meta.odometer;
+    if (meta.engine_temp !== undefined) (route as any).last_engine_temp = meta.engine_temp;
+
     return this.routeRepo.save(route);
   }
 
@@ -342,23 +378,48 @@ export class DriverRouteService {
     });
   }
 
-  /** شروع مسیر جدید */
-  // DriverRouteService.startRoute (نسخهٔ درست)
-  async startRoute(driverId: number, vehicleId?: number) {
+  async startRoute(
+    driverId: number,
+    vehicleId?: number,
+    opts?: {
+      started_at?: Date;
+      initialPoint?: { lat: number; lng: number; ts?: string };
+      initialSnapshot?: {
+        ts: string;
+        ignition?: boolean | null;
+        idle_time?: number | null;
+        odometer?: number | null;
+        engine_temp?: number | null;
+        [k: string]: any;
+      };
+      closeActiveIfDifferentVehicle?: boolean;  // پیش‌فرض true
+    }
+  ) {
     const driver = await this.userRepo.findOne({ where: { id: driverId } });
     if (!driver) throw new NotFoundException('راننده پیدا نشد');
 
-    // بستن route فعال قبلی (اگر هست)
+    const now = new Date();
+    const startAt = opts?.started_at ?? now;
+    const dayBucket = startAt.toISOString().slice(0, 10); // YYYY-MM-DD
+
+    // Route فعال فعلی
     const active = await this.getActiveRoute(driverId);
-    if (active) {
+
+    // Idempotency: اگر رووت فعلی روی همین vehicle است و هنوز تازه است، همان را برگردان
+    if (active && vehicleId && active.vehicle_id === vehicleId) {
+      const diff = Math.abs(startAt.getTime() - new Date(active.started_at).getTime()) / 1000;
+      if (diff <= 30) return active;
+    }
+
+    // بستن Route فعال قبلی (در صورت نیاز)
+    const closeDifferent = opts?.closeActiveIfDifferentVehicle ?? true;
+    if (active && (closeDifferent || (vehicleId && active.vehicle_id !== vehicleId))) {
       active.status = DriverRouteStatus.finished;
-      active.finished_at = new Date();
-      // چون در addPoint افزایشی می‌زنیم، همین مقدار کفایت می‌کند:
-      // active.total_distance_km = this.calculateDistance(active.gps_points || []);
+      active.finished_at = startAt;              // با شروع جدید هم‌مرز می‌کنیم
       await this.routeRepo.save(active);
     }
 
-    // پیدا کردن vehicle/assignment از انتساب باز (اگر vehicleId پاس نشده)
+    // اگر vehicleId پاس نشده، از انتساب باز استخراج کن
     let vId = vehicleId ?? null;
     let assignmentId: number | null = null;
     if (vId == null) {
@@ -366,11 +427,13 @@ export class DriverRouteService {
         `
       SELECT id, vehicle_id
       FROM driver_vehicle_assignments
-      WHERE driver_id = $1 AND ended_at IS NULL
+      WHERE driver_id = $1
+        AND started_at <= $2
+        AND COALESCE(ended_at, $2) >= $2
       ORDER BY started_at DESC
       LIMIT 1
       `,
-        [driverId],
+        [driverId, startAt.toISOString()],
       );
       if (row?.length) {
         assignmentId = Number(row[0].id);
@@ -378,28 +441,50 @@ export class DriverRouteService {
       }
     }
 
-    const now = new Date();
-    const dayBucket = now.toISOString().slice(0, 10); // YYYY-MM-DD
-
-    const route = this.routeRepo.create({
-      driver,
+    // فقط فیلدهای موجود در Entity را مستقیم به create بده
+    const base: DeepPartial<DriverRoute> = {
       driver_id: driver.id,
       status: DriverRouteStatus.active,
       vehicle_id: vId ?? null,
-      assignment_id: assignmentId,
-      started_at: now,
+      assignment_id: assignmentId ?? null,
+      started_at: startAt,
       day_bucket: dayBucket,
-      // کش‌ها و داده‌های اولیه
-      gps_points: [],
-      points_count: 0,
-      total_distance_km: 0,
-      last_lat: null,
-      last_lng: null,
-      last_point_ts: null,
-      telemetry_events: [], // اگر ستون را اضافه کرده‌ای
-    });
+    };
 
-    return this.routeRepo.save(route);
+    const route = this.routeRepo.create(base);
+
+    // فیلدهای اختیاری/JSON که شاید در تایپ Entity شما تعریف نشده‌اند
+    // (اگر در Entity دارید؛ اگر ندارید، این‌ها را حذف کنید)
+    (route as any).gps_points = [];
+    (route as any).points_count = 0;
+    (route as any).total_distance_km = 0;
+    (route as any).last_lat = null;
+    (route as any).last_lng = null;
+    (route as any).last_point_ts = null;
+    (route as any).telemetry_events = [];
+    (route as any).last_telemetry_ts = null;
+    (route as any).last_ignition = null;
+    (route as any).last_idle_time_sec = null;
+    (route as any).last_odometer_km = null;
+    (route as any).last_engine_temp = null;
+
+    const saved = await this.routeRepo.save(route); // ← DriverRoute (نه آرایه)
+
+    // نقطه‌ی اولیه (اختیاری)
+    if (opts?.initialPoint) {
+      await this.addPoint(saved.id, {
+        lat: opts.initialPoint.lat,
+        lng: opts.initialPoint.lng,
+        ts: opts.initialPoint.ts ?? startAt.toISOString(),
+      });
+    }
+
+    // اسنپ‌شات اولیه (اختیاری)
+    if (opts?.initialSnapshot) {
+      await this.addRouteMeta(saved.id, opts.initialSnapshot);
+    }
+
+    return saved;
   }
 
 
@@ -414,11 +499,10 @@ export class DriverRouteService {
     const ts = new Date(point.ts ?? point.timestamp ?? Date.now());
     if (isNaN(+ts)) throw new BadRequestException('ts نامعتبر است');
 
-    const qr = this.routeRepo.manager.connection.createQueryRunner();
+    const qr = this.dataSource.createQueryRunner();
     await qr.connect();
     await qr.startTransaction();
     try {
-      // قفل برای جلوگیری از race
       const route = await qr.manager
         .createQueryBuilder(DriverRoute, 'r')
         .setLock('pessimistic_write')
@@ -428,35 +512,36 @@ export class DriverRouteService {
       if (!route) throw new NotFoundException('مسیر پیدا نشد');
       if (route.status !== DriverRouteStatus.active) throw new BadRequestException('این مسیر بسته شده است');
 
-      // ترتیب زمانی: نقطهٔ out-of-order را فعلاً نادیده بگیر
+      // ⬅ جلوگیری از نقطه قبل از شروع مسیر
+      if (route.started_at && ts.getTime() < new Date(route.started_at).getTime()) {
+        await qr.rollbackTransaction();
+        return route;
+      }
+
+      // ترتیب زمانی: out-of-order را نادیده بگیر
       if (route.last_point_ts && ts.getTime() <= new Date(route.last_point_ts).getTime()) {
         await qr.rollbackTransaction();
         return route;
       }
 
-      // محاسبهٔ افزایشی با فیلتر نویز/پرش
+      // محاسبه افزایشی فاصله با فیلترها
       let deltaM = 0;
       const lastLat = Number(route.last_lat);
       const lastLng = Number(route.last_lng);
       if (Number.isFinite(lastLat) && Number.isFinite(lastLng)) {
         const d = getDistance(
           { latitude: lastLat, longitude: lastLng },
-          { latitude: lat, longitude: lng }, // ← فیکسِ latitude
+          { latitude: lat, longitude: lng },
         );
         const dt = route.last_point_ts ? (ts.getTime() - new Date(route.last_point_ts).getTime()) / 1000 : null;
-
-        // فیلتر: <3m نویز، >60 m/s سرعت غیرواقعی، یا پرش >1000m بدون زمان
         const tooNoisy = d < 3;
         const tooFast = dt != null && d / dt > 60;
         const bigJump = dt == null && d > 1000;
-        if (!tooNoisy && !tooFast && !bigJump) {
-          deltaM = d;
-        }
+        if (!tooNoisy && !tooFast && !bigJump) deltaM = d;
       }
 
       const newPoint = { lat, lng, timestamp: ts.toISOString() };
 
-      // بهتر: فقط id را برگردانیم و بعد entity را بخوانیم تا تایپ درست باشد
       type Row = { id: number };
       const rows: Row[] = await qr.manager.query(
         `
@@ -467,7 +552,7 @@ export class DriverRouteService {
         total_distance_km = COALESCE(total_distance_km,0) + $2,
         last_lat = $3,
         last_lng = $4,
-        last_point_ts = $5
+        last_point_ts = $5::timestamptz
       WHERE id = $6 AND status = 'active'
       RETURNING id;
       `,
@@ -475,21 +560,18 @@ export class DriverRouteService {
       );
 
       if (!rows?.length) {
-        // هیچ ردیفی آپدیت نشد (مثلاً وضعیت active نبود) → رول‌بک کن و همین route را برگردان
         await qr.rollbackTransaction();
         return route;
       }
 
       await qr.commitTransaction();
 
-      // داخل همان QueryRunner entity را بخوان تا تایپ دقیق DriverRoute داشته باشی
       const savedRoute = await qr.manager.findOne(DriverRoute, { where: { id: rows[0].id } });
       if (savedRoute) {
-        this.gateway.broadcastLocationUpdate(savedRoute); // ← الان DriverRoute است، نه آرایه
+        // اگر async است: await
+        this.gateway.broadcastLocationUpdate(savedRoute);
         return savedRoute;
       }
-
-      // فالس‌بک: اگر به هر دلیلی findOne چیزی نداد
       return await this.routeRepo.findOne({ where: { id: rows[0].id } });
     } catch (e) {
       await qr.rollbackTransaction();
@@ -588,19 +670,68 @@ export class DriverRouteService {
     };
   }
 
-  /** پایان مسیر */
-  async finishRoute(routeId: number) {
+  async finishRoute(
+    routeId: number,
+    opts?: { ended_at?: Date }
+  ) {
     const route = await this.routeRepo.findOne({ where: { id: routeId } });
     if (!route) throw new NotFoundException('مسیر پیدا نشد');
     if (route.status === DriverRouteStatus.finished) return route;
 
+    const endAt = opts?.ended_at ?? new Date();
+
+    // finalize summaries
+    const points: Array<{ lat: number; lng: number; ts?: string }> =
+      Array.isArray((route as any).gps_points) ? (route as any).gps_points : [];
+
+    // جمع فاصله (fallback به کیلومترشمار اگر رویدادها شامل odometer باشند)
+    const telemetry: any[] = Array.isArray((route as any).telemetry_events)
+      ? (route as any).telemetry_events
+      : [];
+
+    // 1) تلاش با odometer (اگر دو مقدار معتبر داشته باشیم)
+    let totalDistanceKm: number | null = null;
+    try {
+      const odos = telemetry
+        .map(e => (e && typeof e.odometer === 'number') ? e.odometer : null)
+        .filter((v: number | null) => v != null) as number[];
+      if (odos.length >= 2) {
+        const d = odos[odos.length - 1] - odos[0];
+        if (Number.isFinite(d) && d >= 0) totalDistanceKm = +d.toFixed(2);
+      }
+    } catch { /* ignore */ }
+
+    // 2) fallback: هورساین روی نقاط GPS
+    if (totalDistanceKm == null && points.length >= 2) {
+      const R = 6371; // km
+      const toRad = (x: number) => x * Math.PI / 180;
+      let dist = 0;
+      for (let i = 1; i < points.length; i++) {
+        const a = points[i - 1], b = points[i];
+        const dLat = toRad(b.lat - a.lat);
+        const dLng = toRad(b.lng - a.lng);
+        const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
+        const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+        dist += 2 * R * Math.asin(Math.sqrt(h));
+      }
+      totalDistanceKm = +dist.toFixed(2);
+    }
+
     route.status = DriverRouteStatus.finished;
-    route.finished_at = new Date();
-    // اگر دوست داری دوباره exact محاسبه کنی، این خط رو آنکامنت کن:
-    // route.total_distance_km = this.calculateDistance(route.gps_points || []);
+    route.finished_at = endAt;
+
+    // خلاصه‌ها
+    (route as any).total_distance_km = totalDistanceKm ?? (route as any).total_distance_km ?? 0;
+    (route as any).points_count = Array.isArray(points) ? points.length : (route as any).points_count ?? 0;
+    if (route.started_at) {
+      (route as any).duration_sec = Math.max(
+        0,
+        Math.floor((endAt.getTime() - new Date(route.started_at).getTime()) / 1000),
+      );
+    }
+
     return this.routeRepo.save(route);
   }
-  // داخل کلاس DriverRouteService
 
   /** تعداد مأموریت‌ها (Routeهای به پایان رسیده) برای یک راننده در بازه‌ی زمانی اختیاری */
   async getMissionCount(

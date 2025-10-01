@@ -14,7 +14,7 @@ export class RedeemDto {
   @Matches(/^\d{4}$/, { message: 'code باید ۴ رقم باشد' })
   code!: string; // "0000".."9999"
 
-  @IsString()
+  @IsOptional()
   @Matches(/^[0-9a-f]{24}$/i, { message: 'device_id باید hex با طول ۲۴ کاراکتر (۹۶ بیت) باشد' })
   @Transform(({ value }) => String(value).toLowerCase())
   device_id!: string; // 96-bit hex
