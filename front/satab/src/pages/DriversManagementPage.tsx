@@ -5315,8 +5315,7 @@ function ManagerRoleSection({ user }: { user: User }) {
               },
             })}
           >
-            <Box sx={{ position: 'relative', zIndex: 1 }}>
-              {/* هدر */}
+            <Box sx={{ position: 'relative' }}>
               {/* هدر */}
               <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
                 <Stack direction="row" spacing={1.25} alignItems="center">
@@ -5326,7 +5325,6 @@ function ManagerRoleSection({ user }: { user: User }) {
                       sx={(t) => ({
                         p: 1.25, mb: 1.5, borderRadius: 2,
                         border: `1px solid ${t.palette.divider}`,
-                        background: t.palette.mode === 'dark' ? `${t.palette.background.paper}AA` : '#fff',
                       })}
                     >
                       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems="center">
