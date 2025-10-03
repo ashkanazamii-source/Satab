@@ -11,6 +11,7 @@ import { Vehicle, VehicleStatus } from '../vehicles/vehicle.entity';
 import { Users } from '../users/users.entity';
 import { Observable, Subject } from 'rxjs';
 import { UserLevel } from 'src/entities/role.entity';
+const ARM_TTL_MS = 60_000; // TTL برای ARM کردن کارت (طبق نیازت کم/زیاد کن)
 
 type CodeRecord = {
   userId: number;
@@ -88,10 +89,15 @@ export class PairingService {
   private resultTimers = new Map<string, NodeJS.Timeout>();
 
 
+  private armedByHex = new Map<string, { userId: number; at: number }>();
 
   private pendings = new Map<string, PendingSession>();
   private streams = new Map<string, Subject<MessageEvent>>();
 
+  private armed = new Map<string, {
+    profile: CreateUserProfile,
+    at: number
+  }>(); // key = hex8 uppercase
 
 
 
@@ -380,6 +386,432 @@ export class PairingService {
     return { pending_id: id, expires_in: ttl };
   }
 
+  // داخل کلاس PairingService
+  async upsertUserByCardUid(
+    rawUid: string,
+    profile?: {
+      full_name?: string;
+      phone?: string;
+      password?: string;
+      parent_id?: number;
+      role_level?: 6;
+    }
+  ): Promise<{ user_id: number; full_name: string }> {
+    const t0 = Date.now();
+    const mask = (s: string, keep = 4) => (s ? `${s.slice(0, keep)}…${s.slice(-keep)}` : '');
+    const ctx = (x = '') => `upsertUserByCardUid uid=${mask(String(rawUid || ''), 6)}${x ? ' | ' + x : ''}`;
+
+    this.log.debug(ctx('start'));
+
+    // 1) نرمال‌سازی UID به ۸ هگز UpperCase
+    const norm = normalize4ByteCode(rawUid);
+    if (!norm.ok) {
+      this.log.warn(ctx(`bad uid | reason=${norm.msg || 'invalid'}`));
+      throw new BadRequestException('bad uid');
+    }
+    const hex = norm.hex8.toUpperCase();
+    this.log.debug(ctx(`normalized hex=${hex}`));
+
+    const usersRepo = this.ds.getRepository(Users);
+
+    // 2) اگر کارتی با این UID قبلاً ثبت شده:
+    this.log.debug(ctx('db lookup by card start'));
+    const existing = await usersRepo.findOne({
+      where: { driver_card_hex: hex },
+      select: { id: true, full_name: true } as any,
+    });
+
+    if (existing) {
+      // اگر اسم جدید اومده، آپدیتش کن
+      const nextName = (profile?.full_name || '').trim();
+      if (nextName && nextName !== existing.full_name) {
+        await usersRepo.update({ id: existing.id } as any, { full_name: nextName });
+        this.log.debug(ctx(`updated name | user_id=${existing.id} "${existing.full_name}" -> "${nextName}" | dur=${Date.now() - t0}ms`));
+        return { user_id: Number(existing.id), full_name: nextName };
+      }
+      this.log.debug(ctx(`already registered | user_id=${existing.id} | dur=${Date.now() - t0}ms`));
+      return { user_id: Number(existing.id), full_name: existing.full_name };
+    }
+
+    // 3) کارت ثبت نیست → باید بسازیم/وصل کنیم (فقط نقش ۶)
+    const need =
+      !!profile?.full_name &&
+      !!profile?.phone &&
+      !!profile?.password &&
+      (profile?.parent_id ?? null) !== null;
+
+    if (!need) {
+      this.log.warn(ctx('card not registered & no profile'));
+      throw new BadRequestException('card not registered; send driver profile (full_name, phone, password, parent_id)');
+    }
+
+    // اگر کاربر با این تلفن هست:
+    const existByPhone = await usersRepo.findOne({
+      where: { phone: profile!.phone },
+      select: { id: true, full_name: true, driver_card_hex: true } as any,
+    });
+
+    if (existByPhone) {
+      // اگر کارت نداره، همین کارت رو بهش وصل کن + اگه اسم جدید اومده آپدیت کن
+      if (!existByPhone.driver_card_hex) {
+        const patch: Partial<Users> = { driver_card_hex: hex };
+        if (profile!.full_name && profile!.full_name.trim() && profile!.full_name !== existByPhone.full_name) {
+          patch.full_name = profile!.full_name.trim();
+        }
+        await usersRepo.update({ id: existByPhone.id } as any, patch);
+        const finalName = patch.full_name || existByPhone.full_name;
+        this.log.debug(ctx(`attached card to existing phone | user_id=${existByPhone.id} | dur=${Date.now() - t0}ms`));
+        return { user_id: Number(existByPhone.id), full_name: finalName };
+      }
+
+      // اگه قبلاً کارت دیگه‌ای داشته، سیاست تو اینجاست؛ فعلاً Conflict می‌دهیم
+      this.log.warn(ctx(`phone already has a card | user_id=${existByPhone.id}`));
+      throw new ConflictException('phone already bound to a card');
+    }
+
+    // ساخت کاربر جدید با نقش ۶ و ست‌کردن کارت
+    const roleLevel = 6 as unknown as UserLevel;
+    const entity = usersRepo.create({
+      full_name: profile!.full_name,
+      phone: profile!.phone,
+      password: profile!.password, // TODO: bcrypt.hash
+      role_level: roleLevel,
+      parent: profile!.parent_id ? ({ id: profile!.parent_id } as any) : null,
+      driver_card_hex: hex,
+    } as DeepPartial<Users>);
+    const saved = await usersRepo.save(entity);
+
+    this.log.debug(ctx(`created user | user_id=${saved.id} | dur=${Date.now() - t0}ms`));
+    return { user_id: Number(saved.id), full_name: saved.full_name };
+  }
+  // pairing.service.ts
+  async findUserByCardUid(rawUid: string): Promise<{ user_id: number; full_name: string }> {
+    const t0 = Date.now();
+    const mask = (s: string, keep = 4) => (s ? `${s.slice(0, keep)}…${s.slice(-keep)}` : '');
+    const ctx = (x = '') => `findUserByCardUid uid=${mask(String(rawUid || ''), 6)}${x ? ' | ' + x : ''}`;
+
+    this.log.debug(ctx('start'));
+
+    const norm = normalize4ByteCode(rawUid);
+    if (!norm.ok) {
+      this.log.warn(ctx(`bad uid | reason=${norm.msg || 'invalid'}`));
+      throw new BadRequestException('bad uid');
+    }
+    const hex = norm.hex8.toUpperCase();
+    this.log.debug(ctx(`normalized hex=${hex}`));
+
+    const usersRepo = this.ds.getRepository(Users);
+    this.log.debug(ctx('db query start'));
+    const u = await usersRepo.findOne({
+      where: { driver_card_hex: hex },
+      select: { id: true, full_name: true } as any,
+    });
+
+    if (!u) {
+      const dur = Date.now() - t0;
+      this.log.warn(ctx(`not found | hex=${hex} | dur=${dur}ms`));
+      throw new NotFoundException('card not registered');
+    }
+
+    const dur = Date.now() - t0;
+    this.log.debug(ctx(`success | user_id=${u.id} full_name="${u.full_name}" | dur=${dur}ms`));
+    return { user_id: Number(u.id), full_name: u.full_name };
+  }
+  /** سایت: ARM → UID مورد انتظار + پروفایل را موقتاً در حافظه نگه دار */
+  async armExpectedUid(profile: CreateUserProfile, expectedRawUid: string): Promise<{ hex: string }> {
+    const t0 = Date.now();
+    const mask = (s: string, keep = 4) => (s ? `${s.slice(0, keep)}…${s.slice(-keep)}` : '');
+    const ctx = (extra = '') => `armExpectedUid uid=${mask(String(expectedRawUid || ''), 6)}${extra ? ' | ' + extra : ''}`;
+
+    this.log.debug(ctx('start'));
+
+    const n = normalize4ByteCode(expectedRawUid);
+    if (!n.ok) {
+      this.log.warn(ctx(`bad uid | reason=${n.msg || 'invalid'}`));
+      throw new BadRequestException('bad uid');
+    }
+    const hex = n.hex8.toUpperCase();
+
+    // فقط آخرین ARM با همین hex رو نگه می‌داریم (overwrite)
+    this.armed.set(hex, { profile, at: Date.now() });
+
+    const dur = Date.now() - t0;
+    this.log.debug(ctx(`armed | hex=${hex} | armedSize=${this.armed.size} | dur=${dur}ms`));
+    return { hex };
+  }
+  async ensureUserByCardUid_Simple(
+    rawUid: string,
+    profile: {
+      full_name?: string;
+      phone?: string;
+      password?: string;
+      parent_id?: number;
+      role_level?: 6;
+    },
+  ): Promise<{ user_id: number; full_name: string }> {
+    const t0 = Date.now();
+    const mask = (s: string, keep = 4) => (s ? `${s.slice(0, keep)}…${s.slice(-keep)}` : '');
+    const ctx = (x = '') => `ensureUserByCardUid_Simple uid=${mask(String(rawUid || ''), 6)}${x ? ' | ' + x : ''}`;
+
+    this.log.debug(ctx('start'));
+
+    // 1) نرمال‌سازی UID کارت → hex8 UpperCase
+    const norm = normalize4ByteCode(rawUid);
+    if (!norm.ok) {
+      this.log.warn(ctx(`bad uid | reason=${norm.msg || 'invalid'}`));
+      throw new BadRequestException('bad uid');
+    }
+    const hex = norm.hex8.toUpperCase();
+
+    const usersRepo = this.ds.getRepository(Users);
+
+    // 2) اگر قبلاً روی کاربری ثبت است → همان را بده
+    this.log.debug(ctx('lookup by card'));
+    const exist = await usersRepo.findOne({
+      where: { driver_card_hex: hex },
+      select: { id: true, full_name: true } as any,
+    });
+    if (exist) {
+      this.log.debug(ctx(`found existing user | user_id=${exist.id} | dur=${Date.now() - t0}ms`));
+      return { user_id: Number(exist.id), full_name: exist.full_name };
+    }
+
+    // 3) کارت ثبت نیست → باید بسازیم
+    //    پروفایل باید کامل باشد
+    const needOk =
+      !!profile?.full_name &&
+      !!profile?.phone &&
+      !!profile?.password &&
+      (profile?.parent_id ?? null) !== null;
+
+    if (!needOk) {
+      this.log.warn(ctx('card not registered & no/invalid profile'));
+      throw new BadRequestException(
+        'card not registered; need profile {full_name, phone, password, parent_id}',
+      );
+    }
+
+    // 4) سیاست ساده: اگر phone وجود داشته باشد:
+    //    - اگر کارت ندارد → کارت فعلی را به او ست کن (و اسم را اگر داده بود آپدیت کن)
+    //    - اگر کارت دارد → conflict (برای سادگی و شفافیت)
+    const existByPhone = await usersRepo.findOne({
+      where: { phone: profile.phone },
+      select: { id: true, full_name: true, driver_card_hex: true } as any,
+    });
+
+    if (existByPhone) {
+      if (!existByPhone.driver_card_hex) {
+        const patch: Partial<Users> = { driver_card_hex: hex };
+        // آپدیت اختیاری اسم
+        if (
+          profile.full_name &&
+          profile.full_name.trim() &&
+          profile.full_name !== existByPhone.full_name
+        ) {
+          patch.full_name = profile.full_name.trim();
+        }
+        await usersRepo.update({ id: existByPhone.id } as any, patch);
+        const finalName = patch.full_name || existByPhone.full_name;
+        this.log.debug(ctx(`attached card to existing phone | user_id=${existByPhone.id}`));
+        return { user_id: Number(existByPhone.id), full_name: finalName };
+      }
+      this.log.warn(ctx(`phone already has a card | user_id=${existByPhone.id}`));
+      throw new ConflictException('phone already bound to a card');
+    }
+
+    // 5) ساخت کاربر جدید با نقش ۶ و ست کردن کارت
+    const roleLevel = 6 as unknown as UserLevel;
+    const partial: DeepPartial<Users> = {
+      full_name: profile.full_name!,
+      phone: profile.phone!,
+      password: profile.password!, // TODO: bcrypt.hash
+      role_level: roleLevel,
+      parent: profile.parent_id ? ({ id: profile.parent_id } as any) : null,
+      driver_card_hex: hex,
+    };
+
+    const entity = usersRepo.create(partial);
+    const saved = await usersRepo.save(entity);
+
+    this.log.debug(ctx(`created user | user_id=${saved.id} | dur=${Date.now() - t0}ms`));
+    return { user_id: Number(saved.id), full_name: saved.full_name };
+  }
+  async armUidForUser(userId: number, expectedRawUid: string): Promise<{ hex8: string; user_id: number; expires_in: number }> {
+    const t0 = Date.now();
+    const mask = (s: string, keep = 4) => (s ? `${s.slice(0, keep)}…${s.slice(-keep)}` : '');
+    const ctx = (x = '') => `armUidForUser user=${userId} uid=${mask(String(expectedRawUid || ''), 6)}${x ? ' | ' + x : ''}`;
+
+    this.log.debug(ctx('start'));
+
+    const norm = normalize4ByteCode(expectedRawUid);
+    if (!norm.ok) {
+      this.log.warn(ctx(`bad uid | reason=${norm.msg || 'invalid'}`));
+      throw new BadRequestException('bad uid');
+    }
+
+    const hex8 = norm.hex8.toUpperCase();
+    this.armedByHex.set(hex8, { userId, at: Date.now() });
+
+    this.log.debug(ctx(`armed hex=${hex8} armedSize=${this.armedByHex.size}`));
+    const dur = Date.now() - t0;
+    this.log.debug(ctx(`done dur=${dur}ms`));
+
+    return { hex8, user_id: userId, expires_in: Math.floor(ARM_TTL_MS / 1000) };
+  } async consumeByUid(incomingRawUid: string): Promise<{ user_id: number; full_name: string }> {
+    const t0 = Date.now();
+    const mask = (s: string, keep = 4) => (s ? `${s.slice(0, keep)}…${s.slice(-keep)}` : '');
+    const ctx = (extra = '') => `consumeByUid uid=${mask(String(incomingRawUid || ''), 6)}${extra ? ' | ' + extra : ''}`;
+
+    this.log.debug(ctx('start'));
+
+    const n = normalize4ByteCode(incomingRawUid);
+    if (!n.ok) {
+      this.log.warn(ctx(`bad uid | reason=${n.msg || 'invalid'}`));
+      throw new BadRequestException('bad uid');
+    }
+    const hex = n.hex8.toUpperCase();
+    this.log.debug(ctx(`normalized hex=${hex}`));
+
+    const armed = this.armed.get(hex);
+    if (!armed) {
+      // چیزی ARM نشده ⇒ سایت هنوز نفرستاده یا UID دیگری ARM شده
+      this.log.warn(ctx(`not armed | hex=${hex} | armedSize=${this.armed.size}`));
+      throw new NotFoundException('not armed');
+    }
+
+    // یک‌بارمصرف: قبل از ساخت حذف کن تا ریسک دوباره‌کاری نباشه
+    this.armed.delete(hex);
+
+    this.log.debug(ctx(`creating user | name="${armed.profile.full_name}" phone="${armed.profile.phone}" parent=${armed.profile.parent_id} role=${armed.profile.role_level}`));
+
+    // ساخت کاربر + ثبت کارت
+    const created = await this.createUserDriverSimple({
+      full_name: armed.profile.full_name,
+      phone: armed.profile.phone,
+      password: armed.profile.password,
+      role_level: armed.profile.role_level,
+      parent_id: armed.profile.parent_id,
+      card_uid: hex, // کارت روی همین کاربر ثبت می‌شود
+    });
+
+    const dur = Date.now() - t0;
+    this.log.debug(ctx(`success | user_id=${created.id} full_name="${created.full_name}" | dur=${dur}ms`));
+    return { user_id: created.id, full_name: created.full_name };
+  }
+
+  async ensureUserByCardUid(
+    profile: {
+      full_name: string;
+      phone: string;
+      password: string;
+      role_level: RoleLevel;      // راننده = 6
+      parent_id: number;
+    },
+    rawUid: string
+  ): Promise<{ user_id: number; full_name: string }> {
+    const t0 = Date.now();
+    const mask = (s: string, keep = 4) => (s ? `${s.slice(0, keep)}…${s.slice(-keep)}` : '');
+    const ctx = (x = '') => `ensureUserByCardUid uid=${mask(String(rawUid || ''), 6)}${x ? ' | ' + x : ''}`;
+
+    this.log.debug(ctx('start'));
+
+    const norm = normalize4ByteCode(rawUid);
+    if (!norm.ok) {
+      this.log.warn(ctx(`bad uid | reason=${norm.msg || 'invalid'}`));
+      throw new BadRequestException('bad uid');
+    }
+    const hex = norm.hex8.toUpperCase();
+    this.log.debug(ctx(`normalized hex=${hex}`));
+
+    const usersRepo = this.ds.getRepository(Users);
+
+    // 1) اگر کارت از قبل ثبت است → همان کاربر
+    this.log.debug(ctx('db lookup start'));
+    const exist = await usersRepo.findOne({
+      where: { driver_card_hex: hex },
+      select: { id: true, full_name: true } as any,
+    });
+    if (exist) {
+      const dur = Date.now() - t0;
+      this.log.debug(ctx(`found existing user | user_id=${exist.id} | dur=${dur}ms`));
+      return { user_id: Number(exist.id), full_name: exist.full_name };
+    }
+
+    // 2) نبود → کاربر را بساز و کارت را ست کن
+    this.log.debug(
+      ctx(
+        `create user start | name="${profile.full_name}" phone="${profile.phone}" parent_id=${profile.parent_id} role=${profile.role_level}`,
+      ),
+    );
+
+    const created = await this.createUserDriverSimple({
+      full_name: profile.full_name,
+      phone: profile.phone,
+      password: profile.password,
+      role_level: profile.role_level,
+      parent_id: profile.parent_id,
+      card_uid: hex, // کارت همین‌جا ذخیره می‌شود
+    });
+
+    const dur = Date.now() - t0;
+    this.log.debug(ctx(`created user | user_id=${created.id} | dur=${dur}ms`));
+    return { user_id: created.id, full_name: created.full_name };
+  }
+  /** ساخت راننده‌ی ساده + (اختیاری) بایند کردن کارت */
+  async createUserDriverSimple(p: {
+    full_name: string;
+    phone: string;
+    password: string;
+    role_level: RoleLevel;
+    parent_id: number;
+    card_uid?: string;
+  }): Promise<{ id: number; full_name: string }> {
+    return this.ds.transaction(async (q) => {
+      const usersRepo = q.getRepository(Users);
+
+      // اگر کارت آمده، نرمال و یکتا
+      let cardHex: string | null = null;
+      if (p.card_uid) {
+        const n = normalize4ByteCode(p.card_uid);
+        if (!n.ok) throw new BadRequestException('bad uid');
+        cardHex = n.hex8;
+
+        const existCard = await usersRepo.findOne({
+          where: { driver_card_hex: cardHex },
+          select: { id: true } as any,
+        });
+        if (existCard) throw new ConflictException('card already used');
+      }
+
+      // اگر phone موجود است → همان را بده (یا Conflict کن)
+      const existByPhone = await usersRepo.findOne({
+        where: { phone: p.phone },
+        select: { id: true, full_name: true, driver_card_hex: true } as any,
+      });
+      if (existByPhone) {
+        // در صورت نیاز می‌توانی کارتِ خالیِ این کاربر را اینجا ست کنی:
+        if (!existByPhone.driver_card_hex && cardHex) {
+          await usersRepo.update({ id: existByPhone.id } as any, { driver_card_hex: cardHex });
+        }
+        return { id: Number(existByPhone.id), full_name: existByPhone.full_name };
+      }
+
+      const roleLevel = p.role_level as unknown as UserLevel;
+      const partial: DeepPartial<Users> = {
+        full_name: p.full_name,
+        phone: p.phone,
+        password: p.password, // TODO: bcrypt.hash
+        role_level: roleLevel,
+        parent: p.parent_id ? ({ id: p.parent_id } as any) : null,
+        driver_card_hex: cardHex,
+      };
+
+      const entity = usersRepo.create(partial);
+      const saved = await usersRepo.save(entity);
+      return { id: Number(saved.id), full_name: saved.full_name };
+    });
+  }
+
 
   /** وضعیت برای Polling */
   getStatus(id: string) {
@@ -445,6 +877,80 @@ export class PairingService {
     return { user_id: created.id, full_name: created.full_name };
   }
 
+  /**
+   * برد: فقط UID می‌فرسته. ما:
+   *  - UID → hex8
+   *  - lookup توی armedByHex
+   *  - اگر موجود و منقضی‌نشده → کارت رو روی همون user ست می‌کنیم
+   *  - خروجی: { user_id, full_name, hex8 }
+   */
+  async consumeArmedUid(incomingRawUid: string): Promise<{ user_id: number; full_name: string; hex8: string }> {
+    const t0 = Date.now();
+    const mask = (s: string, keep = 4) => (s ? `${s.slice(0, keep)}…${s.slice(-keep)}` : '');
+    const ctx = (x = '') => `consumeArmedUid uid=${mask(String(incomingRawUid || ''), 6)}${x ? ' | ' + x : ''}`;
+
+    this.log.debug(ctx('start'));
+
+    const n = normalize4ByteCode(incomingRawUid);
+    if (!n.ok) {
+      this.log.warn(ctx(`bad uid | reason=${n.msg || 'invalid'}`));
+      throw new BadRequestException('bad uid');
+    }
+    const hex8 = n.hex8.toUpperCase();
+    this.log.debug(ctx(`normalized hex=${hex8}`));
+
+    const armed = this.armedByHex.get(hex8);
+    if (!armed) {
+      this.log.warn(ctx('not armed'));
+      throw new NotFoundException('not armed');
+    }
+
+    const age = Date.now() - armed.at;
+    if (age > ARM_TTL_MS) {
+      this.armedByHex.delete(hex8);
+      this.log.warn(ctx(`timeout armed age=${Math.floor(age / 1000)}s`));
+      throw new RequestTimeoutException('timeout');
+    }
+
+    // یک‌بارمصرف—قبل از DB حذف کن تا ریسک دوبل نشه
+    this.armedByHex.delete(hex8);
+
+    // کارت باید آزاد باشه (روی کاربر دیگه نباشه)، بعد روی همون userId ست بشه
+    const usersRepo = this.ds.getRepository(Users);
+    this.log.debug(ctx(`binding to user_id=${armed.userId}`));
+
+    // 1) کارت روی کس دیگه نباشه
+    const existCard = await usersRepo.findOne({
+      where: { driver_card_hex: hex8 },
+      select: { id: true } as any,
+    });
+    if (existCard && existCard.id !== armed.userId) {
+      this.log.warn(ctx(`card already used by another user_id=${existCard.id}`));
+      throw new ConflictException('card already used');
+    }
+
+    // 2) خود کاربر موجود باشه
+    const user = await usersRepo.findOne({
+      where: { id: armed.userId },
+      select: { id: true, full_name: true, driver_card_hex: true } as any,
+    });
+    if (!user) {
+      this.log.warn(ctx(`target user not found user_id=${armed.userId}`));
+      throw new NotFoundException('user not found');
+    }
+
+    // 3) اگر همین الان ست نیست، ست کن
+    if (user.driver_card_hex !== hex8) {
+      await usersRepo.update({ id: armed.userId } as any, { driver_card_hex: hex8 });
+      this.log.debug(ctx(`card bound to user_id=${armed.userId}`));
+    } else {
+      this.log.debug(ctx(`card already bound to target user_id=${armed.userId}`));
+    }
+
+    const dur = Date.now() - t0;
+    this.log.debug(ctx(`success user_id=${user.id} full_name="${user.full_name}" dur=${dur}ms`));
+    return { user_id: Number(user.id), full_name: user.full_name, hex8 };
+  }
 
   // ارسال event به استریم SSE
   private emitPending(id: string, type: 'matched' | 'mismatch' | 'failed', data: any) {
@@ -607,13 +1113,15 @@ export class PairingService {
 
 }
 // بالا کنار normalize8ByteCode فعلی (یا جایگزینش کن)
-function normalize4ByteCode(input: string): { ok: true; hex8: string } | { ok: false; msg: string } {
+function normalize4ByteCode(input: string):
+  | { ok: true; hex8: string }
+  | { ok: false; msg: string } {
   const v = String(input || '').trim();
   if (!v) return { ok: false, msg: 'empty' };
 
   const isHex8 = /^[0-9a-fA-F]{8}$/.test(v);
-  const isHex16 = /^[0-9a-fA-F]{16}$/.test(v); // اگر دستگاه 16 رقم می‌فرستد، 8 رقم انتهایی را می‌گیریم
-  const isDec = /^[0-9]{1,10}$/.test(v);     // تا حداکثر 32-bit
+  const isHex16 = /^[0-9a-fA-F]{16}$/.test(v); // اگر 16 رقم بود، 8 رقم انتهایی
+  const isDec = /^[0-9]{1,10}$/.test(v);       // تا 32bit
 
   if (isHex8) return { ok: true, hex8: v.toUpperCase() };
   if (isHex16) return { ok: true, hex8: v.toUpperCase().slice(-8) };
@@ -630,3 +1138,4 @@ function normalize4ByteCode(input: string): { ok: true; hex8: string } | { ok: f
 
   return { ok: false, msg: 'bad format' };
 }
+
