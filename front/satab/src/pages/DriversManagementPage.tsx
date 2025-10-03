@@ -4000,11 +4000,7 @@ function ManagerRoleSection({ user }: { user: User }) {
                 px: 0.9,
                 minHeight: 22,
                 fontSize: 10,
-                borderColor: '#00c6be66',
-                ...(drawingRoute
-                  ? { bgcolor: '#00c6be', '&:hover': { bgcolor: '#00b5ab' } }
-                  : { '&:hover': { bgcolor: '#00c6be12' } }),
-                boxShadow: drawingRoute ? '0 4px 12px #00c6be44' : 'none',
+
               }}
               startIcon={<span>✏️</span>}
             >
@@ -4377,7 +4373,6 @@ function ManagerRoleSection({ user }: { user: User }) {
                         const sc = (e.currentTarget.parentElement?.querySelector('.map-ctrl-scroll') as HTMLElement | null);
                         sc?.scrollBy({ left: -260, behavior: 'smooth' });
                       }}
-                      sx={{ border: '1px solid #00c6be44', bgcolor: '#00c6be12', '&:hover': { bgcolor: '#00c6be22' } }}
                     >
                       ‹
                     </IconButton>
@@ -4393,7 +4388,7 @@ function ManagerRoleSection({ user }: { user: User }) {
                         scrollSnapType: 'x mandatory',
                         scrollbarWidth: 'thin',
                         '&::-webkit-scrollbar': { height: 6 },
-                        '&::-webkit-scrollbar-thumb': { background: '#00c6be55', borderRadius: 8 },
+                        '&::-webkit-scrollbar-thumb': { borderRadius: 8 },
                       }}
                     >
                       <Chip
@@ -4403,9 +4398,6 @@ function ManagerRoleSection({ user }: { user: User }) {
                         sx={{
                           scrollSnapAlign: 'center',
                           fontWeight: 700,
-                          border: '1px solid #00c6be55',
-                          bgcolor: '#00c6be18',
-                          color: '#009e97',
                           '& .MuiChip-label': { px: 0.75, py: 0.25, fontSize: 10 },
                         }}
                       />
@@ -4418,10 +4410,6 @@ function ManagerRoleSection({ user }: { user: User }) {
                         }
                         sx={{
                           scrollSnapAlign: 'center',
-                          border: '1px solid #00c6be44',
-                          bgcolor: '#ffffff',
-                          '&:hover': { bgcolor: '#f5ffff' },
-                          boxShadow: '0 4px 10px rgba(0,0,0,.08)',
                           borderRadius: 999,
                           px: 0.8,
                           minHeight: 22,
@@ -4468,11 +4456,6 @@ function ManagerRoleSection({ user }: { user: User }) {
                           px: 0.9,
                           minHeight: 22,
                           fontSize: 10,
-                          borderColor: '#00c6be66',
-                          ...(gfDrawing
-                            ? { bgcolor: '#00c6be', '&:hover': { bgcolor: '#00b5ab' } }
-                            : { '&:hover': { bgcolor: '#00c6be12' } }),
-                          boxShadow: gfDrawing ? '0 4px 12px #00c6be44' : 'none',
                         }}
                         startIcon={<span>✏️</span>}
                       >
@@ -4488,10 +4471,6 @@ function ManagerRoleSection({ user }: { user: User }) {
                           px: 0.9,
                           minHeight: 22,
                           fontSize: 10,
-                          border: '1px solid #00c6be44',
-                          bgcolor: '#ffffff',
-                          '&:hover': { bgcolor: '#f5ffff' },
-                          boxShadow: '0 4px 10px rgba(0,0,0,.08)',
                         }}
                         startIcon={<span>🔄</span>}
                       >
@@ -4505,7 +4484,6 @@ function ManagerRoleSection({ user }: { user: User }) {
                         const sc = (e.currentTarget.parentElement?.querySelector('.map-ctrl-scroll') as HTMLElement | null);
                         sc?.scrollBy({ left: 260, behavior: 'smooth' });
                       }}
-                      sx={{ border: '1px solid #00c6be44', bgcolor: '#00c6be12', '&:hover': { bgcolor: '#00c6be22' } }}
                     >
                       ›
                     </IconButton>
@@ -4553,9 +4531,6 @@ function ManagerRoleSection({ user }: { user: User }) {
                 size="small"
                 sx={(t) => ({
                   fontWeight: 700,
-                  color: ACC,
-                  border: `1px solid ${ACC}33`,
-                  bgcolor: `${ACC}14`,
                   '& .MuiChip-label': { px: 1.25 },
                 })}
               />
@@ -5057,10 +5032,7 @@ function ManagerRoleSection({ user }: { user: User }) {
               '& .MuiOutlinedInput-root': {
                 transition: 'border-color .2s ease, box-shadow .2s ease',
                 '& fieldset': { borderColor: 'divider' },
-                '&:hover fieldset': { borderColor: ACC },
                 '&.Mui-focused': {
-                  '& fieldset': { borderColor: ACC },
-                  boxShadow: `0 0 0 3px ${ACC}22`,
                 },
               },
             }}
@@ -5105,12 +5077,8 @@ function ManagerRoleSection({ user }: { user: User }) {
                         willChange: 'transform',
                         animation: `${floatY} 6s ease-in-out ${idx % 2 ? '1.2s' : '0s'} infinite`,
                         '&:hover': {
-                          borderColor: `${ACC}66`,
-                          boxShadow: `0 16px 46px ${ACC}24`,
                         },
                         ...(expanded && {
-                          borderColor: `${ACC}88`,
-                          boxShadow: `0 18px 52px ${ACC}2c`,
                           animation: `${breath} 4.5s ease-in-out infinite`,
                         }),
 
@@ -5125,7 +5093,6 @@ function ManagerRoleSection({ user }: { user: User }) {
                           transform: `scaleY(${expanded ? 1 : .18})`,
                           transformOrigin: 'top',
                           transition: 'transform .35s cubic-bezier(.2,.8,.2,1)', // ← FIXED
-                          background: `linear-gradient(90deg, ${ACC}, #00e1d8, ${ACC})`,
                           backgroundSize: '200% 100%',
                           animation: `${shimmer} 3.2s linear infinite`,
                           opacity: .9,
@@ -5147,11 +5114,7 @@ function ManagerRoleSection({ user }: { user: User }) {
                         <Stack direction="row" spacing={1.25} alignItems="center">
                           <Avatar
                             sx={{
-                              bgcolor: `${ACC}22`,
-                              color: `${ACC}cc`,
                               fontWeight: 800,
-                              border: `1px solid ${ACC}55`,
-                              boxShadow: `0 6px 16px ${ACC}26`,
                             }}
                           >
                             {sa.full_name?.charAt(0) ?? 'س'}
@@ -5168,26 +5131,18 @@ function ManagerRoleSection({ user }: { user: User }) {
                             <Chip
                               label={`راننده: ${countDrivers || '—'}`}
                               size="small"
-                              sx={{
-                                border: `1px solid ${ACC}44`,
-                                bgcolor: `${ACC}12`,
-                                color: `${ACC}cc`,
-                              }}
+
                             />
                             <Chip
                               label={`ماشین: ${countVehicles || '—'}`}
                               size="small"
                               sx={{
-                                border: `1px solid ${ACC}44`,
-                                bgcolor: `${ACC}12`,
-                                color: `${ACC}cc`,
                               }}
                             />
                             <ExpandMoreIcon
                               className="card-caret"
                               sx={{
                                 ml: .25,
-                                color: `${ACC}cc`,
                                 transform: `rotate(${expanded ? 180 : 0}deg)`,
                                 transition: 'transform .25s ease',
                               }}
@@ -5206,8 +5161,6 @@ function ManagerRoleSection({ user }: { user: User }) {
                               mb: 1,
                               minHeight: 36,
                               '& .MuiTab-root': { minHeight: 36 },
-                              '& .MuiTabs-indicator': { backgroundColor: ACC },
-                              '& .MuiTab-root.Mui-selected': { color: ACC, fontWeight: 700 },
                             }}
                           >
                             <Tab value="drivers" label="راننده‌ها" />
@@ -5224,7 +5177,6 @@ function ManagerRoleSection({ user }: { user: User }) {
                                         borderRadius: 2,
                                         px: 1,
                                         transition: 'transform .15s ease, background .2s ease',
-                                        '&:hover': { background: `${ACC}0A`, transform: 'translateX(-3px)' },
                                       }}
                                       secondaryAction={
                                         <Stack direction="row" spacing={0.5}>
@@ -5234,7 +5186,6 @@ function ManagerRoleSection({ user }: { user: User }) {
                                                 edge="end"
                                                 onClick={() => setFocusLatLng([d.last_location!.lat, d.last_location!.lng])}
                                                 size="small"
-                                                sx={{ border: `1px solid ${ACC}44`, bgcolor: `${ACC}12` }}
                                               >
                                                 📍
                                               </IconButton>
@@ -5246,8 +5197,6 @@ function ManagerRoleSection({ user }: { user: User }) {
                                             onClick={() => onPickDriver(d)}               // 👈 باز کردن پنل راننده
                                             sx={{
                                               bgcolor: selectedDriver?.id === d.id ? ACC : undefined,
-                                              borderColor: `${ACC}66`,
-                                              '&:hover': { bgcolor: selectedDriver?.id === d.id ? '#00b5ab' : `${ACC}14` },
                                             }}
                                           >
                                             انتخاب
@@ -5256,7 +5205,7 @@ function ManagerRoleSection({ user }: { user: User }) {
                                       }
                                     >
                                       <ListItemAvatar>
-                                        <Avatar sx={{ bgcolor: `${ACC}22`, color: `${ACC}cc`, fontWeight: 700 }}>
+                                        <Avatar sx={{ fontWeight: 700 }}>
                                           {d.full_name?.charAt(0) ?? 'ر'}
                                         </Avatar>
                                       </ListItemAvatar>
@@ -5282,7 +5231,7 @@ function ManagerRoleSection({ user }: { user: User }) {
                                         sx={{
                                           borderRadius: 2, px: 1,
                                           transition: 'transform .15s ease, background .2s ease',
-                                          '&:hover': { background: `${ACC}0A`, transform: 'translateX(-3px)' },
+                                          '&:hover': { transform: 'translateX(-3px)' },
                                         }}
                                         secondaryAction={
                                           <Stack direction="row" spacing={0.5}>
@@ -5291,7 +5240,6 @@ function ManagerRoleSection({ user }: { user: User }) {
                                                 <IconButton
                                                   size="small"
                                                   onClick={() => setFocusLatLng([v.last_location!.lat, v.last_location!.lng])}
-                                                  sx={{ border: `1px solid ${ACC}44`, bgcolor: `${ACC}12` }}
                                                 >
                                                   📍
                                                 </IconButton>
@@ -5303,8 +5251,6 @@ function ManagerRoleSection({ user }: { user: User }) {
                                               onClick={() => onPickVehicle(v)} // ← کلیک = باز شدن پنل پایین
                                               sx={{
                                                 bgcolor: selectedVehicle?.id === v.id ? ACC : undefined,
-                                                borderColor: `${ACC}66`,
-                                                '&:hover': { bgcolor: selectedVehicle?.id === v.id ? '#00b5ab' : `${ACC}14` },
                                               }}
                                             >
                                               انتخاب
@@ -5313,7 +5259,7 @@ function ManagerRoleSection({ user }: { user: User }) {
                                         }
                                       >
                                         <ListItemAvatar>
-                                          <Avatar sx={{ bgcolor: `${ACC}22`, color: `${ACC}cc`, fontWeight: 700 }}>
+                                          <Avatar sx={{ fontWeight: 700 }}>
                                             {v.plate_no?.charAt(0) ?? 'م'}
                                           </Avatar>
                                         </ListItemAvatar>
