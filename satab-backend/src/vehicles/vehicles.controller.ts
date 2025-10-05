@@ -332,9 +332,10 @@ export class VehiclesController {
   @Post(':id/telemetry')
   async ingestTelemetry(
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { ignition?: boolean; idle_time?: number; odometer?: number; ts?: string },
+    @Body() body: { ignition?: boolean; idle_time?: number; odometer?: number; engine_temp?: number; ts?: string },
   ) {
     await this.service.ingestVehicleTelemetry(id, body);
     return { ok: true };
   }
+
 }

@@ -26,6 +26,8 @@ import { ViolationsModule } from '../violations/violations.module';
 import { DriverVehicleAssignmentModule } from '../driver-vehicle-assignment/driver-vehicle-assignment.module';
 import { DriverRouteModule } from '../drivers/driver-route.module';
 import { RolePermissionModule } from '../permissions/role-permission.module'; // ✅ ایمپورت کردن ماژول دسترسی‌ها
+import { VehicleStationEvent } from './vehicle-station-event.entity';
+import { VehicleStationState } from './vehicle-station-state.entity';
 
 @Module({
   imports: [
@@ -38,6 +40,8 @@ import { RolePermissionModule } from '../permissions/role-permission.module'; //
       RouteGeofenceState,
       RouteGeofenceEvent,
       VehiclePolicy,
+      VehicleStationState,   // ⬅️ اضافه کن
+      VehicleStationEvent,
     ]),
     forwardRef(() => DriverRouteModule),
     UserModule,
@@ -53,4 +57,4 @@ import { RolePermissionModule } from '../permissions/role-permission.module'; //
     VehiclesGateway, // ✅ اضافه شد
   ],
 })
-export class VehiclesModule {}
+export class VehiclesModule { }

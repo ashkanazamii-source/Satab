@@ -1,5 +1,5 @@
 // pairing/pairing.controller.ts
-import { Body, Controller, Get, HttpCode, Logger, Post, Query, Req, BadRequestException, Param, Sse, NotFoundException } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Logger, Post, Query, Req, BadRequestException, Param, Sse, NotFoundException, Res } from '@nestjs/common';
 import { PairingService } from './pairing.service';
 import { IssueDto, RedeemDto } from '../dto/pairing.dto';
 import { map, Observable } from 'rxjs';
@@ -7,12 +7,30 @@ import { Users } from 'src/users/users.entity';
 import { DataSource } from 'typeorm';
 import { InjectDataSource } from '@nestjs/typeorm';
 
+
+
 @Controller()
 export class PairingController {
   private readonly logger = new Logger(PairingController.name);
   constructor(private readonly pairing: PairingService,
     @InjectDataSource() private readonly ds: DataSource,
   ) { }
+  // بالای Controller (داخل کلاس) این‌ها را اضافه کن:
+  private readonly TTL_MS = 60_000; // 60s
+  private lastSeenUid = new Map<string, number>(); // hex8 -> expireAt(ms)
+
+  // کمک‌تابع نرمال‌سازی به hex8
+  private toHex8(val: string): string {
+    const v = String(val || '').trim();
+    if (/^[0-9a-fA-F]{8}$/.test(v)) return v.toUpperCase();
+    if (/^[0-9a-fA-F]{16}$/.test(v)) return v.toUpperCase().slice(-8);
+    if (/^\d{1,20}$/.test(v)) {
+      const n = BigInt(v);
+      if (n < 0n || n > 0xFFFFFFFFn) throw new BadRequestException('uid out of range');
+      return n.toString(16).padStart(8, '0').toUpperCase();
+    }
+    throw new BadRequestException('bad uid');
+  }
 
   @Post('pairing-codes')
   @HttpCode(201)
@@ -105,31 +123,50 @@ export class PairingController {
       throw err;
     }
   }
+  // Controller
   @Post('pairing-codes/pending/uid')
   @HttpCode(200)
   async submitUidNoId(@Body() body: any) {
-    const uid = body?.uid_hex ?? body?.uid_dec ?? body?.uid;
-    this.logger.debug(`[CTRL] submitUidNoId | raw=${JSON.stringify(uid)}`);
+    const t0 = Date.now();
+    const mask = (s: string, keep = 4) =>
+      s ? `${String(s).slice(0, keep)}…${String(s).slice(-keep)}` : '';
 
-    if (!uid) throw new BadRequestException('uid is required');
+    const uidRaw = body?.uid_hex ?? body?.uid_dec ?? body?.uid;
 
-    // لاگ ورودی خام
-    this.logger.debug(`[CTRL] submitUidNoId | raw=${JSON.stringify(uid)}`);
+    this.logger.debug(`[pending/uid] start | uidRaw=${mask(uidRaw, 6)}`);
+
+    if (!uidRaw) {
+      this.logger.warn('[pending/uid] fail: uid missing');
+      throw new BadRequestException('uid is required');
+    }
+
+    // اختیاری: فقط برای لاگ، نرمال‌سازی نمایش
+    let uidHexForLog = '';
+    try {
+      uidHexForLog = this.toHex8(String(uidRaw));
+      this.logger.debug(`[pending/uid] normalized | uidHex=${mask(uidHexForLog, 6)}`);
+    } catch {
+      // مهم نیست؛ خود سرویس داخلش نرمال می‌کند و خطا می‌دهد
+    }
 
     try {
-      const { user_id, full_name, hex8 } = await this.pairing.consumeArmedUid(uid);
+      // ✅ این سرویس اگر armed نباشه/منقضی شده باشه/استفاده شده باشه، خطای مناسب می‌دهد
+      const { user_id } = await this.pairing.consumeArmedUid(String(uidRaw));
+
       this.logger.debug(
-        `[CTRL] submitUidNoId | OK user_id=${user_id} full_name="${full_name}" hex=${hex8}`,
+        `[pending/uid] success | user_id=${user_id} | dur=${Date.now() - t0}ms`
       );
-      return { user_id, full_name }; // فقط همین
+      // فقط همین
+      return { user_id };
     } catch (err: any) {
-      const st = typeof err?.getStatus === 'function' ? err.getStatus() : 500;
+      const status = typeof err?.getStatus === 'function' ? err.getStatus() : 500;
       this.logger.error(
-        `[CTRL] submitUidNoId | ERR status=${st} msg=${err?.message || err}`,
+        `[pending/uid] error | status=${status} | msg=${err?.message || err} | dur=${Date.now() - t0}ms`
       );
       throw err;
     }
   }
+
   // PairingController
   @Get('pairing-codes/arm/check')
   @HttpCode(200)

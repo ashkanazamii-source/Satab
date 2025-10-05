@@ -877,80 +877,128 @@ export class PairingService {
     return { user_id: created.id, full_name: created.full_name };
   }
 
-  /**
-   * برد: فقط UID می‌فرسته. ما:
-   *  - UID → hex8
-   *  - lookup توی armedByHex
-   *  - اگر موجود و منقضی‌نشده → کارت رو روی همون user ست می‌کنیم
-   *  - خروجی: { user_id, full_name, hex8 }
-   */
-  async consumeArmedUid(incomingRawUid: string): Promise<{ user_id: number; full_name: string; hex8: string }> {
+  // ---- Service
+  async consumeArmedUid(incomingRawUid: string): Promise<{ user_id: number; }> {
     const t0 = Date.now();
     const mask = (s: string, keep = 4) => (s ? `${s.slice(0, keep)}…${s.slice(-keep)}` : '');
-    const ctx = (x = '') => `consumeArmedUid uid=${mask(String(incomingRawUid || ''), 6)}${x ? ' | ' + x : ''}`;
+    const logCtx = (extra = '') =>
+      `consume uid=${mask(String(incomingRawUid || ''), 6)} ${extra ? '| ' + extra : ''}`;
 
-    this.log.debug(ctx('start'));
+    this.log.debug(logCtx('start'));
 
-    const n = normalize4ByteCode(incomingRawUid);
-    if (!n.ok) {
-      this.log.warn(ctx(`bad uid | reason=${n.msg || 'invalid'}`));
-      throw new BadRequestException('bad uid');
-    }
-    const hex8 = n.hex8.toUpperCase();
-    this.log.debug(ctx(`normalized hex=${hex8}`));
+    try {
+      // --- guardrails (mirror redeem)
+      const n = normalize4ByteCode(incomingRawUid);
+      if (!n.ok) {
+        this.log.warn(logCtx('fail: bad uid'));
+        throw new BadRequestException('bad uid');
+      }
+      const hex8 = n.hex8.toUpperCase();
 
-    const armed = this.armedByHex.get(hex8);
-    if (!armed) {
-      this.log.warn(ctx('not armed'));
-      throw new NotFoundException('not armed');
-    }
+      const usedExp = this.used.get(hex8);
+      if (usedExp && usedExp > this.now()) {
+        this.log.warn(logCtx('fail: uid already used (cache)'));
+        throw new GoneException('uid used');
+      }
 
-    const age = Date.now() - armed.at;
-    if (age > ARM_TTL_MS) {
+      const armed = this.armedByHex.get(hex8);
+      if (!armed) {
+        this.log.warn(logCtx('fail: not armed/expired (memory)'));
+        throw new NotFoundException('not armed/expired');
+      }
+
+      if (this.now() > (armed.at + ARM_TTL_MS)) {
+        if ((armed as any).timer) clearTimeout((armed as any).timer);
+        this.armedByHex.delete(hex8);
+        this.log.warn(logCtx('fail: armed expired (deadline)'));
+        throw new GoneException('expired');
+      }
+
+      this.log.debug(logCtx(`validated | user=${armed.userId} | hex=${mask(hex8, 6)}`));
+
+      // --- DB section (transaction) — هم‌سبک redeem
+      const { user_id } = await this.ds.transaction(async (q) => {
+        const usersRepo = q.getRepository(Users);
+
+        // 1) کارت روی فرد دیگری نباشد
+        const existCard = await usersRepo.findOne({
+          where: { driver_card_hex: hex8 },
+          select: { id: true } as any,
+        });
+        if (existCard && existCard.id !== armed.userId) {
+          this.log.warn(logCtx(`fail: card bound to another user | owner=${existCard.id}`));
+          throw new ConflictException('card already used');
+        }
+
+        // 2) کاربر مقصد موجود باشد
+        const user = await usersRepo.findOne({
+          where: { id: armed.userId },
+          select: { id: true, full_name: true, driver_card_hex: true } as any,
+        });
+        if (!user) {
+          this.log.warn(logCtx(`fail: owner not found user=${armed.userId}`));
+          throw new NotFoundException('user not found');
+        }
+
+        // 3) اگر بایند نشده، بایند کن (هندل ریس/UNIQUE مثل redeem)
+        if (user.driver_card_hex !== hex8) {
+          try {
+            await usersRepo.update({ id: armed.userId } as any, { driver_card_hex: hex8 });
+          } catch (e: any) {
+            const msg = String(e?.message || '').toLowerCase();
+            const code = String(e?.code || '').toUpperCase();
+            const isDup = code === '23505' || msg.includes('duplicate') || msg.includes('er_dup_entry') || msg.includes('unique');
+            if (isDup) {
+              const ownerNow = await usersRepo.findOne({
+                where: { driver_card_hex: hex8 },
+                select: { id: true } as any,
+              });
+              if (ownerNow && ownerNow.id !== armed.userId) {
+                this.log.warn(logCtx(`fail: race; card taken by user_id=${ownerNow.id}`));
+                throw new ConflictException('card already used');
+              }
+            } else {
+              throw e;
+            }
+          }
+        }
+
+        return { user_id: Number(user.id) };
+      });
+
+      // --- finalize (mirror redeem)
+      if ((armed as any).timer) clearTimeout((armed as any).timer);
       this.armedByHex.delete(hex8);
-      this.log.warn(ctx(`timeout armed age=${Math.floor(age / 1000)}s`));
-      throw new RequestTimeoutException('timeout');
+
+      this.results.set(hex8, { user_id });
+      this.used.set(hex8, this.now() + USED_TTL_MS);
+
+      const arr = this.waiters.get(hex8);
+      if (arr?.length) {
+        for (const w of arr) { clearTimeout(w.timeout); w.resolve({ user_id }); }
+        this.waiters.delete(hex8);
+      }
+
+      const prevTimer = this.resultTimers.get(hex8);
+      if (prevTimer) clearTimeout(prevTimer);
+      this.resultTimers.set(
+        hex8,
+        setTimeout(() => {
+          this.results.delete(hex8);
+          this.resultTimers.delete(hex8);
+        }, USED_TTL_MS),
+      );
+
+      this.log.debug(logCtx(`success user_id=${user_id} " | dur=${Date.now() - t0}ms`));
+      return { user_id };
+    } catch (err: any) {
+      const isHttp = typeof err?.getStatus === 'function';
+      const status = isHttp ? err.getStatus() : 500;
+      this.log.error(logCtx(`error status=${status} | dur=${Date.now() - t0}ms | msg=${err?.message || err}`));
+      throw err;
     }
-
-    // یک‌بارمصرف—قبل از DB حذف کن تا ریسک دوبل نشه
-    this.armedByHex.delete(hex8);
-
-    // کارت باید آزاد باشه (روی کاربر دیگه نباشه)، بعد روی همون userId ست بشه
-    const usersRepo = this.ds.getRepository(Users);
-    this.log.debug(ctx(`binding to user_id=${armed.userId}`));
-
-    // 1) کارت روی کس دیگه نباشه
-    const existCard = await usersRepo.findOne({
-      where: { driver_card_hex: hex8 },
-      select: { id: true } as any,
-    });
-    if (existCard && existCard.id !== armed.userId) {
-      this.log.warn(ctx(`card already used by another user_id=${existCard.id}`));
-      throw new ConflictException('card already used');
-    }
-
-    // 2) خود کاربر موجود باشه
-    const user = await usersRepo.findOne({
-      where: { id: armed.userId },
-      select: { id: true, full_name: true, driver_card_hex: true } as any,
-    });
-    if (!user) {
-      this.log.warn(ctx(`target user not found user_id=${armed.userId}`));
-      throw new NotFoundException('user not found');
-    }
-
-    // 3) اگر همین الان ست نیست، ست کن
-    if (user.driver_card_hex !== hex8) {
-      await usersRepo.update({ id: armed.userId } as any, { driver_card_hex: hex8 });
-      this.log.debug(ctx(`card bound to user_id=${armed.userId}`));
-    } else {
-      this.log.debug(ctx(`card already bound to target user_id=${armed.userId}`));
-    }
-
-    const dur = Date.now() - t0;
-    this.log.debug(ctx(`success user_id=${user.id} full_name="${user.full_name}" dur=${dur}ms`));
-    return { user_id: Number(user.id), full_name: user.full_name, hex8 };
   }
+
 
   // ارسال event به استریم SSE
   private emitPending(id: string, type: 'matched' | 'mismatch' | 'failed', data: any) {

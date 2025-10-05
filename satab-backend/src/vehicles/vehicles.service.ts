@@ -6,7 +6,7 @@ import { CreateVehicleDto } from '../dto/create-vehicle.dto';
 import { UpdateVehicleDto } from '../dto/create-vehicle.dto';
 import { normalizePlate } from '../dto/create-vehicle.dto';
 import { VehiclePolicy } from '../vehicle-policies/vehicle-policy.entity';
-import { VehicleDailyTrack, Coordinates } from './vehicle_daily_tracks.entity'; // ✅ هم Entity و هم Coordinates ایمپورت شده‌اند
+import { VehicleDailyTrack, Coordinates } from './vehicle_daily_tracks.entity';
 import { VehiclesGateway } from './vehicles.gateway';
 import { Between, In } from 'typeorm';
 import { VehicleStation } from './vehicle-station.entity';
@@ -18,9 +18,11 @@ import { RouteGeofenceState } from './route-geofence-state.entity';
 import { RouteGeofenceEvent } from './route-geofence-event.entity';
 import { CreateRouteDto } from 'src/dto/create-route.dto';
 import { DeepPartial } from 'typeorm';
-import { ViolationsService } from '../violations/violations.service'; // ⬅️ اضافه
+import { ViolationsService } from '../violations/violations.service';
 import { DriverVehicleAssignmentService } from '../driver-vehicle-assignment/driver-vehicle-assignment.service';
 import { DriverRouteService } from 'src/drivers/driver-route.service';
+import { VehicleStationState } from './vehicle-station-state.entity';
+import { VehicleStationEvent } from './vehicle-station-event.entity';
 
 
 
@@ -62,6 +64,11 @@ export class VehiclesService {
   trackRepo: any;
   tlmRepo: any;
   constructor(
+    @InjectRepository(VehicleStationState)
+    private readonly stationStateRepo: Repository<VehicleStationState>,
+
+    @InjectRepository(VehicleStationEvent)
+    private readonly stationEventRepo: Repository<VehicleStationEvent>,
 
     @InjectRepository(Vehicle)
     private readonly repo: Repository<Vehicle>,
@@ -105,7 +112,7 @@ export class VehiclesService {
   }> {
     const stations = await this.stationRepo.find({
       where: { vehicle_id: vehicleId },
-      order: { id: 'ASC' },
+      order: { order_no: 'ASC', id: 'ASC' },
       select: ['id', 'vehicle_id', 'owner_user_id', 'name', 'lat', 'lng', 'radius_m', 'created_at', 'updated_at'],
     });
 
@@ -124,6 +131,138 @@ export class VehiclesService {
     const la1 = toRad(a.lat), la2 = toRad(b.lat);
     const h = Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLng / 2) ** 2;
     return 2 * R * Math.asin(Math.sqrt(h));
+  }
+  private async loadOrderedStations(vehicleId: number): Promise<VehicleStation[]> {
+    return this.stationRepo.find({
+      where: { vehicle_id: vehicleId },
+      order: { order_no: 'ASC', id: 'ASC' },
+    });
+  }
+
+  private async getOrInitStationState(vehicleId: number): Promise<VehicleStationState> {
+    let st = await this.stationStateRepo.findOne({ where: { vehicle_id: vehicleId } });
+    if (!st) {
+      st = this.stationStateRepo.create({
+        vehicle_id: vehicleId,
+        next_order_no: 1,
+        had_any_pos: false,
+        inside_station_id: null,
+        inside_since: null,
+        last_visited_station_id: null,
+      });
+      st = await this.stationStateRepo.save(st);
+    }
+    return st;
+  }
+  private isInsideCore(p: { lat: number; lng: number }, st: VehicleStation): boolean {
+    return this.haversineMeters(p, { lat: st.lat, lng: st.lng }) <= (st.radius_m || 0);
+  }
+
+  private async processStationsOnPoint(
+    vehicleId: number,
+    at: Date,
+    lat: number,
+    lng: number
+  ) {
+    const stations = await this.loadOrderedStations(vehicleId);
+    if (!stations.length) return;
+
+    // وضعیت فعلی
+    let state = await this.getOrInitStationState(vehicleId);
+
+    // ایستگاه بعدی که باید تیک بخورد
+    const next = stations.find(s => s.order_no === state.next_order_no);
+    if (!next) {
+      // اگر next فراتر از لیست رفت، می‌توانی ریست یا نادیده بگیری
+      return;
+    }
+
+    const point = { lat, lng };
+    const insideNext = this.isInsideCore(point, next);
+
+    // قانون First-fix: اگر تاکنون هیچ پوزی نداشتیم و الآن داخل next هستیم، فقط presence را ثبت کن
+    if (!state.had_any_pos) {
+      state.had_any_pos = true;
+      if (insideNext) {
+        state.inside_station_id = next.id;
+        state.inside_since = at;
+        await this.stationStateRepo.save(state);
+        // لاگ ورود اختیاری
+        await this.stationEventRepo.save(this.stationEventRepo.create({
+          vehicle_id: vehicleId, station_id: next.id, order_no: next.order_no, type: 'enter', lat, lng,
+        })).catch(() => { });
+        return;
+      }
+      await this.stationStateRepo.save(state);
+      return;
+    }
+
+    // اگر قبلاً داخل next بودیم ولی الان بیرونیم → خروج
+    if (state.inside_station_id === next.id && !insideNext) {
+      state.inside_station_id = null;
+      state.inside_since = null;
+      await this.stationStateRepo.save(state);
+      await this.stationEventRepo.save(this.stationEventRepo.create({
+        vehicle_id: vehicleId, station_id: next.id, order_no: next.order_no, type: 'exit', lat, lng,
+      })).catch(() => { });
+      return;
+    }
+
+    // ورود به next (اگر قبلاً inside نبودیم)
+    if (insideNext && state.inside_station_id !== next.id) {
+      state.inside_station_id = next.id;
+      state.inside_since = at;
+      await this.stationStateRepo.save(state);
+      await this.stationEventRepo.save(this.stationEventRepo.create({
+        vehicle_id: vehicleId, station_id: next.id, order_no: next.order_no, type: 'enter', lat, lng,
+      })).catch(() => { });
+      return;
+    }
+
+    // اگر داخل next هستیم، بررسی dwell برای تیک خوردن
+    if (insideNext && state.inside_station_id === next.id && state.inside_since) {
+      const dwellSec = Math.max(1, next.dwell_sec || 20);
+      const stayed = (at.getTime() - new Date(state.inside_since).getTime()) / 1000;
+      if (stayed >= dwellSec) {
+        // ✅ ایستگاه next تیک خورد
+        state.last_visited_station_id = next.id;
+        state.next_order_no = next.order_no + 1;
+        state.inside_station_id = null;
+        state.inside_since = null;
+
+        await this.stationStateRepo.save(state);
+        await this.stationEventRepo.save(this.stationEventRepo.create({
+          vehicle_id: vehicleId, station_id: next.id, order_no: next.order_no, type: 'visit', lat, lng,
+        })).catch(() => { });
+
+        // 📣 اعلان سمت کلاینت‌ها (progress)
+        (this.gw as any)?.emitStationsChanged?.(vehicleId, next.owner_user_id, {
+          type: 'progress',
+          visited_station_id: next.id,
+          visited_order_no: next.order_no,
+          next_order_no: state.next_order_no,
+          at: at.toISOString(),
+        });
+
+        // 🎯 ایجاد مأموریت اگر ایستگاه مأموریت‌دار بود
+        if (next.is_mission) {
+          try {
+            // اگر سرویس مأموریت داری:
+            await this.missionsRepo?.createStationMission?.({
+              vehicleId,
+              stationId: next.id,
+              stationOrderNo: next.order_no,
+              at,
+            });
+          } catch (e) {
+            // swallow
+          }
+        }
+      }
+    }
+
+    // نکتهٔ کلیدی: حتی اگر همزمان داخل ایستگاه‌های دیگر هم باشیم (۹ و ۲۵ نزدیک)،
+    // چون فقط "next" را ارزیابی می‌کنیم، هیچ تیکی برای ۲۵ ثبت نمی‌شود.
   }
 
   /** تشخیص اینکه نقطهٔ فعلی داخل کدام ترمینال است (اگر هیچ‌کدام، null) */
@@ -209,7 +348,7 @@ export class VehiclesService {
 
     return this.stationRepo.find({
       where: { vehicle_id: vehicleId },
-      order: { id: 'ASC' },
+      order: { order_no: 'ASC', id: 'ASC' },
     });
   }
 
@@ -260,11 +399,14 @@ export class VehiclesService {
 
     const st = this.stationRepo.create({
       vehicle_id: vehicleId,
-      owner_user_id: Number(veh.owner_user?.id),          // ✅ از رلیشن بگیر
+      owner_user_id: Number(veh.owner_user?.id),
       name: (dto.name ?? 'ایستگاه').trim(),
       lat: +dto.lat,
       lng: +dto.lng,
       radius_m: dto.radius_m && dto.radius_m > 0 ? Math.min(+dto.radius_m, 5000) : 100,
+      order_no: (dto as any).order_no ?? 1,
+      is_mission: !!(dto as any).is_mission,
+      dwell_sec: Math.max(1, (dto as any).dwell_sec ?? 20),
     });
 
     const saved = await this.stationRepo.save(st);
@@ -290,10 +432,16 @@ export class VehiclesService {
   async updateStation(stationId: number, ownerUserId: number, dto: Partial<{ name: string; lat: number; lng: number; radius_m: number }>) {
     const st = await this.stationRepo.findOne({ where: { id: stationId, owner_user_id: ownerUserId } });
     if (!st) throw new NotFoundException('ایستگاه یافت نشد'); // یا اجازه‌نداری
+    if ((dto as any).order_no !== undefined) (st as any).order_no = Math.max(1, +(dto as any).order_no);
+    if ((dto as any).is_mission !== undefined) (st as any).is_mission = !!(dto as any).is_mission;
+    if ((dto as any).dwell_sec !== undefined) (st as any).dwell_sec = Math.max(1, +(dto as any).dwell_sec);
+
     Object.assign(st, dto);
     const saved = await this.stationRepo.save(st);
-    this.gw.emitStationsChanged(st.vehicle_id, ownerUserId, { type: 'updated', station: saved });
+    this.gw.emitStationsChanged(saved.vehicle_id, saved.owner_user_id, { type: 'updated', station: saved });
     return saved;
+
+
   }
 
   async deleteStation(stationId: number, ownerUserId: number) {
@@ -590,6 +738,7 @@ export class VehiclesService {
       await this.driverRoutes.addPoint(newRoute.id, { lat, lng, ts: when.toISOString() });
     }
     await this.checkRouteGeofence(vehicleId, lat, lng, when);
+    await this.processStationsOnPoint(vehicleId, when, lat, lng);
 
     console.log("--- [END] Finished processing driver logic successfully. ---");
   }
@@ -787,7 +936,7 @@ export class VehiclesService {
 
     const stations = await this.stationRepo.find({
       where: { vehicle_id: id },
-      order: { id: 'ASC' },
+      order: { order_no: 'ASC', id: 'ASC' },
     });
 
     // همون ماشین + ایستگاه‌ها
@@ -883,7 +1032,7 @@ export class VehiclesService {
     if (vehIds.length) {
       const stRows = await this.stationRepo.find({
         where: { vehicle_id: In(vehIds) as any },
-        order: { id: 'ASC' },
+        order: { order_no: 'ASC', id: 'ASC' },
       });
       const byVid = new Map<number, any[]>();
       for (const s of stRows) {
@@ -1046,9 +1195,10 @@ export class VehiclesService {
     try {
       const vv = await this.repo.findOne({
         where: { id: vehicleId },
-        select: ['id'] as any,
-        // @ts-ignore: فیلدها ممکن است در entity تایپ نشده باشند
+        select: ['id', 'last_location_lat', 'last_location_lng'] as any,
       }) as any;
+
+      // @ts-ignore: فیلدها ممکن است در entity تایپ نشده باشند
       if ((vv as any).last_location_lat != null && (vv as any).last_location_lng != null && poly) {
         live = this.minDistanceToRouteMeters(poly, (vv as any).last_location_lat, (vv as any).last_location_lng);
       }

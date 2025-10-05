@@ -204,6 +204,9 @@ export default function DefineLinePage() {
     const [multiPicking, setMultiPicking] = React.useState(false);
     const [multiStops, setMultiStops] = React.useState<TmpLatLng[]>([]);
     const [multiBusy, setMultiBusy] = React.useState(false);
+    // ترتیب ایستگاه‌ها و حالت مأموریت
+    const [dfOrdering, setDfOrdering] = React.useState<'free' | 'sequence'>('free');
+    const [dfMission, setDfMission] = React.useState(false);
 
     // ساخت رشته مختصات "lon,lat;lon,lat;..."
     const toCoordStr = (pts: TmpLatLng[]) =>
@@ -673,7 +676,11 @@ export default function DefineLinePage() {
                         temp_profile: {
                             id: selectedProfile.id,
                             name: selectedProfile.name,
-                            settings: selectedProfile.settings,
+                            settings: {
+                                ...selectedProfile.settings,
+                                station_ordering: selectedProfile.settings?.station_ordering ?? 'free',
+                                mission_mode: Boolean(selectedProfile.settings?.mission_mode),
+                            },
                         },
                         start_at: startIso,
                         duration_minutes,
@@ -1154,6 +1161,8 @@ export default function DefineLinePage() {
     const previewProfileOnMainMap = (p: SettingsProfile) => {
         // 1) state‌ها را از روی پروفایل پر کن
         setDfStations(p.settings?.stations || []);
+        setDfOrdering(p.settings?.station_ordering === 'sequence' ? 'sequence' : 'free');
+        setDfMission(Boolean(p.settings?.mission_mode));
 
         const gf = p.settings?.geofence;
         const rt = p.settings?.route;
@@ -1305,6 +1314,9 @@ export default function DefineLinePage() {
                 points: TmpLatLng[];
                 threshold_m: number;
             } | null;
+            station_ordering?: 'free' | 'sequence';
+            mission_mode?: boolean;
+
         };
     };
     // =========================
@@ -1343,6 +1355,8 @@ export default function DefineLinePage() {
                 stations = [],
                 route = null,
                 geofence = null,
+                station_ordering = 'free',  // ⬅️ جدید
+                mission_mode = false,       // ⬅️ جدید
             } = (selectedProfile.settings || {}) as {
                 stations?: Array<{ name?: string; lat: number; lng: number; radius_m?: number; order_no?: number }>;
                 route?: null | { id?: number; name?: string; threshold_m?: number; points?: Array<{ lat: number; lng: number }> };
@@ -1350,7 +1364,10 @@ export default function DefineLinePage() {
                     | { type: 'circle'; center: { lat: number; lng: number }; radius_m: number; tolerance_m?: number }
                     | { type: 'polygon'; points: Array<{ lat: number; lng: number }>; tolerance_m?: number }
                 );
+                station_ordering?: 'free' | 'sequence'; // ⬅️ جدید
+                mission_mode?: boolean;                 // ⬅️ جدید
             };
+
 
             const routeThreshold = toInt(route?.threshold_m ?? 60);
 
@@ -1414,6 +1431,20 @@ export default function DefineLinePage() {
                     logs.push(`⚠️ خطا در حذف‌ها برای VID ${vid}: ${e?.response?.data?.message || e?.message || 'نامشخص'}`);
                 }
             }
+            const orderingMode: 'free' | 'sequence' =
+                station_ordering === 'sequence' ? 'sequence' : 'free';
+            const missionMode = Boolean(mission_mode); // فعلاً فقط می‌خوانیم؛ اگر API مأموریت داشتی این‌جا صدا بزن
+
+            // اگر sequence باشد: برای ایستگاه‌های فاقد order_no، ۱..N بگذار
+            const stationsForApply = Array.isArray(stations)
+                ? stations.map((s, idx) => ({
+                    ...s,
+                    order_no:
+                        orderingMode === 'sequence'
+                            ? (Number.isFinite(Number(s?.order_no)) ? Number(s!.order_no) : idx + 1)
+                            : (Number.isFinite(Number(s?.order_no)) ? Number(s!.order_no) : undefined),
+                }))
+                : [];
 
             // =========================
             // فاز ۲ — اعمال‌ها (روی همهٔ ماشین‌ها)
@@ -1445,8 +1476,9 @@ export default function DefineLinePage() {
                     }
 
                     // B) ایستگاه‌های خودرو
-                    if (Array.isArray(stations) && stations.length) {
-                        for (const st of stations) {
+                    // B) ایستگاه‌های خودرو (با ترتیب نهایی)
+                    if (Array.isArray(stationsForApply) && stationsForApply.length) {
+                        for (const st of stationsForApply) {
                             const lat = Number(st?.lat), lng = Number(st?.lng);
                             if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
                             await api.post(`/vehicles/${vid}/stations`, {
@@ -1457,6 +1489,7 @@ export default function DefineLinePage() {
                             }, { validateStatus: s => s < 500 }).catch(() => { });
                         }
                     }
+
 
                     // C) ژئوفنس
                     if (geofence) {
@@ -1516,6 +1549,7 @@ export default function DefineLinePage() {
         } finally {
             setApplyBusy(false);
         }
+
     };
 
     const readVehicleStations = React.useCallback(async (vid: number) => {
@@ -1627,6 +1661,8 @@ export default function DefineLinePage() {
         setRoutePoints([]);           // ← مهم
         setRouteThreshold(60);        // ← مهم
         setDrawingRoute(false);
+        setDfOrdering('sequence');
+        setDfMission(false);
     };
 
     // داخل DefineLinePage.tsx
@@ -1694,6 +1730,8 @@ export default function DefineLinePage() {
         setRoutePoints(p.settings.route?.points || []);
         setRouteThreshold(Math.max(1, Number(p.settings.route?.threshold_m ?? 60)));
         const gf = p.settings.geofence;
+        setDfOrdering(p.settings?.station_ordering === 'sequence' ? 'sequence' : 'free');
+        setDfMission(Boolean(p.settings?.mission_mode));
         if (gf) {
             if (gf.type === 'circle') {
                 setDfGfMode('circle');
@@ -1722,6 +1760,8 @@ export default function DefineLinePage() {
             route: (canRoute && routePoints.length > 1)
                 ? { points: routePoints.slice(), threshold_m: Math.max(1, Math.trunc(routeThreshold)) }
                 : null,
+            station_ordering: dfOrdering,
+            mission_mode: dfMission,
         }; try {
             if (editingProfileId) {
                 await api.put(`/vehicle-setting-profiles/${editingProfileId}`, { name: profileName.trim(), settings });
@@ -3021,6 +3061,27 @@ export default function DefineLinePage() {
                                 {canStation && (
                                     <>
                                         <Divider flexItem orientation="vertical" sx={{ mx: 0.5 }} />
+
+                                        <FormControl size="small" sx={{ minWidth: 180 }}>
+                                            <InputLabel id="ordering-mode">ترتیب ایستگاه‌ها</InputLabel>
+                                            <Select
+                                                labelId="ordering-mode"
+                                                label="ترتیب ایستگاه‌ها"
+                                                value={dfOrdering}
+                                                onChange={(e) => setDfOrdering(e.target.value as 'free' | 'sequence')}
+                                            >
+                                                <MenuItem value="free">آزاد (بدون ترتیب اجباری)</MenuItem>
+                                                <MenuItem value="sequence">دنباله‌ای </MenuItem>
+                                            </Select>
+                                        </FormControl>
+
+                                        <FormControlLabel
+                                            sx={{ ml: 1 }}
+                                            control={
+                                                <Checkbox checked={dfMission} onChange={(e) => setDfMission(e.target.checked)} />
+                                            }
+                                            label="حالت مأموریت (Mission)"
+                                        />
                                         <Button
                                             size="small"
                                             variant={addingStation ? 'contained' : 'outlined'}
