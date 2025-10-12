@@ -878,119 +878,104 @@ export class PairingService {
   }
 
   // ---- Service
-  async consumeArmedUid(incomingRawUid: string): Promise<{ user_id: number; }> {
+  async consumeArmedUid(incomingRawUid: string): Promise<{ user_id: number; full_name: string }> {
     const t0 = Date.now();
-    const mask = (s: string, keep = 4) => (s ? `${s.slice(0, keep)}…${s.slice(-keep)}` : '');
-    const logCtx = (extra = '') =>
-      `consume uid=${mask(String(incomingRawUid || ''), 6)} ${extra ? '| ' + extra : ''}`;
+    const mask = (s: string, keep = 4) => (s ? `${String(s).slice(0, keep)}…${String(s).slice(-keep)}` : '');
+    const logCtx = (extra = '') => `consume uid=${mask(String(incomingRawUid || ''), 6)} ${extra ? '| ' + extra : ''}`;
 
     this.log.debug(logCtx('start'));
-
     try {
-      // --- guardrails (mirror redeem)
+      // 1) نرمال‌سازی UID "هم‌شکل فرانت" — فعلاً 8-هگز UpperCase
       const n = normalize4ByteCode(incomingRawUid);
       if (!n.ok) {
         this.log.warn(logCtx('fail: bad uid'));
         throw new BadRequestException('bad uid');
       }
-      const hex8 = n.hex8.toUpperCase();
+      const hex = n.hex8.toUpperCase();
+      const r = this.results.get(hex);
+      if (r) {
+        this.log.debug(logCtx(`idempotent hit -> user_id=${r.user_id}`));
+        return r; // { user_id, full_name }
+      }
 
-      const usedExp = this.used.get(hex8);
+      // ضد تکرار کوتاه‌مدت (اختیاری، همان منطق قبلی)
+      const usedExp = this.used.get(hex);
       if (usedExp && usedExp > this.now()) {
         this.log.warn(logCtx('fail: uid already used (cache)'));
         throw new GoneException('uid used');
       }
 
-      const armed = this.armedByHex.get(hex8);
+      // 2) باید ARM معتبر برای همین UID وجود داشته باشد
+      const armed = this.armedByHex.get(hex);
       if (!armed) {
         this.log.warn(logCtx('fail: not armed/expired (memory)'));
         throw new NotFoundException('not armed/expired');
       }
-
       if (this.now() > (armed.at + ARM_TTL_MS)) {
         if ((armed as any).timer) clearTimeout((armed as any).timer);
-        this.armedByHex.delete(hex8);
+        this.armedByHex.delete(hex);
         this.log.warn(logCtx('fail: armed expired (deadline)'));
         throw new GoneException('expired');
       }
 
-      this.log.debug(logCtx(`validated | user=${armed.userId} | hex=${mask(hex8, 6)}`));
+      this.log.debug(logCtx(`validated | user=${armed.userId} | hex=${mask(hex, 6)}`));
 
-      // --- DB section (transaction) — هم‌سبک redeem
-      const { user_id } = await this.ds.transaction(async (q) => {
+      // 3) تراکنش اتمیک: جدا از مالک قبلی → اتصال به رانندهٔ هدف
+      const { user_id, full_name } = await this.ds.transaction(async (q) => {
         const usersRepo = q.getRepository(Users);
 
-        // 1) کارت روی فرد دیگری نباشد
-        const existCard = await usersRepo.findOne({
-          where: { driver_card_hex: hex8 },
-          select: { id: true } as any,
-        });
-        if (existCard && existCard.id !== armed.userId) {
-          this.log.warn(logCtx(`fail: card bound to another user | owner=${existCard.id}`));
-          throw new ConflictException('card already used');
-        }
-
-        // 2) کاربر مقصد موجود باشد
-        const user = await usersRepo.findOne({
+        // 3-1) رانندهٔ هدف باید موجود باشد
+        const target = await usersRepo.findOne({
           where: { id: armed.userId },
           select: { id: true, full_name: true, driver_card_hex: true } as any,
         });
-        if (!user) {
+        if (!target) {
           this.log.warn(logCtx(`fail: owner not found user=${armed.userId}`));
           throw new NotFoundException('user not found');
         }
 
-        // 3) اگر بایند نشده، بایند کن (هندل ریس/UNIQUE مثل redeem)
-        if (user.driver_card_hex !== hex8) {
-          try {
-            await usersRepo.update({ id: armed.userId } as any, { driver_card_hex: hex8 });
-          } catch (e: any) {
-            const msg = String(e?.message || '').toLowerCase();
-            const code = String(e?.code || '').toUpperCase();
-            const isDup = code === '23505' || msg.includes('duplicate') || msg.includes('er_dup_entry') || msg.includes('unique');
-            if (isDup) {
-              const ownerNow = await usersRepo.findOne({
-                where: { driver_card_hex: hex8 },
-                select: { id: true } as any,
-              });
-              if (ownerNow && ownerNow.id !== armed.userId) {
-                this.log.warn(logCtx(`fail: race; card taken by user_id=${ownerNow.id}`));
-                throw new ConflictException('card already used');
-              }
-            } else {
-              throw e;
-            }
-          }
+        // 3-2) مالک فعلی کارت را پیدا کن (اگر هست) و اگر با هدف متفاوت است، کارت را از او خالی کن
+        const oldOwner = await usersRepo.findOne({
+          where: { driver_card_hex: hex },
+          select: { id: true } as any,
+        });
+        if (oldOwner && oldOwner.id !== target.id) {
+          await usersRepo.update({ id: oldOwner.id } as any, { driver_card_hex: null });
         }
 
-        return { user_id: Number(user.id) };
+        // 3-3) حالا کارت را برای رانندهٔ هدف ست کن (اگر هنوز نیست)
+        if (target.driver_card_hex !== hex) {
+          await usersRepo.update({ id: target.id } as any, { driver_card_hex: hex });
+        }
+
+        return { user_id: Number(target.id), full_name: target.full_name };
       });
 
-      // --- finalize (mirror redeem)
+      // 4) Finalize: ARM مصرف شود، کش‌ها تنظیم شوند، منتظرها resolve شوند
       if ((armed as any).timer) clearTimeout((armed as any).timer);
-      this.armedByHex.delete(hex8);
+      this.armedByHex.delete(hex);
 
-      this.results.set(hex8, { user_id });
-      this.used.set(hex8, this.now() + USED_TTL_MS);
+      this.results.set(hex, { user_id, full_name });
+      this.used.set(hex, this.now() + USED_TTL_MS);
 
-      const arr = this.waiters.get(hex8);
+      const arr = this.waiters.get(hex);
       if (arr?.length) {
-        for (const w of arr) { clearTimeout(w.timeout); w.resolve({ user_id }); }
-        this.waiters.delete(hex8);
+        for (const w of arr) { clearTimeout(w.timeout); w.resolve({ user_id, full_name }); }
+        this.waiters.delete(hex);
       }
 
-      const prevTimer = this.resultTimers.get(hex8);
+      const prevTimer = this.resultTimers.get(hex);
       if (prevTimer) clearTimeout(prevTimer);
       this.resultTimers.set(
-        hex8,
+        hex,
         setTimeout(() => {
-          this.results.delete(hex8);
-          this.resultTimers.delete(hex8);
+          this.results.delete(hex);
+          this.resultTimers.delete(hex);
         }, USED_TTL_MS),
       );
 
-      this.log.debug(logCtx(`success user_id=${user_id} " | dur=${Date.now() - t0}ms`));
-      return { user_id };
+      this.log.debug(logCtx(`success user_id=${user_id} | dur=${Date.now() - t0}ms`));
+      return { user_id, full_name };
     } catch (err: any) {
       const isHttp = typeof err?.getStatus === 'function';
       const status = isHttp ? err.getStatus() : 500;
@@ -998,6 +983,7 @@ export class PairingService {
       throw err;
     }
   }
+
 
 
   // ارسال event به استریم SSE

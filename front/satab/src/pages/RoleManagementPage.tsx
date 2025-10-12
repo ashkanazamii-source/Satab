@@ -3557,7 +3557,7 @@ function AddUserDialog({
       setPendingId(null);
       setPairSeconds(0);
       setCardVerified(false);
-      setCardHex16('');
+      setArmHex8('');
     }
   }, [form.role_level]);
   // ثبت کارت: ساخت pending و فقط polling تا تایید برد
@@ -3578,24 +3578,15 @@ function AddUserDialog({
       if (!createdUserId) { setPairErr('ابتدا کاربر راننده را ثبت کنید'); return; }
 
       // 1) نرمال‌سازی UID به hex8
+      // 1) نرمال‌سازی با تابع موجود
       const raw = (driverCard || '').trim();
       if (!raw) { setPairErr('کد کارت را وارد کنید'); return; }
 
-      const toHex8 = (val: string) => {
-        const v = String(val || '').trim();
-        if (/^[0-9a-fA-F]{8}$/.test(v)) return v.toUpperCase();
-        if (/^[0-9a-fA-F]{16}$/.test(v)) return v.toUpperCase().slice(-8);
-        if (/^[0-9]{1,20}$/.test(v)) {
-          const n = BigInt(v);
-          if (n < 0n || n > 0xFFFFFFFFn) throw new Error('out of 32-bit');
-          return n.toString(16).padStart(8, '0').toUpperCase();
-        }
-        throw new Error('فرمت UID نامعتبر است (۸ یا ۱۶ هگز/دهدهی)');
-      };
+      const r = normalize8ByteCode(raw);
+      if (!r.ok) { setPairErr(r.msg || 'کد کارت نامعتبر است'); return; }
+      // معیار نهایی: 8-هگز (۸ رقم انتهایی از hex16)
+      const hex8 = r.hex16.slice(-8).toUpperCase();
 
-      let hex8: string;
-      try { hex8 = toHex8(raw); }
-      catch (err: any) { setPairErr(err?.message || 'کد کارت نامعتبر است'); return; }
 
       // 2) ARM برای همین user_id
       setPairing(true);
@@ -3625,6 +3616,7 @@ function AddUserDialog({
       if (quick.status === 200 && quick.data?.bound) {
         setPairMsg('✅ کارت تأیید شد');
         setCardVerified(true);
+        setPairing(false);
         setPairing(false);
         setPairSeconds(0);
         setCheckBinding(false);
@@ -3806,21 +3798,24 @@ function AddUserDialog({
                     error={!!driverCardErr}
                     helperText={
                       driverCardErr ||
-                      'مثال Hex: 00112233AABBCCDD — مثال Decimal: 12345678'
+                      'ورودی می‌تواند ۸ هگز یا دهدهی باشد؛ خروجی نهایی ۸-هگز است (۸ رقم انتهایی از hex16).'
                     }
                     fullWidth
                     size="small"
                   />
 
-                  {/* پیش‌نمایش هگز نرمال‌شده (اختیاری) */}
+                  {/* پیش‌نمایش نهایی: هم hex16 (طبق تابع فعلی)، هم 8-هگزِ قابل مقایسه */}
                   {driverCard && !driverCardErr && (() => {
                     const r = normalize8ByteCode(driverCard);
-                    return r.ok ? (
+                    if (!r.ok) return null;
+                    const hex8 = r.hex16.slice(-8).toUpperCase();
+                    return (
                       <Typography variant="caption" color="text.secondary">
-                        هگز نهایی: {r.hex16}
+                        هگز 16: {r.hex16} — UID نهایی (8-هگز): {hex8}
                       </Typography>
-                    ) : null;
+                    );
                   })()}
+
 
                   {/* اکشن و وضعیت ثبت کارت (Polling) */}
                   <Stack
@@ -3859,7 +3854,7 @@ function AddUserDialog({
                           variant="body2"
                           color={cardVerified ? 'success.main' : 'text.secondary'}
                         >
-                          {cardVerified ? `کارت تأیید شد${cardHex16 ? ` — ${cardHex16}` : ''}` : pairMsg}
+                          {cardVerified ? `کارت تأیید شد${armHex8 ? ` — ${armHex8}` : ''}` : pairMsg}
                         </Typography>
                       )}
                       {pairErr && (

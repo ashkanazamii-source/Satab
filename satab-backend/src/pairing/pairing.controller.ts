@@ -123,49 +123,67 @@ export class PairingController {
       throw err;
     }
   }
-  // Controller
+
+  // pairing.controller.ts
+  // pairing.controller.ts
   @Post('pairing-codes/pending/uid')
   @HttpCode(200)
-  async submitUidNoId(@Body() body: any) {
+  async submitUidNoId(@Body() body: any, @Res() res: any) {
     const t0 = Date.now();
-    const mask = (s: string, keep = 4) =>
-      s ? `${String(s).slice(0, keep)}…${String(s).slice(-keep)}` : '';
-
-    const uidRaw = body?.uid_hex ?? body?.uid_dec ?? body?.uid;
-
-    this.logger.debug(`[pending/uid] start | uidRaw=${mask(uidRaw, 6)}`);
-
-    if (!uidRaw) {
-      this.logger.warn('[pending/uid] fail: uid missing');
-      throw new BadRequestException('uid is required');
-    }
-
-    // اختیاری: فقط برای لاگ، نرمال‌سازی نمایش
-    let uidHexForLog = '';
-    try {
-      uidHexForLog = this.toHex8(String(uidRaw));
-      this.logger.debug(`[pending/uid] normalized | uidHex=${mask(uidHexForLog, 6)}`);
-    } catch {
-      // مهم نیست؛ خود سرویس داخلش نرمال می‌کند و خطا می‌دهد
-    }
+    const mask = (s: string, keep = 4) => (s ? `${String(s).slice(0, keep)}…${String(s).slice(-keep)}` : '');
 
     try {
-      // ✅ این سرویس اگر armed نباشه/منقضی شده باشه/استفاده شده باشه، خطای مناسب می‌دهد
+      const uidRaw = body?.uid_hex ?? body?.uid_dec ?? body?.uid;
+      this.logger.debug(`[pending/uid] start | raw=${mask(uidRaw, 6)} | bodyKeys=${Object.keys(body || {}).join(',')}`);
+
+      if (!uidRaw) {
+        const s = `{"error":"uid is required"}`;
+        const buf = Buffer.from(s, 'utf8');
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Content-Length', String(buf.length));
+        res.setHeader('Connection', 'close');
+        res.setHeader('X-Accel-Buffering', 'no');
+        res.setHeader('Content-Encoding', 'identity');
+        this.logger.warn(`[pending/uid] 400 | len=${buf.length} | preview="${s}" | dur=${Date.now() - t0}ms`);
+        return res.status(400).end(buf);
+      }
+
+      // سرویس اصلی (الان full_name هم برمی‌گرداند)
       const { user_id } = await this.pairing.consumeArmedUid(String(uidRaw));
 
-      this.logger.debug(
-        `[pending/uid] success | user_id=${user_id} | dur=${Date.now() - t0}ms`
-      );
-      // فقط همین
-      return { user_id };
+      // پاسخ مینیمال و بدون فاصله/newline
+      const s = `{"user_id":${user_id},}"}`;
+      const buf = Buffer.from(s, 'utf8');
+
+      // هدرهای دوست‌دار SIM800
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Content-Length', String(buf.length));
+      res.setHeader('Connection', 'close');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.setHeader('Content-Encoding', 'identity');
+      if (typeof (res as any).flushHeaders === 'function') (res as any).flushHeaders();
+
+      this.logger.debug(`[pending/uid] 200 | user_id=${user_id} | len=${buf.length} | preview="${s}" | dur=${Date.now() - t0}ms`);
+      return res.status(200).end(buf);
     } catch (err: any) {
       const status = typeof err?.getStatus === 'function' ? err.getStatus() : 500;
-      this.logger.error(
-        `[pending/uid] error | status=${status} | msg=${err?.message || err} | dur=${Date.now() - t0}ms`
-      );
-      throw err;
+      const msg = String(err?.message || 'error');
+      const s = `{"error":"${msg.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"}`;
+      const buf = Buffer.from(s, 'utf8');
+
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Content-Length', String(buf.length));
+      res.setHeader('Connection', 'close');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.setHeader('Content-Encoding', 'identity');
+      if (typeof (res as any).flushHeaders === 'function') (res as any).flushHeaders();
+
+      this.logger.error(`[pending/uid] ${status} | msg=${msg} | len=${buf.length} | preview="${s}" | dur=${Date.now() - t0}ms`);
+      return res.status(status).end(buf);
     }
   }
+
+
 
   // PairingController
   @Get('pairing-codes/arm/check')
