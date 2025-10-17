@@ -252,9 +252,12 @@ export class IngestService implements OnModuleInit, OnModuleDestroy {
 
       // بقیه کارها داخل VehiclesService
       await this.vehicles.ingestVehiclePos(vehicleId, lat, lng, deviceCapturedAtIso);
+
+      this.ws.emitVehiclePos(vehicleId, lat, lng, deviceCapturedAtIso, {
+        serverTs: new Date().toISOString()
+      });
     }
   }
-
   private async mapDeviceToVehicle(device_id: string): Promise<number | null> {
     const row = await this.ds.query(
       `SELECT v.id AS vehicle_id
